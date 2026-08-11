@@ -5,9 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'self'"
     >
-    <meta name="color-scheme" content="dark">
+    <meta name="color-scheme" content="light dark">
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%233370ff'/%3E%3Ctext x='16' y='21.5' font-family='system-ui,sans-serif' font-size='12' font-weight='800' text-anchor='middle' fill='white' letter-spacing='1'%3EGX%3C/text%3E%3C/svg%3E">
     <title>GroupX</title>
     <link rel="stylesheet" href="/styles.css">
     <script type="module" src="/app.js"></script>
@@ -28,6 +29,7 @@
             <span id="connection-label">正在启动</span>
           </output>
           <span id="room-label" class="room-label">本地房间</span>
+          <button id="theme-toggle" class="theme-toggle" type="button" aria-label="切换到夜间模式" title="切换到夜间模式">☾</button>
         </div>
         <div id="global-error" class="global-error" role="alert" hidden></div>
       </header>
@@ -100,7 +102,7 @@
             <button id="clear-reply" class="icon-button" type="button" aria-label="取消回复">×</button>
           </div>
 
-          <div class="composer-input-row">
+          <div class="composer-box">
             <label class="sr-only" for="message-input">消息内容</label>
             <textarea
               id="message-input"
@@ -109,13 +111,17 @@
               required
               placeholder="给 Agent 们发一条消息…"
             ></textarea>
-            <button id="send-button" class="send-button" type="submit">
-              <span>发送</span>
-              <span aria-hidden="true">↗</span>
-            </button>
+            <div class="composer-toolbar">
+              <button id="send-button" class="send-button" type="submit" disabled>
+                <svg class="send-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M2.01 21 23 12 2.01 3 2 10l15 2-15 2Z" fill="currentColor"/>
+                </svg>
+                <span>发送</span>
+              </button>
+            </div>
           </div>
           <div class="composer-footer">
-            <span id="composer-status" aria-live="polite">Ctrl / ⌘ + Enter 发送</span>
+            <span id="composer-status" aria-live="polite">Enter 发送 · Shift+Enter 换行</span>
             <span id="character-count">0 / 32768</span>
           </div>
         </form>
@@ -137,6 +143,10 @@
           <p class="section-description">只有显式固定的内容会进入公共记忆，普通聊天不会自动提升为事实。</p>
           <ul id="memory-list" class="record-list"></ul>
           <form id="memory-form" class="record-form">
+            <div id="memory-replace-banner" class="replace-banner" hidden>
+              <span>正在替换一条公共记忆</span>
+              <button id="memory-replace-cancel" class="text-button" type="button">取消</button>
+            </div>
             <label for="memory-kind">类型</label>
             <select id="memory-kind">
               <option value="fact">事实</option>
@@ -148,7 +158,7 @@
             </select>
             <label for="memory-input">固定一条公共记忆</label>
             <textarea id="memory-input" maxlength="32768" rows="3" placeholder="写下需要长期保留的群组信息"></textarea>
-            <button class="secondary-button" type="submit">固定到房间</button>
+            <button id="memory-submit" class="secondary-button" type="submit">固定到房间</button>
           </form>
         </section>
 
@@ -162,6 +172,10 @@
           <p class="section-description">这是 GroupX 内的身份叠加，不会改写 CLI 的全局 persona 或配置。</p>
           <ul id="identity-list" class="record-list"></ul>
           <form id="identity-form" class="record-form">
+            <div id="identity-replace-banner" class="replace-banner" hidden>
+              <span>正在替换一条身份记忆</span>
+              <button id="identity-replace-cancel" class="text-button" type="button">取消</button>
+            </div>
             <label for="identity-actor">对象</label>
             <select id="identity-actor">
               <option value="agent:codex">Codex</option>
@@ -177,7 +191,7 @@
             </select>
             <label for="identity-input">添加群内身份说明</label>
             <textarea id="identity-input" maxlength="32768" rows="3" placeholder="例如：在评审中优先关注协议风险"></textarea>
-            <button class="secondary-button" type="submit">保存身份说明</button>
+            <button id="identity-submit" class="secondary-button" type="submit">保存身份说明</button>
           </form>
         </section>
 

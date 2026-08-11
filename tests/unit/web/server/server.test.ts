@@ -297,6 +297,7 @@ describe("GroupXHttpServer", () => {
       writeFile(path.join(staticRoot, "index.html"), "<!doctype html><title>GroupX</title>"),
       writeFile(path.join(staticRoot, "app.js"), "document.body.dataset.ready = 'yes';"),
       writeFile(path.join(staticRoot, "pagination.js"), "export const paginationReady = true;"),
+      writeFile(path.join(staticRoot, "rich-text.js"), "export const richTextReady = true;"),
       writeFile(path.join(staticRoot, "styles.css"), "body { color: black; }")
     ]);
     broker = new FakeBroker();
@@ -328,6 +329,10 @@ describe("GroupXHttpServer", () => {
     const pagination = await fetch(`${origin}/pagination.js`);
     expect(pagination.status).toBe(200);
     expect(await pagination.text()).toContain("paginationReady");
+
+    const richText = await fetch(`${origin}/rich-text.js`);
+    expect(richText.status).toBe(200);
+    expect(await richText.text()).toContain("richTextReady");
 
     const styles = await fetch(`${origin}/styles.css`, { method: "HEAD" });
     expect(styles.status).toBe(200);

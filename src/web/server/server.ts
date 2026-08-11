@@ -50,7 +50,7 @@ const DEFAULT_BODY_LIMIT = 256 * 1_024;
 const DEFAULT_GRACEFUL_CLOSE_TIMEOUT_MS = 5_000;
 
 interface StaticAsset {
-  readonly fileName: "index.html" | "app.js" | "pagination.js" | "styles.css";
+  readonly fileName: "index.html" | "app.js" | "pagination.js" | "rich-text.js" | "styles.css";
   readonly contentType: string;
 }
 
@@ -58,6 +58,7 @@ const STATIC_ASSETS = new Map<string, StaticAsset>([
   ["/", { fileName: "index.html", contentType: "text/html; charset=utf-8" }],
   ["/app.js", { fileName: "app.js", contentType: "application/javascript; charset=utf-8" }],
   ["/pagination.js", { fileName: "pagination.js", contentType: "application/javascript; charset=utf-8" }],
+  ["/rich-text.js", { fileName: "rich-text.js", contentType: "application/javascript; charset=utf-8" }],
   ["/styles.css", { fileName: "styles.css", contentType: "text/css; charset=utf-8" }]
 ]);
 
@@ -99,6 +100,17 @@ function writeJson(response: ServerResponse, status: number, body: unknown): voi
   response.setHeader("Content-Type", "application/json; charset=utf-8");
   response.setHeader("Content-Length", Buffer.byteLength(payload));
   response.end(payload);
+}
+
+const CONTENT_SECURITY_POLICY =
+  "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; " +
+  "img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; " +
+  "form-action 'self'";
+
+function setSecurityHeaders(response: ServerResponse): void {
+  response.setHeader("Content-Security-Policy", CONTENT_SECURITY_POLICY);
+  response.setHeader("X-Content-Type-Options", "nosniff");
+  response.setHeader("Referrer-Policy", "no-referrer");
 }
 
 function writeProblem(
@@ -497,6 +509,7 @@ export class GroupXHttpServer {
   async #handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const url = requestUrl(request);
     const method = request.method ?? "GET";
+    setSecurityHeaders(response);
 
     if (this.#closing) {
       writeJson(response, 503, toSafeErrorBody(new GroupXError("STORE_UNAVAILABLE", "closing")));

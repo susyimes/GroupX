@@ -1,4 +1,5 @@
 import { collectCursorPages } from "./pagination.js";
+import { copyPlainText, flashButtonLabel, renderRichContent } from "./rich-text.js";
 
 type JsonRecord = Record<string, unknown>;
 type ConnectionState = "bootstrapping" | "connecting" | "live" | "reconnecting" | "offline";
@@ -96,6 +97,7 @@ interface AppState {
   transientText: Map<string, DeltaState>;
   replyToEventId: string | null;
   pendingSubmission: PendingSubmission | null;
+  replacing: { identity: boolean; id: string } | null;
   submitting: boolean;
 }
 
@@ -123,6 +125,13 @@ const RECONNECT_MIN_MS = 250;
 const RECONNECT_MAX_MS = 10_000;
 const DEFAULT_ROOM_ID = "room:main";
 const TERMINAL_TURN_STATUSES = new Set(["completed", "failed", "cancelled", "interrupted"]);
+const COMPOSER_HINT = "Enter 发送 · Shift+Enter 换行";
+const DRAFT_STORAGE_KEY = "groupx:draft";
+const THEME_STORAGE_KEY = "groupx:theme";
+const TIMELINE_MAX_ITEMS = 500;
+const TIMELINE_TRIM_BATCH = 100;
+const HEALTH_POLL_MS = 60_000;
+const BASE_TITLE = document.title;
 
 const DOCUMENTED_EVENT_TYPES = [
   "groupx.event",
@@ -196,6 +205,7 @@ const state: AppState = {
   transientText: new Map(),
   replyToEventId: null,
   pendingSubmission: null,
+  replacing: null,
   submitting: false,
 };
 
@@ -234,6 +244,11 @@ const identityForm = byId<HTMLFormElement>("identity-form");
 const identityActor = byId<HTMLSelectElement>("identity-actor");
 const identityKind = byId<HTMLSelectElement>("identity-kind");
 const identityInput = byId<HTMLTextAreaElement>("identity-input");
+const memoryReplaceBanner = byId<HTMLDivElement>("memory-replace-banner");
+const identityReplaceBanner = byId<HTMLDivElement>("identity-replace-banner");
+const memorySubmit = byId<HTMLButtonElement>("memory-submit");
+const identitySubmit = byId<HTMLButtonElement>("identity-submit");
+const themeToggle = byId<HTMLButtonElement>("theme-toggle");
 
 const targetInputs = Array.from(document.querySelectorAll<HTMLInputElement>('input[name="target"]'));
 const eventNodes = new Map<string, HTMLElement>();
@@ -249,6 +264,12 @@ let reconnectTimer: number | null = null;
 let reconnectAttempt = 0;
 let deltaFlushTimer: number | null = null;
 let globalErrorTimer: number | null = null;
+let healthTimer: number | null = null;
+let unreadCount = 0;
+let newWhileScrolledUp = 0;
+let lastTimelineDate = "";
+let trimmedItemCount = 0;
+let trimNoticeNode: HTMLLIElement | null = null;
 
 function isRecord(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -469,6 +490,10 @@ function actorInitial(actor: ActorRef): string {
   return label.slice(0, 2).toUpperCase();
 }
 
+function localDateKey(date: Date): string {
+  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+}
+
 function formatTime(value: string): string {
   if (!value) {
     return "";
@@ -477,11 +502,36 @@ function formatTime(value: string): string {
   if (Number.isNaN(date.getTime())) {
     return value;
   }
-  return new Intl.DateTimeFormat("zh-CN", {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  }).format(date);
+  const sameDay = localDateKey(date) === localDateKey(new Date());
+  return new Intl.DateTimeFormat(
+    "zh-CN",
+    sameDay
+      ? { hour: "2-digit", minute: "2-digit" }
+      : { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }
+  ).format(date);
+}
+
+function formatFullTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "medium" }).format(date);
+}
+
+function dateDividerLabel(date: Date): string {
+  const now = new Date();
+  const key = localDateKey(date);
+  if (key === localDateKey(now)) {
+    return "今天";
+  }
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (key === localDateKey(yesterday)) {
+    return "昨天";
+  }
+  const monthDay = `${date.getMonth() + 1}月${date.getDate()}日`;
+  return date.getFullYear() === now.getFullYear() ? monthDay : `${date.getFullYear()}年${monthDay}`;
 }
 
 function humanStatus(status: string): string {
@@ -497,12 +547,16 @@ function humanStatus(status: string): string {
     failed: "失败",
     queued: "排队中",
     dispatched: "已派发",
+    dispatching: "派发中",
     running: "运行中",
     streaming: "回复中",
     cancel_requested: "正在取消",
+    cancelling: "正在取消",
     completed: "已完成",
     cancelled: "已取消",
     interrupted: "已中断",
+    error: "错误",
+    native_policy_blocked: "原生策略阻止",
   };
   return names[status] ?? status;
 }
@@ -536,6 +590,54 @@ function showGlobalError(message: string): void {
 function setComposerStatus(message: string, error = false): void {
   composerStatus.textContent = message;
   composerStatus.classList.toggle("is-error", error);
+}
+
+function autoresizeComposer(): void {
+  messageInput.style.height = "auto";
+  const next = Math.min(messageInput.scrollHeight, 180);
+  messageInput.style.height = `${next}px`;
+  messageInput.style.overflowY = messageInput.scrollHeight > 180 ? "auto" : "hidden";
+}
+
+function saveDraft(): void {
+  try {
+    if (messageInput.value) {
+      sessionStorage.setItem(DRAFT_STORAGE_KEY, messageInput.value);
+    } else {
+      sessionStorage.removeItem(DRAFT_STORAGE_KEY);
+    }
+  } catch {
+    // sessionStorage may be unavailable; drafts are best-effort only
+  }
+}
+
+function clearDraft(): void {
+  try {
+    sessionStorage.removeItem(DRAFT_STORAGE_KEY);
+  } catch {
+    // sessionStorage may be unavailable; drafts are best-effort only
+  }
+}
+
+function restoreDraft(): void {
+  try {
+    const saved = sessionStorage.getItem(DRAFT_STORAGE_KEY);
+    if (saved) {
+      messageInput.value = saved;
+    }
+  } catch {
+    // sessionStorage may be unavailable; drafts are best-effort only
+  }
+}
+
+function updateCharacterCount(): void {
+  const length = messageInput.value.length;
+  characterCount.textContent = `${length} / ${MESSAGE_MAX_LENGTH}`;
+  characterCount.classList.toggle(
+    "is-warning",
+    length > MESSAGE_MAX_LENGTH * 0.9 && length < MESSAGE_MAX_LENGTH
+  );
+  characterCount.classList.toggle("is-error", length >= MESSAGE_MAX_LENGTH);
 }
 
 async function requestJson<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -587,6 +689,7 @@ function createActorMeta(envelope: GroupXEnvelope): HTMLDivElement {
   time.className = "event-time";
   time.dateTime = envelope.occurredAt;
   time.textContent = formatTime(envelope.occurredAt);
+  time.title = formatFullTime(envelope.occurredAt);
 
   wrapper.append(avatar, name, actorId, time);
   return wrapper;
@@ -596,18 +699,101 @@ function isTimelineNearBottom(): boolean {
   return timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 120;
 }
 
-function appendTimeline(node: HTMLLIElement): void {
+function resetJumpLatest(): void {
+  newWhileScrolledUp = 0;
+  jumpLatest.textContent = "回到最新";
+  jumpLatest.hidden = true;
+}
+
+function cleanupRemovedItem(node: Element): void {
+  const card = node.querySelector<HTMLElement>("[data-event-id], [data-turn-id], [data-stream-key]");
+  if (!card) {
+    return;
+  }
+  const { eventId, turnId, streamKey } = card.dataset;
+  if (eventId) {
+    eventNodes.delete(eventId);
+  }
+  if (turnId) {
+    turnNodes.delete(turnId);
+  }
+  if (streamKey) {
+    streamNodes.delete(streamKey);
+  }
+}
+
+function trimTimelineIfNeeded(): void {
+  const overflow = timeline.children.length - TIMELINE_MAX_ITEMS;
+  if (overflow <= 0) {
+    return;
+  }
+  const target = overflow + TIMELINE_TRIM_BATCH;
+  let removed = 0;
+  let node = timeline.firstElementChild;
+  while (removed < target && node) {
+    if (node.id === "timeline-empty") {
+      break;
+    }
+    const next = node.nextElementSibling;
+    if (node !== trimNoticeNode) {
+      cleanupRemovedItem(node);
+      node.remove();
+      removed += 1;
+    }
+    node = next;
+  }
+  if (removed === 0) {
+    return;
+  }
+  trimmedItemCount += removed;
+  if (!trimNoticeNode) {
+    trimNoticeNode = document.createElement("li");
+    trimNoticeNode.className = "trim-notice";
+    timeline.prepend(trimNoticeNode);
+  }
+  trimNoticeNode.textContent = `已收起 ${trimmedItemCount} 条较早消息`;
+}
+
+function appendTimeline(node: HTMLLIElement, countsAsNew = true): void {
   const shouldFollow = isTimelineNearBottom() || timeline.children.length <= 1;
   if (timelineEmpty.isConnected) {
     timelineEmpty.remove();
   }
   timeline.append(node);
   if (shouldFollow) {
-    timeline.scrollTo({ top: timeline.scrollHeight, behavior: "smooth" });
-    jumpLatest.hidden = true;
+    // Instant snap: smooth scrolling lags behind rapid appends (bootstrap
+    // replay, streaming flushes) and loses the bottom anchor.
+    timeline.scrollTop = timeline.scrollHeight;
+    resetJumpLatest();
   } else {
+    if (countsAsNew) {
+      newWhileScrolledUp += 1;
+      jumpLatest.textContent = `↓ ${newWhileScrolledUp} 条新消息`;
+    }
     jumpLatest.hidden = false;
   }
+  trimTimelineIfNeeded();
+}
+
+function maybeInsertDateDivider(occurredAt: string): void {
+  if (!occurredAt) {
+    return;
+  }
+  const date = new Date(occurredAt);
+  if (Number.isNaN(date.getTime())) {
+    return;
+  }
+  const key = localDateKey(date);
+  if (key === lastTimelineDate) {
+    return;
+  }
+  lastTimelineDate = key;
+  const item = document.createElement("li");
+  item.className = "date-divider";
+  const label = document.createElement("span");
+  label.textContent = dateDividerLabel(date);
+  item.append(label);
+  appendTimeline(item, false);
 }
 
 function messageContent(body: unknown): string {
@@ -665,6 +851,10 @@ function clearReply(): void {
   replyContext.hidden = true;
 }
 
+function cardToneClass(actorId: string): string {
+  return actorToneClass(actorId).replace("actor-", "tone-");
+}
+
 function renderMessage(envelope: GroupXEnvelope): void {
   if (eventNodes.has(envelope.eventId)) {
     return;
@@ -690,7 +880,7 @@ function renderMessage(envelope: GroupXEnvelope): void {
     item.append(article);
   }
 
-  article.className = "event-card";
+  article.className = `event-card ${cardToneClass(envelope.actor.actorId)}`;
   if (envelope.actor.kind === "user") {
     article.classList.add("actor-user-card");
   }
@@ -698,15 +888,34 @@ function renderMessage(envelope: GroupXEnvelope): void {
   article.append(createActorMeta(envelope));
 
   if (envelope.replyToEventId) {
+    const sourceId = envelope.replyToEventId;
     const reply = document.createElement("div");
-    reply.className = "reply-reference";
-    reply.textContent = replyPreview(envelope.replyToEventId);
+    reply.className = "reply-reference is-linked";
+    reply.textContent = replyPreview(sourceId);
+    reply.setAttribute("role", "button");
+    reply.tabIndex = 0;
+    const scrollToSource = (): void => {
+      const target = eventNodes.get(sourceId);
+      if (!target) {
+        return;
+      }
+      target.scrollIntoView({ behavior: "smooth", block: "center" });
+      target.classList.add("is-highlighted");
+      window.setTimeout(() => target.classList.remove("is-highlighted"), 1_200);
+    };
+    reply.addEventListener("click", scrollToSource);
+    reply.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        scrollToSource();
+      }
+    });
     article.append(reply);
   }
 
   const content = document.createElement("p");
   content.className = "event-content";
-  content.textContent = messageContent(envelope.body);
+  renderRichContent(content, messageContent(envelope.body));
   article.append(content);
 
   const actions = document.createElement("div");
@@ -716,12 +925,22 @@ function renderMessage(envelope: GroupXEnvelope): void {
   replyButton.className = "text-button";
   replyButton.textContent = "回复";
   replyButton.addEventListener("click", () => setReply(envelope.eventId));
-  actions.append(replyButton);
+  const copyButton = document.createElement("button");
+  copyButton.type = "button";
+  copyButton.className = "text-button";
+  copyButton.textContent = "复制";
+  copyButton.addEventListener("click", () => {
+    void copyPlainText(messageContent(envelope.body)).then((ok) => {
+      flashButtonLabel(copyButton, ok ? "已复制" : "复制失败");
+    });
+  });
+  actions.append(replyButton, copyButton);
   article.append(actions);
 
   state.messages.set(envelope.eventId, envelope);
   eventNodes.set(envelope.eventId, article);
   if (!item.isConnected) {
+    maybeInsertDateDivider(envelope.occurredAt);
     appendTimeline(item);
   }
 }
@@ -732,7 +951,7 @@ function updateStreamingNode(bucket: DeltaBucket, text: string): void {
     const item = document.createElement("li");
     item.className = "timeline-item";
     article = document.createElement("article");
-    article.className = "event-card is-streaming";
+    article.className = `event-card is-streaming ${cardToneClass(bucket.envelope.actor.actorId)}`;
     article.dataset.streamKey = bucket.key;
     article.append(createActorMeta(bucket.envelope));
 
@@ -748,11 +967,12 @@ function updateStreamingNode(bucket: DeltaBucket, text: string): void {
     article.append(content);
     item.append(article);
     streamNodes.set(bucket.key, article);
+    maybeInsertDateDivider(bucket.envelope.occurredAt);
     appendTimeline(item);
   }
   const content = article.querySelector<HTMLElement>(".event-content");
   if (content) {
-    content.textContent = text;
+    renderRichContent(content, text);
   }
 }
 
@@ -965,8 +1185,49 @@ function updateAgentFromSessionEvent(envelope: GroupXEnvelope): void {
   renderAgents();
 }
 
+function recordEventPayload(body: unknown): unknown {
+  return isRecord(body) && isRecord(body.record) ? body.record : body;
+}
+
+function renderRecordActivity(envelope: GroupXEnvelope, record: RecordView, identity: boolean): void {
+  if (eventNodes.has(envelope.eventId)) {
+    return;
+  }
+  const item = document.createElement("li");
+  item.className = "timeline-item";
+  const article = document.createElement("article");
+  article.className = "activity-card";
+  article.dataset.eventId = envelope.eventId;
+  article.append(createActorMeta(envelope));
+
+  const verb = envelope.type.endsWith(".retracted")
+    ? identity
+      ? "移除了一条身份记忆"
+      : "移除了一条公共记忆"
+    : envelope.type.endsWith(".superseded")
+      ? identity
+        ? "替换了一条身份记忆"
+        : "替换了一条公共记忆"
+      : identity
+        ? "更新了身份记忆"
+        : "固定了一条公共记忆";
+  const line = document.createElement("p");
+  line.className = "activity-line";
+  line.textContent = verb;
+  const preview = document.createElement("p");
+  preview.className = "activity-preview";
+  preview.textContent =
+    record.content.length > 160 ? `${record.content.slice(0, 160)}…` : record.content;
+  article.append(line, preview);
+
+  item.append(article);
+  eventNodes.set(envelope.eventId, article);
+  appendTimeline(item);
+}
+
 function addRecordFromEnvelope(envelope: GroupXEnvelope, identity: boolean): void {
-  const record = normalizeRecord(envelope.body, identity);
+  const payload = recordEventPayload(envelope.body);
+  const record = normalizeRecord(payload, identity);
   if (!record) {
     renderGeneric(envelope);
     return;
@@ -975,15 +1236,29 @@ function addRecordFromEnvelope(envelope: GroupXEnvelope, identity: boolean): voi
   if (envelope.type.endsWith(".retracted")) {
     target.delete(record.id);
   } else {
+    if (envelope.type.endsWith(".superseded") && isRecord(payload)) {
+      const previousId = readStringField(
+        payload,
+        identity ? "supersedesIdentityId" : "supersedesMemoryId"
+      );
+      if (previousId) {
+        target.delete(previousId);
+      }
+    }
     target.set(record.id, record);
   }
   renderRecords(identity);
+  renderRecordActivity(envelope, record, identity);
 }
 
 function dispatchEnvelope(envelope: GroupXEnvelope): void {
   switch (envelope.type) {
     case "message.created":
       renderMessage(envelope);
+      if (document.hidden && envelope.actor.kind !== "user") {
+        unreadCount += 1;
+        document.title = `(${unreadCount}) ${BASE_TITLE}`;
+      }
       return;
     case "turn.content.delta":
       queueDelta(envelope, "content");
@@ -1099,6 +1374,18 @@ function renderAgents(): void {
     meta.append(details, restart);
 
     item.append(top, meta);
+    item.title = "点击后单独发给该 Agent";
+    item.addEventListener("click", (event) => {
+      if (event.target instanceof HTMLButtonElement || agent.enabled === false) {
+        return;
+      }
+      for (const input of targetInputs) {
+        input.checked = input.value === agent.actorId && !input.disabled;
+      }
+      syncTargetAll();
+      invalidatePendingSubmission();
+      messageInput.focus();
+    });
     agentList.append(item);
     if (agent.enabled && !["failed", "offline", "stopped", "unknown"].includes(agent.status)) {
       available += 1;
@@ -1120,9 +1407,13 @@ function syncTargetAvailability(): void {
   syncTargetAll();
 }
 
+function syncSendButton(): void {
+  sendButton.disabled = state.submitting || messageInput.value.trim().length === 0;
+}
+
 function setComposerBusy(busy: boolean): void {
   messageInput.disabled = busy;
-  sendButton.disabled = busy;
+  syncSendButton();
   clearReplyButton.disabled = busy;
   syncTargetAvailability();
 }
@@ -1148,9 +1439,100 @@ async function restartAgent(actorId: string): Promise<void> {
   }
 }
 
+function selectHasOption(select: HTMLSelectElement, value: string): boolean {
+  return Array.from(select.options).some((option) => option.value === value);
+}
+
+function enterReplaceMode(identity: boolean, record: RecordView): void {
+  state.replacing = { identity, id: record.id };
+  if (identity) {
+    if (selectHasOption(identityActor, record.subjectActorId)) {
+      identityActor.value = record.subjectActorId;
+    }
+    if (selectHasOption(identityKind, record.kind)) {
+      identityKind.value = record.kind;
+    }
+    identityInput.value = record.content;
+    activateContextTab("identity");
+    identityReplaceBanner.hidden = false;
+    identitySubmit.textContent = "保存替换";
+    identityInput.focus();
+  } else {
+    if (selectHasOption(memoryKind, record.kind)) {
+      memoryKind.value = record.kind;
+    }
+    memoryInput.value = record.content;
+    activateContextTab("memory");
+    memoryReplaceBanner.hidden = false;
+    memorySubmit.textContent = "保存替换";
+    memoryInput.focus();
+  }
+}
+
+function exitReplaceMode(identity: boolean): void {
+  if (state.replacing?.identity === identity) {
+    state.replacing = null;
+  }
+  if (identity) {
+    identityReplaceBanner.hidden = true;
+    identitySubmit.textContent = "保存身份说明";
+    identityInput.value = "";
+  } else {
+    memoryReplaceBanner.hidden = true;
+    memorySubmit.textContent = "固定到房间";
+    memoryInput.value = "";
+  }
+}
+
+async function retractRecord(identity: boolean, recordId: string): Promise<void> {
+  const retryKey = `retract:${identity ? "identity" : "memory"}:${recordId}`;
+  const path = identity
+    ? `/api/identity/${encodeURIComponent(recordId)}/retract`
+    : `/api/memory/${encodeURIComponent(recordId)}/retract`;
+  try {
+    await requestJson<unknown>(path, {
+      method: "POST",
+      body: JSON.stringify({ clientCommandId: retryableCommandId(retryKey, "web-retract") }),
+    });
+    retryCommandIds.delete(retryKey);
+    (identity ? state.identities : state.memories).delete(recordId);
+    if (state.replacing?.identity === identity && state.replacing.id === recordId) {
+      exitReplaceMode(identity);
+    }
+    renderRecords(identity);
+  } catch (error) {
+    showGlobalError(errorMessage(error));
+  }
+}
+
+function wireRetractButton(button: HTMLButtonElement, identity: boolean, recordId: string): void {
+  let armed = false;
+  let armTimer: number | null = null;
+  const disarm = (): void => {
+    armed = false;
+    button.classList.remove("is-armed");
+    button.textContent = "移除";
+    if (armTimer !== null) {
+      window.clearTimeout(armTimer);
+      armTimer = null;
+    }
+  };
+  button.addEventListener("click", () => {
+    if (!armed) {
+      armed = true;
+      button.classList.add("is-armed");
+      button.textContent = "确认移除";
+      armTimer = window.setTimeout(disarm, 3_000);
+      return;
+    }
+    disarm();
+    void retractRecord(identity, recordId);
+  });
+}
+
 function renderRecords(identity: boolean): void {
   const records = Array.from((identity ? state.identities : state.memories).values())
-    .filter((record) => record.status !== "retracted")
+    .filter((record) => record.status === "active")
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   const list = identity ? identityList : memoryList;
   list.replaceChildren();
@@ -1166,11 +1548,29 @@ function renderRecords(identity: boolean): void {
     const source = document.createElement("span");
     const subject = record.subjectActorId ? ` → ${record.subjectActorId}` : "";
     source.textContent = `${record.authorActorId}${subject}`;
+    if (record.createdAt) {
+      source.title = formatFullTime(record.createdAt);
+    }
     meta.append(kind, source);
     const content = document.createElement("p");
     content.className = "record-content";
     content.textContent = record.content;
-    item.append(meta, content);
+
+    const actions = document.createElement("div");
+    actions.className = "record-actions";
+    const replace = document.createElement("button");
+    replace.type = "button";
+    replace.className = "text-button";
+    replace.textContent = "替换";
+    replace.addEventListener("click", () => enterReplaceMode(identity, record));
+    const retract = document.createElement("button");
+    retract.type = "button";
+    retract.className = "text-button danger-text";
+    retract.textContent = "移除";
+    wireRetractButton(retract, identity, record.id);
+    actions.append(replace, retract);
+
+    item.append(meta, content, actions);
     list.append(item);
   }
 }
@@ -1302,7 +1702,9 @@ async function submitMessage(): Promise<void> {
       body: JSON.stringify(draft),
     });
     messageInput.value = "";
-    characterCount.textContent = `0 / ${MESSAGE_MAX_LENGTH}`;
+    clearDraft();
+    updateCharacterCount();
+    autoresizeComposer();
     clearReply();
     state.pendingSubmission = null;
     setComposerStatus("已接受，等待 Agent 事件");
@@ -1320,34 +1722,51 @@ async function submitMemory(): Promise<void> {
     memoryInput.focus();
     return;
   }
-  const button = memoryForm.querySelector<HTMLButtonElement>('button[type="submit"]');
-  if (button) {
-    button.disabled = true;
-  }
-  const retryKey = `memory:${state.roomId}:${memoryKind.value}:${content}`;
+  const replacing = state.replacing !== null && !state.replacing.identity ? state.replacing : null;
+  memorySubmit.disabled = true;
+  const retryKey = replacing
+    ? `supersede-memory:${replacing.id}:${memoryKind.value}:${content}`
+    : `memory:${state.roomId}:${memoryKind.value}:${content}`;
   try {
-    const response = await requestJson<unknown>("/api/memory", {
-      method: "POST",
-      body: JSON.stringify({
-        clientCommandId: retryableCommandId(retryKey, "web-memory"),
-        scope: { type: "room", id: state.roomId },
-        kind: memoryKind.value,
-        content,
-      }),
-    });
+    const response = await requestJson<unknown>(
+      replacing
+        ? `/api/memory/${encodeURIComponent(replacing.id)}/supersede`
+        : "/api/memory",
+      {
+        method: "POST",
+        body: JSON.stringify(
+          replacing
+            ? {
+                clientCommandId: retryableCommandId(retryKey, "web-supersede"),
+                kind: memoryKind.value,
+                content,
+              }
+            : {
+                clientCommandId: retryableCommandId(retryKey, "web-memory"),
+                scope: { type: "room", id: state.roomId },
+                kind: memoryKind.value,
+                content,
+              }
+        ),
+      }
+    );
     const memory = isRecord(response) ? normalizeRecord(response.memory, false) : null;
     if (memory) {
+      if (replacing) {
+        state.memories.delete(replacing.id);
+      }
       state.memories.set(memory.id, memory);
       renderRecords(false);
     }
     retryCommandIds.delete(retryKey);
     memoryInput.value = "";
+    if (replacing) {
+      exitReplaceMode(false);
+    }
   } catch (error) {
     showGlobalError(errorMessage(error));
   } finally {
-    if (button) {
-      button.disabled = false;
-    }
+    memorySubmit.disabled = false;
   }
 }
 
@@ -1357,34 +1776,51 @@ async function submitIdentity(): Promise<void> {
     identityInput.focus();
     return;
   }
-  const button = identityForm.querySelector<HTMLButtonElement>('button[type="submit"]');
-  if (button) {
-    button.disabled = true;
-  }
-  const retryKey = `identity:${identityActor.value}:${identityKind.value}:${content}`;
+  const replacing = state.replacing !== null && state.replacing.identity ? state.replacing : null;
+  identitySubmit.disabled = true;
+  const retryKey = replacing
+    ? `supersede-identity:${replacing.id}:${identityKind.value}:${content}`
+    : `identity:${identityActor.value}:${identityKind.value}:${content}`;
   try {
-    const response = await requestJson<unknown>("/api/identity", {
-      method: "POST",
-      body: JSON.stringify({
-        clientCommandId: retryableCommandId(retryKey, "web-identity"),
-        subjectActorId: identityActor.value,
-        kind: identityKind.value,
-        content,
-      }),
-    });
+    const response = await requestJson<unknown>(
+      replacing
+        ? `/api/identity/${encodeURIComponent(replacing.id)}/supersede`
+        : "/api/identity",
+      {
+        method: "POST",
+        body: JSON.stringify(
+          replacing
+            ? {
+                clientCommandId: retryableCommandId(retryKey, "web-supersede"),
+                kind: identityKind.value,
+                content,
+              }
+            : {
+                clientCommandId: retryableCommandId(retryKey, "web-identity"),
+                subjectActorId: identityActor.value,
+                kind: identityKind.value,
+                content,
+              }
+        ),
+      }
+    );
     const identity = isRecord(response) ? normalizeRecord(response.identity, true) : null;
     if (identity) {
+      if (replacing) {
+        state.identities.delete(replacing.id);
+      }
       state.identities.set(identity.id, identity);
       renderRecords(true);
     }
     retryCommandIds.delete(retryKey);
     identityInput.value = "";
+    if (replacing) {
+      exitReplaceMode(true);
+    }
   } catch (error) {
     showGlobalError(errorMessage(error));
   } finally {
-    if (button) {
-      button.disabled = false;
-    }
+    identitySubmit.disabled = false;
   }
 }
 
@@ -1467,6 +1903,42 @@ function reconnectForGap(receivedSeq: number): void {
   scheduleReconnect(`游标缺口 ${state.lastDurableSeq} → ${receivedSeq}`);
 }
 
+function refreshEmptyStateCopy(): void {
+  if (!timelineEmpty.isConnected) {
+    return;
+  }
+  const heading = timelineEmpty.querySelector("h3");
+  const paragraph = timelineEmpty.querySelector("p");
+  if (heading) {
+    heading.textContent = "房间已就绪";
+  }
+  if (paragraph) {
+    paragraph.textContent = "保持 @all 并行提问,或只勾选一个 Agent 单独对话。";
+  }
+}
+
+async function refreshHealth(): Promise<void> {
+  try {
+    const health = await requestJson<unknown>("/api/health");
+    if (!isRecord(health)) {
+      return;
+    }
+    const store = isRecord(health.store) ? health.store : null;
+    const available = store ? readBooleanField(store, true, "available") : true;
+    const integrityOk = store ? readBooleanField(store, true, "integrityOk") : true;
+    const activeTurns = readNumberField(health, "activeTurns") ?? 0;
+    const queuedTurns = readNumberField(health, "queuedTurns") ?? 0;
+    const healthy = available && integrityOk;
+    connectionStatus.dataset.health = healthy ? "ok" : "degraded";
+    connectionStatus.title = healthy
+      ? `存储正常 · 活跃回合 ${activeTurns} · 排队 ${queuedTurns}`
+      : "存储不可用或完整性检查未通过";
+  } catch {
+    connectionStatus.dataset.health = "unknown";
+    connectionStatus.title = "健康检查失败";
+  }
+}
+
 function connectEventSource(extraTypes: string[] = []): void {
   if (reconnectTimer !== null) {
     window.clearTimeout(reconnectTimer);
@@ -1486,6 +1958,7 @@ function connectEventSource(extraTypes: string[] = []): void {
   source.onopen = () => {
     reconnectAttempt = 0;
     setConnection("live");
+    refreshEmptyStateCopy();
   };
   source.onerror = () => {
     if (source !== eventSource) {
@@ -1554,6 +2027,12 @@ async function bootstrap(): Promise<void> {
 
     void Promise.allSettled([loadRecords("/api/memory", false), loadRecords("/api/identity", true)]);
     connectEventSource(supportedEventTypesFromBootstrap(decoded));
+    void refreshHealth();
+    if (healthTimer === null) {
+      healthTimer = window.setInterval(() => {
+        void refreshHealth();
+      }, HEALTH_POLL_MS);
+    }
   } catch (error) {
     setConnection("offline", "bootstrap 失败");
     showGlobalError(errorMessage(error));
@@ -1569,18 +2048,32 @@ composer.addEventListener("submit", (event) => {
 });
 
 messageInput.addEventListener("input", () => {
-  characterCount.textContent = `${messageInput.value.length} / ${MESSAGE_MAX_LENGTH}`;
+  updateCharacterCount();
+  syncSendButton();
+  autoresizeComposer();
+  saveDraft();
   invalidatePendingSubmission();
   if (messageInput.value.length <= MESSAGE_MAX_LENGTH) {
-    setComposerStatus("Ctrl / ⌘ + Enter 发送");
+    setComposerStatus(COMPOSER_HINT);
   }
 });
 
 messageInput.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
-    event.preventDefault();
-    composer.requestSubmit();
+  if (event.key === "Escape" && state.replyToEventId) {
+    clearReply();
+    return;
   }
+  if (event.key !== "Enter" || event.isComposing) {
+    return;
+  }
+  if (event.shiftKey) {
+    return;
+  }
+  event.preventDefault();
+  if (messageInput.value.trim().length === 0) {
+    return;
+  }
+  composer.requestSubmit();
 });
 
 targetAll.addEventListener("change", () => {
@@ -1604,12 +2097,12 @@ clearReplyButton.addEventListener("click", clearReply);
 
 jumpLatest.addEventListener("click", () => {
   timeline.scrollTo({ top: timeline.scrollHeight, behavior: "smooth" });
-  jumpLatest.hidden = true;
+  resetJumpLatest();
 });
 
 timeline.addEventListener("scroll", () => {
   if (isTimelineNearBottom()) {
-    jumpLatest.hidden = true;
+    resetJumpLatest();
   }
 });
 
@@ -1626,6 +2119,57 @@ identityForm.addEventListener("submit", (event) => {
 for (const tabId of ["memory", "identity"] as const) {
   byId<HTMLButtonElement>(`${tabId}-tab`).addEventListener("click", () => activateContextTab(tabId));
 }
+
+byId<HTMLButtonElement>("memory-replace-cancel").addEventListener("click", () => {
+  exitReplaceMode(false);
+});
+byId<HTMLButtonElement>("identity-replace-cancel").addEventListener("click", () => {
+  exitReplaceMode(true);
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) {
+    unreadCount = 0;
+    document.title = BASE_TITLE;
+  }
+});
+
+type ThemeName = "light" | "dark";
+
+function applyTheme(theme: ThemeName): void {
+  document.documentElement.dataset.theme = theme;
+  const toDark = theme !== "dark";
+  themeToggle.textContent = toDark ? "☾" : "☀";
+  const label = toDark ? "切换到夜间模式" : "切换到日间模式";
+  themeToggle.setAttribute("aria-label", label);
+  themeToggle.title = label;
+}
+
+function initTheme(): void {
+  let stored: string | null = null;
+  try {
+    stored = localStorage.getItem(THEME_STORAGE_KEY);
+  } catch {
+    // localStorage may be unavailable; theme preference is best-effort
+  }
+  applyTheme(stored === "dark" ? "dark" : "light");
+}
+
+themeToggle.addEventListener("click", () => {
+  const next: ThemeName = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  applyTheme(next);
+  try {
+    localStorage.setItem(THEME_STORAGE_KEY, next);
+  } catch {
+    // localStorage may be unavailable; theme preference is best-effort
+  }
+});
+
+initTheme();
+restoreDraft();
+updateCharacterCount();
+autoresizeComposer();
+syncSendButton();
 
 window.addEventListener("online", () => {
   if (!eventSource) {
@@ -1647,6 +2191,9 @@ window.addEventListener("beforeunload", () => {
   }
   if (deltaFlushTimer !== null) {
     window.clearTimeout(deltaFlushTimer);
+  }
+  if (healthTimer !== null) {
+    window.clearInterval(healthTimer);
   }
 });
 
