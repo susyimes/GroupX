@@ -1,0 +1,36 @@
+{
+  "transport": "structured",
+  "server": {
+    "host": "127.0.0.1",
+    "port": 44310
+  },
+  "storage": {
+    "path": "../../.groupx/smoke-disabled.db"
+  },
+  "agents": {
+    "codex": {
+      "command": {
+        "executable": "node.exe",
+        "prefixArgs": ["disabled-agent-entry.mjs"]
+      },
+      "cwd": "../..",
+      "enabled": false
+    },
+    "grok": {
+      "command": {
+        "executable": "node.exe",
+        "prefixArgs": ["disabled-agent-entry.mjs"]
+      },
+      "cwd": "../..",
+      "enabled": false
+    },
+    "kimi": {
+      "command": {
+        "executable": "node.exe",
+        "prefixArgs": ["disabled-agent-entry.mjs"]
+      },
+      "cwd": "../..",
+      "enabled": false
+    }
+  }
+}

@@ -1,0 +1,353 @@
+import path from "node:path";
+
+import { AdapterRegistry } from "../adapters/registry.js";
+import { GroupXBroker } from "../broker/broker.js";
+import type { BrokerContextProvider, BrokerErrorContext } from "../broker/types.js";
+import { assertActiveTransport, type GroupXConfig } from "../config.js";
+import { DEFAULT_ROOM_ID } from "../core/envelope.js";
+import { GroupXError } from "../core/errors.js";
+import { ContextPacketBuilder } from "../memory/context-packet.js";
+import { McpBindingRegistry } from "../mcp/binding-registry.js";
+import {
+  createGroupXMcpHttpHandler,
+  type GroupXMcpHttpHandler
+} from "../mcp/server/index.js";
+import { SqliteGroupXStore } from "../storage/sqlite-store.js";
+import type { GroupXStore } from "../storage/types.js";
+import {
+  createGroupXHttpServer,
+  type GroupXHttpServer,
+  type GroupXHttpServerAddress
+} from "../web/server/index.js";
+import { SseRuntime } from "../web/sse/index.js";
+import { createAdapterRegistry } from "./adapter-factory.js";
+import { SequencedEventPublisher, SqliteSseEventReader } from "./event-stream.js";
+import { RuntimeReadiness } from "./readiness.js";
+import { RestartAgentCommandCoordinator } from "./restart-commands.js";
+import { AgentSessionManager, type SessionResumePlan } from "./session-manager.js";
+import { GroupXToolBrokerApi } from "./tool-broker-api.js";
+import { ActiveTurnCoordinator } from "./turn-lifecycle.js";
+import { GroupXWebBrokerApi } from "./web-broker-api.js";
+
+export interface GroupXRuntimeOptions {
+  store?: GroupXStore;
+  adapters?: AdapterRegistry;
+  /** Defaults to true only when the runtime created the store. */
+  closeStore?: boolean;
+  /** Zero is accepted for integration tests; persisted config remains 1..65535. */
+  port?: number;
+  staticRoot?: string;
+  roomId?: string;
+  onError?: (error: unknown, context: BrokerErrorContext) => void;
+}
+
+export interface GroupXRuntimeStartResult {
+  address: GroupXHttpServerAddress;
+  recovery: SessionResumePlan;
+}
+
+export const LOCAL_REST_WEB_INSTANCE_ID = "instance:web" as const;
+export const LOCAL_REST_WEB_BINDING_ID = "binding:web" as const;
+
+function contextProvider(
+  store: GroupXStore,
+  maxChars: number
+): BrokerContextProvider {
+  const builder = new ContextPacketBuilder(store);
+  return {
+    prepare({ turn, sourceEvent }) {
+      const packet = builder.buildContextPacket({
+        roomId: sourceEvent.roomId,
+        targetActorId: turn.targetActorId,
+        throughSeq: sourceEvent.seq,
+        maxChars,
+        currentEvent: sourceEvent
+      });
+      return {
+        contextPacket: packet.text,
+        contextThroughSeq: packet.throughSeq
+      };
+    }
+  };
+}
+
+/** Owns the complete in-process composition and its reverse-order shutdown. */
+export class GroupXRuntime {
+  readonly config: GroupXConfig;
+  readonly store: GroupXStore;
+  readonly adapters: AdapterRegistry;
+  readonly bindings = new McpBindingRegistry();
+  readonly readiness = new RuntimeReadiness();
+  readonly sse: SseRuntime;
+  readonly publisher: SequencedEventPublisher;
+  readonly sessions: AgentSessionManager;
+  readonly roomId: string;
+
+  readonly #closeStore: boolean;
+  readonly #port: number;
+  readonly #staticRoot: string | undefined;
+  readonly #onError: GroupXRuntimeOptions["onError"];
+
+  #broker: GroupXBroker | undefined;
+  #turns: ActiveTurnCoordinator | undefined;
+  #webApi: GroupXWebBrokerApi | undefined;
+  #toolApi: GroupXToolBrokerApi | undefined;
+  #mcpHandler: GroupXMcpHttpHandler | undefined;
+  #http: GroupXHttpServer | undefined;
+  #webBindingId: string | undefined;
+  #startPromise: Promise<GroupXRuntimeStartResult> | undefined;
+  #startResult: GroupXRuntimeStartResult | undefined;
+  #closePromise: Promise<void> | undefined;
+
+  constructor(config: GroupXConfig, options: GroupXRuntimeOptions = {}) {
+    // Fail before opening SQLite or constructing adapters. Direct is retained
+    // as historical code/data vocabulary, not as a runnable product entry.
+    assertActiveTransport(config.transport);
+    this.config = config;
+    this.store = options.store ?? new SqliteGroupXStore(config.storage.path);
+    this.adapters = options.adapters ?? createAdapterRegistry(config);
+    this.#closeStore = options.closeStore ?? options.store === undefined;
+    this.#port = options.port ?? config.server.port;
+    this.#staticRoot = options.staticRoot;
+    this.#onError = options.onError;
+    this.roomId = options.roomId ?? DEFAULT_ROOM_ID;
+
+    const reader = new SqliteSseEventReader(this.store);
+    this.sse = new SseRuntime(reader, {
+      maxBufferedEvents: config.limits.sseEvents,
+      maxBufferedBytes: config.limits.sseBytes
+    });
+    this.publisher = new SequencedEventPublisher(this.store, this.sse, {
+      closeTimeoutMs: config.timeouts.closeMs
+    });
+    this.publisher.initialize([this.roomId]);
+    this.sessions = new AgentSessionManager({
+      config,
+      store: this.store,
+      adapters: this.adapters,
+      mcpBindings: this.bindings,
+      closeTimeoutMs: config.timeouts.closeMs
+    });
+  }
+
+  get address(): GroupXHttpServerAddress | undefined {
+    return this.#startResult?.address;
+  }
+
+  get broker(): GroupXBroker {
+    if (!this.#broker) throw new GroupXError("SESSION_NOT_AVAILABLE", "Runtime has not started");
+    return this.#broker;
+  }
+
+  get webBindingId(): string | undefined {
+    return this.#webBindingId;
+  }
+
+  get mcpMounted(): boolean {
+    return this.#mcpHandler !== undefined;
+  }
+
+  start(): Promise<GroupXRuntimeStartResult> {
+    if (this.#startResult) return Promise.resolve(this.#startResult);
+    if (this.#startPromise) return this.#startPromise;
+    if (this.#closePromise) {
+      return Promise.reject(new GroupXError("SESSION_NOT_AVAILABLE", "Runtime is closing"));
+    }
+    const operation = this.#performStart();
+    this.#startPromise = operation;
+    return operation.finally(() => {
+      if (this.#startPromise === operation) this.#startPromise = undefined;
+    });
+  }
+
+  close(): Promise<void> {
+    if (this.#closePromise) return this.#closePromise;
+    this.readiness.markClosing();
+    const starting = this.#startPromise;
+    const operation = (async () => {
+      if (starting) await starting.catch(() => undefined);
+      await this.#performClose();
+    })();
+    this.#closePromise = operation;
+    return operation;
+  }
+
+  async #performStart(): Promise<GroupXRuntimeStartResult> {
+    try {
+      const recovery = this.sessions.prepareRecovery();
+      this.#createWebBinding();
+      const turns = new ActiveTurnCoordinator({
+        transport: this.config.transport,
+        bindings: this.bindings,
+        sessions: this.sessions
+      });
+      const broker = new GroupXBroker({
+        store: this.store,
+        adapters: this.adapters,
+        sessions: this.sessions,
+        publisher: this.publisher,
+        agentController: {
+          restart: async (actorId) => {
+            await this.sessions.restart(actorId);
+          }
+        },
+        contextProvider: contextProvider(this.store, this.config.limits.contextCharacters),
+        turnLifecycle: turns,
+        acceptMessageLimits: {
+          rootTurns: this.config.limits.rootTurns,
+          hopCount: this.config.limits.hopCount,
+          actorCallsPerRoot: this.config.limits.actorCallsPerRoot,
+          queuePerActor: this.config.limits.queuePerAgent
+        },
+        selectedTransport: this.config.transport,
+        defaultRoomId: this.roomId,
+        nativeCancelTimeoutMs: this.config.timeouts.cancelMs,
+        closeTimeoutMs: this.config.timeouts.closeMs,
+        ...(this.#onError === undefined ? {} : { onError: this.#onError })
+      });
+      const restartCommands = new RestartAgentCommandCoordinator({
+        store: this.store,
+        sessions: this.sessions,
+        onSessionReady: (actorId) => broker.notifySessionReady(actorId)
+      });
+      const webApi = new GroupXWebBrokerApi({
+        broker,
+        restartCommands,
+        readiness: this.readiness,
+        config: this.config,
+        roomId: this.roomId,
+        bindingId: this.#webBindingId!
+      });
+
+      let toolApi: GroupXToolBrokerApi | undefined;
+      let mcpHandler: GroupXMcpHttpHandler | undefined;
+      if (this.config.transport === "structured") {
+        toolApi = new GroupXToolBrokerApi({
+          broker,
+          turns,
+          roomId: this.roomId,
+          askTimeoutMs: this.config.timeouts.askMs
+        });
+        mcpHandler = createGroupXMcpHttpHandler({
+          broker: toolApi,
+          bindings: this.bindings,
+          knownTargets: this.adapters.list().map((adapter) => adapter.actorId)
+        });
+      }
+
+      const http = createGroupXHttpServer({
+        broker: webApi,
+        sse: this.sse,
+        host: this.config.server.host,
+        port: this.#port,
+        gracefulCloseTimeoutMs: this.config.timeouts.closeMs,
+        ...(this.#staticRoot === undefined
+          ? { staticRoot: path.resolve(process.cwd(), "dist", "web") }
+          : { staticRoot: this.#staticRoot }),
+        ...(mcpHandler === undefined ? {} : { mcpHandler })
+      });
+      this.#broker = broker;
+      this.#turns = turns;
+      this.#webApi = webApi;
+      this.#toolApi = toolApi;
+      this.#mcpHandler = mcpHandler;
+      this.#http = http;
+
+      // Structured sessions need the actual bound origin. HTTP therefore
+      // listens first, while readiness keeps all write commands closed.
+      const address = await http.start();
+      if (this.config.transport === "structured") {
+        this.sessions.setStructuredMcpUrl(`${address.origin}/mcp`);
+      }
+      await this.sessions.startAll({ nativeSessionIds: recovery.nativeSessionIds });
+      await broker.recoverAfterRestart();
+      this.readiness.markReady();
+      const result = { address, recovery };
+      this.#startResult = result;
+      return result;
+    } catch (error) {
+      this.readiness.markFailed(error);
+      // If close() is already waiting for startup, do not await it here: that
+      // would create a cycle. Otherwise register startup cleanup as the single
+      // close promise so later callers cannot close the store twice.
+      if (this.#closePromise === undefined) {
+        const cleanup = this.#performClose();
+        this.#closePromise = cleanup;
+        await cleanup.catch(() => undefined);
+      }
+      throw error;
+    }
+  }
+
+  #createWebBinding(): void {
+    const existingInstance = this.store.getAgentInstance(LOCAL_REST_WEB_INSTANCE_ID);
+    const existingBinding = this.store.getSessionBinding(LOCAL_REST_WEB_BINDING_ID);
+    if (existingInstance === undefined && existingBinding === undefined) {
+      this.store.createAgentInstance({
+        instanceId: LOCAL_REST_WEB_INSTANCE_ID,
+        actorId: "user:web",
+        adapterId: "web",
+        status: "ready"
+      });
+      this.store.createSessionBinding({
+        bindingId: LOCAL_REST_WEB_BINDING_ID,
+        instanceId: LOCAL_REST_WEB_INSTANCE_ID,
+        actorId: "user:web",
+        protocol: "local-rest",
+        status: "ready",
+        capabilities: {
+          transport: "loopback-http",
+          access: "unrestricted"
+        }
+      });
+    } else if (
+      existingInstance?.actorId !== "user:web" ||
+      existingInstance.adapterId !== "web" ||
+      existingInstance.processEndedAt !== undefined ||
+      existingBinding?.instanceId !== LOCAL_REST_WEB_INSTANCE_ID ||
+      existingBinding.actorId !== "user:web" ||
+      existingBinding.protocol !== "local-rest" ||
+      existingBinding.status !== "ready" ||
+      existingBinding.closedAt !== undefined
+    ) {
+      throw new GroupXError(
+        "STORE_CONFLICT",
+        "Stable local-rest Web binding is missing or incompatible"
+      );
+    }
+    this.#webBindingId = LOCAL_REST_WEB_BINDING_ID;
+  }
+
+  async #performClose(): Promise<void> {
+    const failures: unknown[] = [];
+    const settle = async (operation: () => void | Promise<void>): Promise<void> => {
+      try {
+        await operation();
+      } catch (error) {
+        failures.push(error);
+      }
+    };
+
+    await settle(async () => await this.#http?.close());
+    await settle(async () => await this.#mcpHandler?.close());
+    await settle(async () => await this.#broker?.close());
+    await settle(async () => await this.sessions.close());
+    await settle(async () => await this.publisher.close());
+    await settle(() => this.sse.close());
+    if (this.#closeStore) await settle(() => this.store.close());
+
+    if (failures.length > 0) {
+      throw new AggregateError(failures, "GroupX runtime did not close cleanly");
+    }
+  }
+
+}
+
+export async function startGroupXRuntime(
+  config: GroupXConfig,
+  options: GroupXRuntimeOptions = {}
+): Promise<GroupXRuntime> {
+  const runtime = new GroupXRuntime(config, options);
+  await runtime.start();
+  return runtime;
+}

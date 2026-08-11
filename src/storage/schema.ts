@@ -1,0 +1,316 @@
+export const CURRENT_SCHEMA_VERSION = 4;
+
+export interface Migration {
+  version: number;
+  name: string;
+  sql: string;
+}
+
+export const MIGRATIONS: readonly Migration[] = [
+  {
+    version: 1,
+    name: "initial_groupx_store",
+    sql: `
+      CREATE TABLE schema_migrations (
+        version INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        applied_at TEXT NOT NULL
+      );
+
+      CREATE TABLE actors (
+        actor_id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL CHECK (kind IN ('user', 'agent', 'system')),
+        display_name TEXT NOT NULL,
+        enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE agent_instances (
+        instance_id TEXT PRIMARY KEY,
+        actor_id TEXT NOT NULL REFERENCES actors(actor_id),
+        adapter_id TEXT NOT NULL,
+        process_started_at TEXT NOT NULL,
+        process_ended_at TEXT,
+        status TEXT NOT NULL
+      );
+
+      CREATE TABLE session_bindings (
+        binding_id TEXT PRIMARY KEY,
+        instance_id TEXT NOT NULL REFERENCES agent_instances(instance_id),
+        actor_id TEXT NOT NULL REFERENCES actors(actor_id),
+        native_session_id TEXT,
+        protocol TEXT NOT NULL,
+        protocol_version TEXT,
+        status TEXT NOT NULL,
+        capabilities_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        last_ready_at TEXT,
+        closed_at TEXT
+      );
+
+      CREATE INDEX session_bindings_actor_status_idx
+        ON session_bindings(actor_id, status);
+
+      CREATE TABLE client_commands (
+        command_id TEXT PRIMARY KEY,
+        source_binding_id TEXT NOT NULL REFERENCES session_bindings(binding_id),
+        client_command_id TEXT NOT NULL,
+        command_type TEXT NOT NULL,
+        canonical_hash TEXT NOT NULL,
+        result_json TEXT,
+        accepted_at TEXT NOT NULL,
+        UNIQUE(source_binding_id, client_command_id)
+      );
+
+      CREATE TABLE events (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_id TEXT NOT NULL UNIQUE,
+        schema_version TEXT NOT NULL,
+        room_id TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        actor_id TEXT NOT NULL REFERENCES actors(actor_id),
+        actor_kind TEXT NOT NULL CHECK (actor_kind IN ('user', 'agent', 'system')),
+        actor_display_name TEXT NOT NULL,
+        instance_id TEXT REFERENCES agent_instances(instance_id),
+        targets_json TEXT NOT NULL,
+        reply_to_event_id TEXT REFERENCES events(event_id),
+        causation_id TEXT,
+        correlation_id TEXT NOT NULL,
+        idempotency_key TEXT,
+        occurred_at TEXT NOT NULL,
+        body_json TEXT NOT NULL,
+        provenance_json TEXT,
+        UNIQUE(room_id, event_type, idempotency_key)
+      );
+
+      CREATE INDEX events_room_seq_idx ON events(room_id, seq);
+      CREATE INDEX events_correlation_seq_idx ON events(correlation_id, seq);
+
+      CREATE TABLE turns (
+        turn_id TEXT PRIMARY KEY,
+        source_event_id TEXT NOT NULL REFERENCES events(event_id),
+        target_actor_id TEXT NOT NULL REFERENCES actors(actor_id),
+        adapter_id TEXT NOT NULL,
+        binding_id TEXT REFERENCES session_bindings(binding_id),
+        native_turn_id TEXT,
+        parent_turn_id TEXT REFERENCES turns(turn_id),
+        root_correlation_id TEXT NOT NULL,
+        hop_count INTEGER NOT NULL CHECK (hop_count >= 0),
+        queued_event_id TEXT NOT NULL UNIQUE REFERENCES events(event_id),
+        enqueue_seq INTEGER NOT NULL,
+        status TEXT NOT NULL CHECK (status IN (
+          'queued', 'dispatching', 'running', 'cancelling', 'completed',
+          'failed', 'cancelled', 'interrupted'
+        )),
+        partial_text TEXT,
+        response_event_id TEXT REFERENCES events(event_id),
+        terminal_event_id TEXT REFERENCES events(event_id),
+        error_code TEXT,
+        queued_at TEXT NOT NULL,
+        started_at TEXT,
+        terminal_at TEXT,
+        UNIQUE(source_event_id, target_actor_id)
+      );
+
+      CREATE INDEX turns_target_status_enqueue_idx
+        ON turns(target_actor_id, status, enqueue_seq);
+      CREATE INDEX turns_correlation_idx ON turns(root_correlation_id);
+
+      CREATE TABLE turn_attempts (
+        attempt_id TEXT PRIMARY KEY,
+        turn_id TEXT NOT NULL REFERENCES turns(turn_id),
+        binding_id TEXT NOT NULL REFERENCES session_bindings(binding_id),
+        instance_id TEXT NOT NULL REFERENCES agent_instances(instance_id),
+        context_through_seq INTEGER NOT NULL CHECK (context_through_seq >= 0),
+        native_turn_id TEXT,
+        claimed_at TEXT NOT NULL,
+        started_at TEXT,
+        terminal_at TEXT,
+        delivery_certainty TEXT NOT NULL CHECK (delivery_certainty IN (
+          'not_delivered', 'delivered', 'unknown', 'terminal'
+        ))
+      );
+
+      CREATE INDEX turn_attempts_turn_claimed_idx
+        ON turn_attempts(turn_id, claimed_at);
+
+      CREATE TABLE delivery_cursors (
+        actor_id TEXT NOT NULL REFERENCES actors(actor_id),
+        room_id TEXT NOT NULL,
+        last_delivered_seq INTEGER NOT NULL CHECK (last_delivered_seq >= 0),
+        last_summary_seq INTEGER,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(actor_id, room_id)
+      );
+
+      CREATE TABLE memory_records (
+        memory_id TEXT PRIMARY KEY,
+        scope_type TEXT NOT NULL CHECK (scope_type IN ('room', 'agent', 'correlation')),
+        scope_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN (
+          'fact', 'decision', 'preference', 'instruction', 'constraint',
+          'summary', 'note'
+        )),
+        author_actor_id TEXT NOT NULL REFERENCES actors(actor_id),
+        subject_actor_id TEXT REFERENCES actors(actor_id),
+        content TEXT NOT NULL,
+        source_event_id TEXT REFERENCES events(event_id),
+        source_kind TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('active', 'superseded', 'retracted')),
+        supersedes_memory_id TEXT REFERENCES memory_records(memory_id),
+        created_at TEXT NOT NULL,
+        retracted_at TEXT
+      );
+
+      CREATE INDEX memory_scope_status_created_idx
+        ON memory_records(scope_type, scope_id, status, created_at DESC);
+      CREATE INDEX memory_author_subject_idx
+        ON memory_records(author_actor_id, subject_actor_id);
+
+      CREATE VIRTUAL TABLE memory_records_fts USING fts5(
+        memory_id UNINDEXED,
+        content,
+        content='memory_records',
+        content_rowid='rowid'
+      );
+
+      CREATE TRIGGER memory_records_ai AFTER INSERT ON memory_records BEGIN
+        INSERT INTO memory_records_fts(rowid, memory_id, content)
+        VALUES (new.rowid, new.memory_id, new.content);
+      END;
+      CREATE TRIGGER memory_records_ad AFTER DELETE ON memory_records BEGIN
+        INSERT INTO memory_records_fts(memory_records_fts, rowid, memory_id, content)
+        VALUES ('delete', old.rowid, old.memory_id, old.content);
+      END;
+      CREATE TRIGGER memory_records_au AFTER UPDATE OF content ON memory_records BEGIN
+        INSERT INTO memory_records_fts(memory_records_fts, rowid, memory_id, content)
+        VALUES ('delete', old.rowid, old.memory_id, old.content);
+        INSERT INTO memory_records_fts(rowid, memory_id, content)
+        VALUES (new.rowid, new.memory_id, new.content);
+      END;
+
+      CREATE TABLE identity_records (
+        identity_id TEXT PRIMARY KEY,
+        subject_actor_id TEXT NOT NULL REFERENCES actors(actor_id),
+        author_actor_id TEXT NOT NULL REFERENCES actors(actor_id),
+        kind TEXT NOT NULL,
+        content TEXT NOT NULL,
+        source_event_id TEXT REFERENCES events(event_id),
+        source_kind TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('active', 'superseded', 'retracted')),
+        supersedes_identity_id TEXT REFERENCES identity_records(identity_id),
+        created_at TEXT NOT NULL,
+        retracted_at TEXT
+      );
+
+      CREATE INDEX identity_subject_status_created_idx
+        ON identity_records(subject_actor_id, status, created_at DESC);
+      CREATE INDEX identity_author_idx ON identity_records(author_actor_id);
+
+      CREATE VIRTUAL TABLE identity_records_fts USING fts5(
+        identity_id UNINDEXED,
+        content,
+        content='identity_records',
+        content_rowid='rowid'
+      );
+
+      CREATE TRIGGER identity_records_ai AFTER INSERT ON identity_records BEGIN
+        INSERT INTO identity_records_fts(rowid, identity_id, content)
+        VALUES (new.rowid, new.identity_id, new.content);
+      END;
+      CREATE TRIGGER identity_records_ad AFTER DELETE ON identity_records BEGIN
+        INSERT INTO identity_records_fts(identity_records_fts, rowid, identity_id, content)
+        VALUES ('delete', old.rowid, old.identity_id, old.content);
+      END;
+      CREATE TRIGGER identity_records_au AFTER UPDATE OF content ON identity_records BEGIN
+        INSERT INTO identity_records_fts(identity_records_fts, rowid, identity_id, content)
+        VALUES ('delete', old.rowid, old.identity_id, old.content);
+        INSERT INTO identity_records_fts(rowid, identity_id, content)
+        VALUES (new.rowid, new.identity_id, new.content);
+      END;
+
+      CREATE TABLE summaries (
+        summary_id TEXT PRIMARY KEY,
+        room_id TEXT NOT NULL,
+        from_seq INTEGER NOT NULL,
+        through_seq INTEGER NOT NULL,
+        content TEXT NOT NULL,
+        generator_actor_id TEXT NOT NULL REFERENCES actors(actor_id),
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        CHECK (from_seq <= through_seq)
+      );
+
+    `
+  },
+  {
+    version: 2,
+    name: "turn_attempt_dispatch_reliability",
+    sql: `
+      ALTER TABLE turn_attempts
+        ADD COLUMN dispatch_phase TEXT NOT NULL DEFAULT 'prepared'
+        CHECK (dispatch_phase IN ('prepared', 'prompt_invoked', 'native_started', 'terminal'));
+
+      ALTER TABLE turn_attempts
+        ADD COLUMN prompt_invoked_at TEXT;
+
+      UPDATE turn_attempts
+      SET dispatch_phase = CASE
+        WHEN terminal_at IS NOT NULL THEN 'terminal'
+        WHEN delivery_certainty = 'delivered' OR started_at IS NOT NULL THEN 'native_started'
+        ELSE 'prompt_invoked'
+      END,
+      prompt_invoked_at = CASE
+        WHEN terminal_at IS NULL
+          AND delivery_certainty <> 'delivered'
+          AND started_at IS NULL
+        THEN claimed_at
+        ELSE prompt_invoked_at
+      END,
+      delivery_certainty = CASE
+        WHEN terminal_at IS NULL
+          AND delivery_certainty <> 'delivered'
+          AND started_at IS NULL
+        THEN 'unknown'
+        ELSE delivery_certainty
+      END;
+
+      CREATE UNIQUE INDEX turn_attempts_one_current_idx
+        ON turn_attempts(turn_id)
+        WHERE terminal_at IS NULL;
+    `
+  },
+  {
+    version: 3,
+    name: "remove_groupx_approval_store",
+    sql: `
+      DROP TABLE IF EXISTS approval_requests;
+    `
+  },
+  {
+    version: 4,
+    name: "snapshot_runtime_transport",
+    sql: `
+      ALTER TABLE agent_instances
+        ADD COLUMN transport TEXT
+        CHECK (transport IN ('direct', 'structured'));
+
+      ALTER TABLE session_bindings
+        ADD COLUMN transport TEXT
+        CHECK (transport IN ('direct', 'structured'));
+
+      ALTER TABLE turns
+        ADD COLUMN transport TEXT NOT NULL DEFAULT 'structured'
+        CHECK (transport IN ('direct', 'structured'));
+
+      UPDATE agent_instances
+      SET transport = 'structured'
+      WHERE actor_id IN (SELECT actor_id FROM actors WHERE kind = 'agent');
+
+      UPDATE session_bindings
+      SET transport = 'structured'
+      WHERE actor_id IN (SELECT actor_id FROM actors WHERE kind = 'agent');
+    `
+  }
+];

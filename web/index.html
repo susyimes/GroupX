@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+    >
+    <meta name="color-scheme" content="dark">
+    <title>GroupX</title>
+    <link rel="stylesheet" href="/styles.css">
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <div id="app" class="app-shell">
+      <header class="app-header">
+        <div class="brand-lockup">
+          <span class="brand-mark" aria-hidden="true">GX</span>
+          <div>
+            <h1>GroupX</h1>
+            <p>Local agent room</p>
+          </div>
+        </div>
+        <div class="header-status">
+          <output id="connection-status" class="connection-status" aria-live="polite">
+            <span class="status-dot" aria-hidden="true"></span>
+            <span id="connection-label">正在启动</span>
+          </output>
+          <span id="room-label" class="room-label">本地房间</span>
+        </div>
+        <div id="global-error" class="global-error" role="alert" hidden></div>
+      </header>
+
+      <aside id="agents-panel" class="side-panel agents-panel" aria-labelledby="agents-heading">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Participants</p>
+            <h2 id="agents-heading">Agent 状态</h2>
+          </div>
+          <span id="agent-count" class="count-pill">0 / 3</span>
+        </div>
+        <ul id="agent-list" class="agent-list"></ul>
+        <div class="local-note">
+          <span class="local-note-icon" aria-hidden="true">⌂</span>
+          <p>仅连接本机 GroupX Broker。各 CLI 的权限仍由其原生配置决定。</p>
+        </div>
+      </aside>
+
+      <main class="conversation-panel" aria-labelledby="timeline-heading">
+        <div class="conversation-heading">
+          <div>
+            <p class="eyebrow">Shared transcript</p>
+            <h2 id="timeline-heading">群组对话</h2>
+          </div>
+          <button id="jump-latest" class="quiet-button" type="button" hidden>回到最新</button>
+        </div>
+
+        <ol
+          id="timeline"
+          class="timeline"
+          role="log"
+          aria-live="polite"
+          aria-relevant="additions text"
+          aria-label="群组消息与运行事件"
+        >
+          <li id="timeline-empty" class="empty-state">
+            <span class="empty-orbit" aria-hidden="true">◎</span>
+            <h3>房间准备中</h3>
+            <p>连接完成后，可以选择一个 Agent 或使用 @all 并行发起对话。</p>
+          </li>
+        </ol>
+
+        <form id="composer" class="composer">
+          <fieldset id="target-picker" class="target-picker">
+            <legend>发送给</legend>
+            <label class="target-chip target-all-chip">
+              <input id="target-all" type="checkbox" checked>
+              <span>@all</span>
+            </label>
+            <label class="target-chip agent-codex-chip">
+              <input id="target-codex" name="target" type="checkbox" value="agent:codex" checked>
+              <span>@codex</span>
+            </label>
+            <label class="target-chip agent-grok-chip">
+              <input id="target-grok" name="target" type="checkbox" value="agent:grok" checked>
+              <span>@grok</span>
+            </label>
+            <label class="target-chip agent-kimi-chip">
+              <input id="target-kimi" name="target" type="checkbox" value="agent:kimi" checked>
+              <span>@kimi</span>
+            </label>
+          </fieldset>
+
+          <div id="reply-context" class="reply-context" hidden>
+            <div>
+              <span class="reply-kicker">正在回复</span>
+              <span id="reply-description"></span>
+            </div>
+            <button id="clear-reply" class="icon-button" type="button" aria-label="取消回复">×</button>
+          </div>
+
+          <div class="composer-input-row">
+            <label class="sr-only" for="message-input">消息内容</label>
+            <textarea
+              id="message-input"
+              maxlength="32768"
+              rows="3"
+              required
+              placeholder="给 Agent 们发一条消息…"
+            ></textarea>
+            <button id="send-button" class="send-button" type="submit">
+              <span>发送</span>
+              <span aria-hidden="true">↗</span>
+            </button>
+          </div>
+          <div class="composer-footer">
+            <span id="composer-status" aria-live="polite">Ctrl / ⌘ + Enter 发送</span>
+            <span id="character-count">0 / 32768</span>
+          </div>
+        </form>
+      </main>
+
+      <aside id="context-panel" class="side-panel context-panel" aria-label="房间上下文">
+        <div class="context-tabs" role="tablist" aria-label="上下文面板">
+          <button id="memory-tab" class="context-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="memory-panel">记忆</button>
+          <button id="identity-tab" class="context-tab" type="button" role="tab" aria-selected="false" aria-controls="identity-panel">身份</button>
+        </div>
+
+        <section id="memory-panel" class="context-section" role="tabpanel" aria-labelledby="memory-tab">
+          <div class="panel-heading compact">
+            <div>
+              <p class="eyebrow">Public memory</p>
+              <h2>公共记忆</h2>
+            </div>
+          </div>
+          <p class="section-description">只有显式固定的内容会进入公共记忆，普通聊天不会自动提升为事实。</p>
+          <ul id="memory-list" class="record-list"></ul>
+          <form id="memory-form" class="record-form">
+            <label for="memory-kind">类型</label>
+            <select id="memory-kind">
+              <option value="fact">事实</option>
+              <option value="decision">决定</option>
+              <option value="preference">偏好</option>
+              <option value="instruction">指令</option>
+              <option value="constraint">约束</option>
+              <option value="note">备注</option>
+            </select>
+            <label for="memory-input">固定一条公共记忆</label>
+            <textarea id="memory-input" maxlength="32768" rows="3" placeholder="写下需要长期保留的群组信息"></textarea>
+            <button class="secondary-button" type="submit">固定到房间</button>
+          </form>
+        </section>
+
+        <section id="identity-panel" class="context-section" role="tabpanel" aria-labelledby="identity-tab" hidden>
+          <div class="panel-heading compact">
+            <div>
+              <p class="eyebrow">Identity memory</p>
+              <h2>身份记忆</h2>
+            </div>
+          </div>
+          <p class="section-description">这是 GroupX 内的身份叠加，不会改写 CLI 的全局 persona 或配置。</p>
+          <ul id="identity-list" class="record-list"></ul>
+          <form id="identity-form" class="record-form">
+            <label for="identity-actor">对象</label>
+            <select id="identity-actor">
+              <option value="agent:codex">Codex</option>
+              <option value="agent:grok">Grok</option>
+              <option value="agent:kimi">Kimi</option>
+            </select>
+            <label for="identity-kind">类型</label>
+            <select id="identity-kind">
+              <option value="preference">偏好</option>
+              <option value="instruction">指令</option>
+              <option value="constraint">约束</option>
+              <option value="note">备注</option>
+            </select>
+            <label for="identity-input">添加群内身份说明</label>
+            <textarea id="identity-input" maxlength="32768" rows="3" placeholder="例如：在评审中优先关注协议风险"></textarea>
+            <button class="secondary-button" type="submit">保存身份说明</button>
+          </form>
+        </section>
+
+      </aside>
+    </div>
+
+    <template id="agent-template">
+      <li class="agent-card"></li>
+    </template>
+    <template id="message-template">
+      <li class="timeline-item"><article class="event-card"></article></li>
+    </template>
+    <template id="turn-template">
+      <li class="timeline-item"><article class="turn-card"></article></li>
+    </template>
+  </body>
+</html>

@@ -1,0 +1,408 @@
+import readline from "node:readline";
+
+const FIXED_NATIVE_ARGV = [
+  "--dangerously-bypass-hook-trust",
+  "app-server",
+  "--listen",
+  "stdio://"
+];
+const rawArgs = process.argv.slice(2);
+const nativeArgs = rawArgs.slice(-FIXED_NATIVE_ARGV.length);
+if (JSON.stringify(nativeArgs) !== JSON.stringify(FIXED_NATIVE_ARGV)) {
+  process.stderr.write(`invalid Codex fixture argv: ${JSON.stringify(rawArgs)}\n`);
+  process.exit(64);
+}
+const fixtureArgs = rawArgs.slice(0, -FIXED_NATIVE_ARGV.length);
+const managedPolicyBlocked = fixtureArgs.includes("--fixture-policy-blocked");
+const granularPolicyWithNever = fixtureArgs.includes("--fixture-granular-never");
+const mismatchedThreadCwd = fixtureArgs.includes("--fixture-cwd-mismatch");
+
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+let connectionState = "new";
+let threadCounter = 0;
+let turnCounter = 0;
+let lastTerminalTurnId;
+const turns = new Map();
+const interactions = new Map();
+
+function send(value) {
+  process.stdout.write(`${JSON.stringify(value)}\n`);
+}
+
+function response(id, result) {
+  send({ id, result });
+}
+
+function error(id, code, message) {
+  send({ id, error: { code, message } });
+}
+
+function notify(method, params = {}) {
+  send({ method, params });
+}
+
+function reportedThreadCwd() {
+  return mismatchedThreadCwd ? `${process.cwd()}-mismatch` : process.cwd();
+}
+
+function textFromInput(params) {
+  return (params?.input ?? [])
+    .filter((item) => item?.type === "text" && typeof item.text === "string")
+    .map((item) => item.text)
+    .join("\n");
+}
+
+function emitStarted(threadId, turnId) {
+  notify("turn/started", {
+    threadId,
+    turn: { id: turnId, status: "inProgress", items: [], error: null }
+  });
+}
+
+function emitCompleted(threadId, turnId, status = "completed", errorValue = null) {
+  lastTerminalTurnId = turnId;
+  notify("turn/completed", {
+    threadId,
+    turn: { id: turnId, status, items: [], error: errorValue }
+  });
+}
+
+function emitNormal(threadId, turnId, text = "fixture-ok") {
+  const itemId = `item-${turnId}`;
+  notify("item/started", {
+    threadId,
+    turnId,
+    startedAtMs: Date.now(),
+    item: { id: itemId, type: "agentMessage", text: "" }
+  });
+  notify("item/agentMessage/delta", { threadId, turnId, itemId, delta: text });
+  notify("item/completed", {
+    threadId,
+    turnId,
+    completedAtMs: Date.now(),
+    item: { id: itemId, type: "agentMessage", text }
+  });
+  emitCompleted(threadId, turnId);
+}
+
+function interactionForText(text) {
+  if (text.includes("MODE_COMMAND_INTERACTION")) {
+    return {
+      kind: "command",
+      method: "item/commandExecution/requestApproval",
+      extra: { reason: "fixture command interaction" }
+    };
+  }
+  if (text.includes("MODE_NETWORK_CONTEXT_INTERACTION")) {
+    return {
+      kind: "command",
+      method: "item/commandExecution/requestApproval",
+      extra: {
+        reason: "fixture network interaction context",
+        networkApprovalContext: { host: "example.test", protocol: "https", port: 443 }
+      }
+    };
+  }
+  if (text.includes("MODE_FILE_INTERACTION")) {
+    return { kind: "file", method: "item/fileChange/requestApproval", extra: {} };
+  }
+  if (text.includes("MODE_PERMISSIONS_INTERACTION")) {
+    return {
+      kind: "permissions",
+      method: "item/permissions/requestApproval",
+      extra: { permissions: { network: [{ host: "example.test" }] } }
+    };
+  }
+  if (text.includes("MODE_USER_INPUT_INTERACTION")) {
+    return {
+      kind: "user_input",
+      method: "item/tool/requestUserInput",
+      extra: { questions: [{ id: "choice", question: "Continue?", options: ["yes", "no"] }] }
+    };
+  }
+  if (text.includes("MODE_MCP_ELICITATION")) {
+    return {
+      kind: "mcp",
+      method: "mcpServer/elicitation/request",
+      extra: { serverName: "groupx", mode: "form", message: "fixture", requestedSchema: {} }
+    };
+  }
+  if (text.includes("MODE_UNKNOWN_SERVER_REQUEST")) {
+    return { kind: "unknown", method: "fixture/unknown/request", extra: {} };
+  }
+  return undefined;
+}
+
+function sendInteraction(threadId, turnId, interaction) {
+  const requestId = `interaction-${turnId}`;
+  interactions.set(requestId, { threadId, turnId, kind: interaction.kind });
+  send({
+    id: requestId,
+    method: interaction.method,
+    params: {
+      threadId,
+      turnId,
+      itemId: `native-item-${turnId}`,
+      ...interaction.extra
+    }
+  });
+}
+
+function startTurn(id, params) {
+  const threadId = params?.threadId;
+  if (typeof threadId !== "string") {
+    error(id, -32602, "threadId is required");
+    return;
+  }
+  const previousTerminalTurnId = lastTerminalTurnId;
+  const turnId = `turn-${++turnCounter}`;
+  const text = textFromInput(params);
+  turns.set(turnId, { threadId, text });
+  response(id, { turn: { id: turnId, status: "inProgress", items: [], error: null } });
+
+  if (text.includes("MODE_FIRST_TIMEOUT")) {
+    return;
+  }
+  if (text.includes("MODE_MALFORMED")) {
+    process.stdout.write("{fixture-malformed-json\n");
+    return;
+  }
+  if (text.includes("MODE_LATE_OLD_EVENT") && previousTerminalTurnId !== undefined) {
+    notify("turn/completed", {
+      threadId,
+      turn: { id: previousTerminalTurnId, status: "failed", items: [], error: { message: "late old event" } }
+    });
+  }
+
+  emitStarted(threadId, turnId);
+  if (text.includes("MODE_EXIT")) {
+    setImmediate(() => process.exit(17));
+    return;
+  }
+  if (
+    text.includes("MODE_IDLE_TIMEOUT") ||
+    text.includes("MODE_INTERRUPT") ||
+    text.includes("MODE_CANCEL_TIMEOUT")
+  ) {
+    return;
+  }
+
+  const interaction = interactionForText(text);
+  if (interaction !== undefined) {
+    sendInteraction(threadId, turnId, interaction);
+    return;
+  }
+  if (text.includes("MODE_DUPLICATE_TERMINAL")) {
+    emitNormal(threadId, turnId, "one-terminal");
+    emitCompleted(threadId, turnId);
+    return;
+  }
+  if (text.includes("MODE_ITEM_FALLBACK")) {
+    const itemId = `item-${turnId}`;
+    notify("item/completed", {
+      threadId,
+      turnId,
+      completedAtMs: Date.now(),
+      item: { id: itemId, type: "agentMessage", text: "fallback-text" }
+    });
+    emitCompleted(threadId, turnId);
+    return;
+  }
+  if (text.includes("MODE_ERROR_NOTIFICATION")) {
+    notify("error", { threadId, turnId, message: "fixture native error" });
+    emitCompleted(threadId, turnId, "failed", { message: "fixture failure after error notification" });
+    return;
+  }
+  if (text.includes("MODE_FAILED")) {
+    emitCompleted(threadId, turnId, "failed", { message: "fixture failure" });
+    return;
+  }
+  emitNormal(threadId, turnId);
+}
+
+function validateThreadParams(id, params, requireThreadId) {
+  const allowed = new Set(["approvalPolicy", "sandbox", "config", ...(requireThreadId ? ["threadId"] : [])]);
+  for (const key of Object.keys(params ?? {})) {
+    if (!allowed.has(key)) {
+      error(id, -32602, `forbidden GroupX override: ${key}`);
+      return false;
+    }
+  }
+  if (params?.approvalPolicy !== "never") {
+    error(id, -32602, "approvalPolicy must be never");
+    return false;
+  }
+  if (params?.sandbox !== "danger-full-access") {
+    error(id, -32602, "sandbox must be danger-full-access");
+    return false;
+  }
+  if (requireThreadId && typeof params?.threadId !== "string") {
+    error(id, -32602, "threadId is required");
+    return false;
+  }
+  if (params?.config !== undefined) {
+    const keys = Object.keys(params.config);
+    if (keys.length !== 1 || keys[0] !== "mcp_servers.groupx") {
+      error(id, -32602, "MCP override must use dotted mcp_servers.groupx");
+      return false;
+    }
+    const server = params.config["mcp_servers.groupx"];
+    if (server?.url !== undefined && server?.http_headers?.["X-GroupX-Binding"] === undefined) {
+      error(id, -32602, "HTTP GroupX binding header is missing");
+      return false;
+    }
+  }
+  return true;
+}
+
+function validInteractionResponse(kind, message) {
+  if (kind === "command" || kind === "file") {
+    return message?.result?.decision === "cancel";
+  }
+  if (kind === "permissions") {
+    return message?.result?.permissions !== null && typeof message?.result?.permissions === "object";
+  }
+  if (kind === "user_input") {
+    return message?.result?.answers !== null && typeof message?.result?.answers === "object";
+  }
+  if (kind === "mcp") {
+    return message?.result?.action === "cancel" && message?.result?.content === null;
+  }
+  return message?.error?.code === -32601;
+}
+
+function handleInteractionResponse(message) {
+  const pending = interactions.get(message.id);
+  if (pending === undefined) {
+    return false;
+  }
+  interactions.delete(message.id);
+  if (!validInteractionResponse(pending.kind, message)) {
+    process.stderr.write(`invalid native interaction response: ${JSON.stringify(message)}\n`);
+    process.exitCode = 72;
+    return true;
+  }
+  notify("serverRequest/resolved", { threadId: pending.threadId, requestId: message.id });
+  return true;
+}
+
+function requireReady(id) {
+  if (connectionState === "ready") {
+    return true;
+  }
+  error(id, -32002, "Not initialized");
+  return false;
+}
+
+rl.on("line", (line) => {
+  if (line.trim().length === 0) {
+    return;
+  }
+  let message;
+  try {
+    message = JSON.parse(line);
+  } catch {
+    process.stderr.write("fixture received malformed json\n");
+    return;
+  }
+
+  if (typeof message?.method !== "string") {
+    handleInteractionResponse(message);
+    return;
+  }
+
+  if (message.method === "initialize") {
+    if (connectionState !== "new") {
+      error(message.id, -32600, "Already initialized");
+      return;
+    }
+    connectionState = "initialize-replied";
+    response(message.id, {
+      codexHome: process.cwd(),
+      platformFamily: process.platform === "win32" ? "windows" : "unix",
+      platformOs: process.platform,
+      userAgent: "groupx-codex-fixture/0.147.0"
+    });
+    return;
+  }
+  if (message.method === "initialized") {
+    if (connectionState !== "initialize-replied") {
+      process.stderr.write("initialized notification arrived out of order\n");
+      process.exitCode = 65;
+      return;
+    }
+    connectionState = "ready";
+    return;
+  }
+  if (!requireReady(message.id)) {
+    return;
+  }
+
+  switch (message.method) {
+    case "configRequirements/read":
+      response(
+        message.id,
+        managedPolicyBlocked
+          ? {
+              requirements: {
+                allowedApprovalPolicies: ["on-request"],
+                allowedSandboxModes: ["workspace-write"]
+              }
+            }
+          : granularPolicyWithNever
+            ? {
+                requirements: {
+                  allowedApprovalPolicies: [
+                    { granular: { mcp_elicitations: false, rules: false, sandbox_approval: false } },
+                    "never"
+                  ],
+                  allowedSandboxModes: ["danger-full-access"]
+                }
+              }
+          : { requirements: null }
+      );
+      return;
+    case "thread/start": {
+      if (!validateThreadParams(message.id, message.params, false)) {
+        return;
+      }
+      const threadId = `thread-${++threadCounter}`;
+      response(message.id, { thread: { id: threadId, cwd: reportedThreadCwd(), ephemeral: false } });
+      notify("thread/started", { thread: { id: threadId, cwd: reportedThreadCwd(), ephemeral: false } });
+      return;
+    }
+    case "thread/resume": {
+      if (!validateThreadParams(message.id, message.params, true)) {
+        return;
+      }
+      response(message.id, {
+        thread: { id: message.params.threadId, cwd: reportedThreadCwd(), ephemeral: false }
+      });
+      return;
+    }
+    case "turn/start":
+      startTurn(message.id, message.params);
+      return;
+    case "turn/interrupt": {
+      const turn = turns.get(message.params?.turnId);
+      response(message.id, {});
+      if (turn !== undefined) {
+        if (turn.text.includes("MODE_CANCEL_TIMEOUT")) {
+          const timer = setTimeout(() => {
+            emitCompleted(turn.threadId, message.params.turnId, "interrupted");
+          }, 250);
+          timer.unref();
+        } else {
+          emitCompleted(turn.threadId, message.params.turnId, "interrupted");
+        }
+      }
+      return;
+    }
+    default:
+      error(message.id, -32601, `fixture method not found: ${message.method}`);
+  }
+});
+
+rl.on("close", () => {
+  process.exitCode ??= 0;
+});

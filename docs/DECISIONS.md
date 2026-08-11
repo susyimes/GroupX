@@ -12,18 +12,20 @@
 | --- | --- | --- |
 | D-001 | 单机透明 Broker，而不是三个 CLI 物理 P2P | Accepted |
 | D-002 | Web 使用 REST command + SSE event | Accepted |
-| D-003 | Codex App Server stdio；Grok/Kimi ACP stdio | Provisional |
+| D-003 | Structured 是唯一 active/release transport；Direct deprecated，禁止自动 fallback | Accepted |
 | D-004 | 内部 GroupX Envelope；A2A 作为以后边缘适配 | Accepted |
 | D-005 | SQLite/WAL 是权威事实源，JSONL 仅导出 | Accepted |
 | D-006 | Broker 根据通道绑定生成 sender identity | Accepted |
-| D-007 | 不增加 CLI 权限层，只透传原生 approval | Accepted |
+| D-007 | access 固定 unrestricted，只用原生进程/会话最大放开配置 | Accepted |
 | D-008 | transcript、公共记忆、摘要、身份记忆分离 | Accepted |
 | D-009 | 每 Agent lane 单飞，不同 Agent 并行 | Accepted |
-| D-010 | 同时提供异步 send 与同步 ask/read | Accepted |
+| D-010 | GroupX MCP 提供异步 send 与同步 ask/read | Accepted |
 | D-011 | 因果循环与资源限制属于可靠性，不属于权限 | Accepted |
 | D-012 | Node/TypeScript 单进程、原生 Web UI | Accepted |
 | D-013 | SQLite Node 驱动在 M0 后固定 | Provisional |
 | D-014 | 完整 A2A Server、多房间、多用户 | Deferred |
+| D-015 | GroupX 不构成安全边界，也不实现审批子系统 | Accepted |
+| D-016 | 所选 transport 派发不确定时绝不自动重放或切换 | Accepted |
 
 ## D-001：透明 Broker
 
@@ -48,19 +50,28 @@
 - 命令与事件方向清晰；
 - 浏览器原生重连和 `Last-Event-ID`；
 - 比自定义 WebSocket command protocol 更少状态；
-- approval resolve、cancel、memory 写入天然适合 REST。
+- cancel、memory 与 identity 写入天然适合 REST。
 
 变更条件：需要浏览器端双向二进制或极高频交互时再增加 WebSocket，不替换现有 Envelope。
 
-## D-003：原生持续会话传输
+## D-003：Structured active，Direct deprecated
 
-决定：
+决定：v0.1 的存储/历史合同仍识别两个 transport 值，但公开运行入口只接受 Structured：
 
-- Codex 首选 `codex app-server --listen stdio://`；
-- Grok 首选 `grok agent stdio`；
-- Kimi 首选 `kimi acp`。
+```yaml
+transport: direct | structured
+```
 
-M0 前为 Provisional，因为命令存在不证明当前登录态、完整 schema、MCP/approval/resume 能力。一次性 prompt/JSON 模式只可作为诊断降级，不视为通过持续会话目标。
+默认值为 `structured`，首版同一次 Broker 运行对三个 Agent 使用同一选择：
+
+- `structured`：Codex 使用 App Server，Grok/Kimi 使用 ACP，维持长驻 session，支持原生事件、语义化取消、resume/load 和 GroupX MCP；
+- `direct`：deprecated compatibility vocabulary。既有 one-shot/resume 源码和历史数据库记录保持可读；配置解析、Adapter factory 与 runtime constructor 均 fail-closed，不启动 Direct；不再新增能力、不维护 live Gate、不参与 release，也不作为 Structured 失败后的 fallback；
+- 两者共用同一个 Broker、Envelope、sender provenance、Turn、记忆和 SSE 合同；
+- 选择是显式的。任何启动、握手、执行或能力失败都在所选 transport 内收敛，不自动切换到另一 transport。
+
+原因：产品目标已经收敛到 Codex App Server + Grok/Kimi ACP。保留 Direct enum/实现可避免破坏旧数据和已有调用方，但继续把它当 active 产品会重复维护 argv、wire、Gate 和能力说明。
+
+M0 只维护 Structured active release baseline。Direct baseline、Agent 与适用 case 固定为 `DEPRECATED`；已有 Direct live/fixture evidence 仅作历史事实，`canSatisfyCurrentGate=false`。
 
 ## D-004：A2A 边缘化
 
@@ -76,25 +87,29 @@ M0 前为 Provisional，因为命令存在不证明当前登录态、完整 sche
 
 ## D-006：通道绑定身份
 
-决定：`from` 由 Broker 根据 Adapter/MCP binding 填写；API/工具不接受调用者设置 sender。
+决定：`from` 由 Broker 根据 Adapter 进程/会话 binding 填写；API/工具不接受调用者设置 sender。
 
-保证：正常受控通道内，正文不能伪造发送者。
+行为：正常 Adapter/会话通道内，Broker 从 binding registry 取得 actor，正文和工具参数没有设置 sender 的字段。
 
-不保证：抵御已经拥有本机任意进程、调试或数据库修改能力的恶意程序。该威胁需要额外系统鉴权，当前不引入。
+边界：binding 是来源关联和 correlation handle，不是 secret、认证或能力令牌。GroupX 不承诺抵御本机进程仿造 binding 或修改数据库。
 
-## D-007：原生权限继承
+## D-007：固定 native unrestricted
 
-决定：GroupX 不添加 model、sandbox、approval、tool、YOLO 或自动允许策略，不修改全局 CLI 配置。
+决定：v0.1 的 `access` 只有一个值 `unrestricted`，不进入公开配置，也不提供安全档位。GroupX 在进程、thread 或 session 范围固定应用各 CLI 的原生最大放开方式：
 
-GroupX 允许：
+| Agent | Direct（deprecated reference，不可启动） | Structured |
+| --- | --- | --- |
+| Codex | 新会话：`codex --yolo --dangerously-bypass-hook-trust exec --json -`；续会话：同一前缀后 `exec resume --json <sessionId> -` | `codex --dangerously-bypass-hook-trust app-server --listen stdio://`；`thread/start`/`thread/resume` 使用 `approvalPolicy: "never"` 与 `sandbox: "danger-full-access"` |
+| Grok | `grok --no-auto-update --permission-mode bypassPermissions --sandbox off --no-plan [--resume <sessionId>] --output-format streaming-json --single <prompt>`（`-p` 是短别名） | 同一全局前缀后追加 `agent stdio` |
+| Kimi | spawn 前只读预检有效 `default_permission_mode ∈ {yolo,auto}`、`default_plan_mode=false`；使用 `kimi [--session <id>] --prompt <prompt> --output-format stream-json`，不追加与 `--prompt` 冲突的 `--yolo/--auto/--plan` | 同一配置预检通过后启动 `kimi acp`；每次 `session/new` 或 `session/load`（含 Adapter resume）后、首个 prompt 前调用 `session/set_mode`，`modeId="auto"`；mode 不持久化 |
 
-- 指定协议启动子命令；
-- 指定 cwd；
-- 会话/进程级附加 GroupX MCP；
-- 原样转发原生 approval decisions；
-- 做输入校验、幂等、大小、超时、队列和循环限制。
+Codex 0.147 的 thread-level `sandbox` 是 kebab-case 字符串 `danger-full-access`；camel-case `dangerFullAccess` 只出现在 `turn/start.sandboxPolicy.type` 这类不同 wire shape，不能写进 thread params。Codex child 的 OS cwd 使用 Agent 配置值，thread params 不重复发送 cwd，避免触发不必要的原生 trust 持久化。
 
-最后一项是协议可靠性，不判断 CLI 是否有权执行某个动作。
+GroupX 仍不写 Codex/Grok/Kimi 的全局配置，不允许用户透传任意额外权限 argv，也不再实现第二套 GroupX 审批或沙箱判断。Kimi preflight 只读取并投影上述两个 allowlisted 顶层键，不持久化、记录或返回其余配置。固定 argv/mode/preflight 是产品运行合同，不代表 GroupX 能绕过外部强制策略。
+
+Direct/Kimi one-shot 的旧 preflight 规则只保留作历史实现说明，不再构成产品能力。Active Structured Kimi 在 pre-spawn preflight 后，还必须在每次 new/load 后重设 session auto mode。
+
+“unrestricted”只在当前 Windows 用户已有权限内成立，不能绕过 UAC、文件 ACL、企业 requirements、服务端限制或 Kimi static deny。若原生结果明确表明外部策略阻止该模式，Turn 以 `NATIVE_POLICY_BLOCKED` 失败，Agent 状态显示 `native_policy_blocked`；GroupX 不修改、探测规避或绕过该策略。
 
 ## D-008：记忆分层
 
@@ -110,13 +125,13 @@ GroupX 允许：
 
 ## D-009：并发
 
-决定：每个 native session FIFO 单飞；不同 Agent 并行。`@all` 不串行等待。
+决定：每个 Structured Agent lane FIFO 单飞；不同 Agent 并行。`@all` 不串行等待。
 
 原因：同一会话的上下文顺序比理论并发更重要；跨 Agent 并行保留效率和故障隔离。
 
-## D-010：send、ask、read
+## D-010：GroupX MCP 的 send、ask、read
 
-决定：
+决定：GroupX MCP 是 M2 的 Structured Agent 主动互调合同。Deprecated Direct 不存在可替代入口：
 
 - `send` 持久化后异步返回；
 - `ask` 等待目标 terminal response 并作为 MCP 工具结果返回；
@@ -125,9 +140,11 @@ GroupX 允许：
 
 没有 ask 时，发送 Agent 在当前回合无法可靠看到目标回答；只看公共 UI 不等于回答进入发送方上下文。
 
+Web/UI 的显式 recipients 可发起普通群聊；普通模型文本中的 `@某人` 不自动派发。若某个 Structured Adapter 无法附加 GroupX MCP 或无法完成真实工具调用，普通能力结论只能标为 `not_observed` 或 `unsupported`；只有独立 preflight/startup/session/mode 拒绝已经确立外部强制策略时，Agent 才能已处于 `native_policy_blocked`。对应 M2 验收不能标记完成；不得解析自然语言或恢复 Direct 冒充工具调用。
+
 ## D-011：因果循环与资源限制
 
-决定：同步 ask 不能调用 active causal stack 中的祖先。显式长链受 hop/root-turn/queue/timeout 限制，达到边界产生公开错误事件。
+决定：所有 child Turn 都必须严格验证 parent/root/hop 和父链完整性。只有进入 `waitsForChildren` 的同步 `mcp.ask` 不能把 active causal stack 中的祖先 actor 作为目标，返回 `CAUSAL_CYCLE`。异步 `mcp.send` 允许回发祖先，但显式长链仍受 hop/root-turn/actor-call/queue/timeout 限制，达到边界产生公开错误事件。
 
 这不改变 CLI 的工具/文件/网络权限，只防止 Broker 死锁和无限资源占用。
 
@@ -157,6 +174,31 @@ GroupX 允许：
 - 大型 artifact 数据面。
 
 这些功能只能在 M0-M2 合同保持稳定后加入。
+
+## D-015：无 GroupX 审批子系统
+
+决定：GroupX 不构成安全边界。首版固定请求 CLI 以 unrestricted 运行，但 GroupX 不判断某个命令是否安全，也不提供 ApprovalService、审批表、审批 REST、审批 UI、批准/拒绝按钮或 `approval.*` 群组事件。
+
+如果 native adapter 发出 approval、permission、`requestUserInput`、question 或 elicitation request，unrestricted 运行合同已经失效。Adapter 必须：
+
+1. 不把 request 转发给 Web UI，也不选择 allow/deny；
+2. 以协议允许的 cancellation/error 做有界收尾，避免子进程永久悬挂；该动作只是终止 Turn，不是审批决定；
+3. 一律用 `UNEXPECTED_NATIVE_INTERACTION` 失败当前 Turn；interaction request 及其 options 绝不能被重分类为 `NATIVE_POLICY_BLOCKED`；
+4. 不自动改 transport、不重放 prompt、不创建 pending 状态。
+
+`NATIVE_POLICY_BLOCKED` 是独立的启动/会话失败路径：只有外部策略预检或 native 启动/session 拒绝明确证明 enterprise/server/static deny 时才能使用，并投影 `native_policy_blocked`。
+
+首版也不引入认证 token、RBAC、capability token、Origin/DNS 防护或秘密内容扫描。loopback、sender binding、输入校验、幂等、队列/循环上限、事务和普通文本渲染都是产品范围或协议正确性措施，不代表安全保证。
+
+GroupX 只按合同字段记录数据，不主动采集完整环境、CLI 配置或无界 stderr。用户或模型提交到普通消息/记忆中的内容会按产品语义持久化，GroupX 不承诺识别其中的凭据或秘密。
+
+## D-016：派发不确定性、无重放、无 fallback
+
+决定：Structured Adapter 初始化、能力协商或 session 建立失败且 prompt 尚未派发时，该 Turn 明确失败并记录 Adapter 错误；只能由用户或上层编排创建新 Turn 重试，不能启用 Direct。
+
+一旦 prompt 已提交或可能已到达原生 session，连接丢失、超时、Broker 重启或终态不明时，GroupX 必须先通过已持久化的 native session/turn 引用进行有界恢复与对账，不得创建新 native turn 或自动重放 prompt。仍无法确认时，将交付确定性单独记录为 `unknown`，并以现有证据收敛到 terminal `interrupted` 或明确失败；保留 attempt、dispatch phase 与恢复证据，避免重复执行、重复工具调用或重复计费。
+
+Structured resume/load 不能自动重放不确定 Turn。历史 Direct attempt 保留原交付确定性和 terminal 记录用于审计，但不会由当前 runtime 恢复或重新派发。
 
 ## 决策变更规则
 

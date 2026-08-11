@@ -1,0 +1,284 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "groupx.m0-capabilities.schema.json",
+  "title": "GroupX M0 capability matrix",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "generatedAt",
+    "contractRevision",
+    "contract",
+    "nativeProfiles",
+    "m0Cases",
+    "baselines",
+    "releaseGate",
+    "evidenceIndex",
+    "evidencePolicy"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "groupx.m0-capabilities/2"
+    },
+    "generatedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "contractRevision": {
+      "const": "unrestricted-v0.1"
+    },
+    "contract": {
+      "type": "object",
+      "required": [
+        "transport",
+        "access",
+        "approvalSubsystem",
+        "nativeInteractionPolicy",
+        "mcpInterAgentTransports"
+      ],
+      "properties": {
+        "transport": {
+          "type": "object",
+          "required": [
+            "publicRuntimeConfigAccepted",
+            "directRuntimeEntryEnabled"
+          ],
+          "properties": {
+            "publicRuntimeConfigAccepted": {
+              "const": [
+                "structured"
+              ]
+            },
+            "directRuntimeEntryEnabled": {
+              "const": false
+            }
+          }
+        }
+      }
+    },
+    "nativeProfiles": {
+      "type": "object",
+      "required": [
+        "direct",
+        "structured"
+      ],
+      "properties": {
+        "direct": {
+          "type": "object",
+          "required": [
+            "runtimeEntryEnabled",
+            "lifecycleStatus"
+          ],
+          "properties": {
+            "runtimeEntryEnabled": {
+              "const": false
+            },
+            "lifecycleStatus": {
+              "const": "deprecated"
+            }
+          }
+        }
+      }
+    },
+    "m0Cases": {
+      "type": "array",
+      "minItems": 15,
+      "maxItems": 15,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "pattern": "^M0-(0[1-9]|1[0-5])$"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "baselines": {
+      "type": "object",
+      "required": [
+        "direct",
+        "structured"
+      ],
+      "properties": {
+        "direct": {
+          "$ref": "#/$defs/baseline"
+        },
+        "structured": {
+          "$ref": "#/$defs/baseline"
+        }
+      },
+      "additionalProperties": false
+    },
+    "releaseGate": {
+      "type": "object",
+      "required": [
+        "requiredTransport",
+        "requiredAgents",
+        "status",
+        "passed"
+      ],
+      "properties": {
+        "requiredTransport": {
+          "const": "structured"
+        },
+        "requiredAgents": {
+          "const": [
+            "codex",
+            "grok",
+            "kimi"
+          ]
+        },
+        "status": {
+          "enum": [
+            "PASS",
+            "BLOCKED"
+          ]
+        },
+        "passed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "evidenceIndex": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/evidence"
+      }
+    },
+    "evidencePolicy": {
+      "type": "object"
+    }
+  },
+  "$defs": {
+    "baseline": {
+      "type": "object",
+      "required": [
+        "requiredForRelease",
+        "gateStatus",
+        "defaultCaseStatus",
+        "caseOverrides",
+        "agents"
+      ],
+      "properties": {
+        "requiredForRelease": {
+          "type": "boolean"
+        },
+        "gateStatus": {
+          "enum": [
+            "PASS",
+            "BLOCKED",
+            "DEPRECATED"
+          ]
+        },
+        "defaultCaseStatus": {
+          "enum": [
+            "PASS",
+            "FAIL",
+            "PARTIAL",
+            "NOT_RUN",
+            "NOT_APPLICABLE",
+            "DEPRECATED"
+          ]
+        },
+        "caseOverrides": {
+          "type": "object"
+        },
+        "agents": {
+          "type": "object",
+          "required": [
+            "codex",
+            "grok",
+            "kimi"
+          ],
+          "additionalProperties": {
+            "$ref": "#/$defs/agentResult"
+          }
+        }
+      }
+    },
+    "agentResult": {
+      "type": "object",
+      "required": [
+        "installedVersion",
+        "status",
+        "evidenceRefs"
+      ],
+      "properties": {
+        "installedVersion": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "PASS",
+            "FAIL",
+            "PARTIAL",
+            "NOT_RUN",
+            "NOT_APPLICABLE",
+            "DEPRECATED"
+          ]
+        },
+        "evidenceRefs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "required": [
+        "id",
+        "evidenceClass",
+        "sourceKind",
+        "agent",
+        "transport",
+        "accessContract",
+        "runId",
+        "recordedAt",
+        "relativePath",
+        "sha256",
+        "canSatisfyCurrentGate"
+      ],
+      "properties": {
+        "evidenceClass": {
+          "enum": [
+            "native-live",
+            "fixture",
+            "legacy"
+          ]
+        },
+        "agent": {
+          "enum": [
+            "codex",
+            "grok",
+            "kimi"
+          ]
+        },
+        "transport": {
+          "enum": [
+            "direct",
+            "structured"
+          ]
+        },
+        "recordedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "sha256": {
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "canSatisfyCurrentGate": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

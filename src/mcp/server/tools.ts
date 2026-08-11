@@ -1,0 +1,253 @@
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { z } from "zod";
+
+import {
+  AgentActorIdSchema,
+  GroupXEnvelopeSchema,
+  MAX_TARGETS_PER_MESSAGE,
+  McpAskInputSchema,
+  McpAskResultSchema,
+  McpIdentityReadInputSchema,
+  McpIdentityReadResultSchema,
+  McpIdentityRememberInputSchema,
+  McpIdentityRememberResultSchema,
+  McpMemoryRememberInputSchema,
+  McpMemoryRememberResultSchema,
+  McpMemorySearchInputSchema,
+  McpMemorySearchResultSchema,
+  McpReadInputSchema,
+  McpReadResultSchema,
+  McpSendInputSchema,
+  McpSendResultSchema,
+  parseMcpAskInput,
+  parseMcpAskResult,
+  parseMcpIdentityReadInput,
+  parseMcpIdentityReadResult,
+  parseMcpIdentityRememberInput,
+  parseMcpIdentityRememberResult,
+  parseMcpMemoryRememberInput,
+  parseMcpMemoryRememberResult,
+  parseMcpMemorySearchInput,
+  parseMcpMemorySearchResult,
+  parseMcpReadInput,
+  parseMcpReadResult,
+  parseMcpSendInput,
+  parseMcpSendResult,
+  toSafeErrorBody,
+  type KnownTargetOptions
+} from "../../contracts/index.js";
+import type { McpBindingContext } from "../binding-registry.js";
+import {
+  toToolCallerContext,
+  type ToolBrokerApi,
+  type ToolCallerContext
+} from "./broker-api.js";
+
+export const GROUPX_MCP_SERVER_NAME = "groupx" as const;
+export const GROUPX_MCP_SERVER_VERSION = "0.1.0" as const;
+
+export const GROUPX_MCP_TOOL_NAMES = [
+  "send",
+  "ask",
+  "read",
+  "memory_search",
+  "memory_remember",
+  "identity_read",
+  "identity_remember"
+] as const;
+
+export type GroupXMcpToolName = (typeof GROUPX_MCP_TOOL_NAMES)[number];
+
+export interface CreateGroupXMcpServerOptions extends KnownTargetOptions {
+  readonly broker: ToolBrokerApi;
+  readonly binding: McpBindingContext;
+}
+
+/*
+ * The authoritative contract schemas contain runtime transforms/custom JSON
+ * checks that the MCP SDK cannot encode in tool discovery JSON Schema. These
+ * wire schemas are derived from the same contracts, replacing only those two
+ * non-representable nodes. Handlers still run the authoritative parseMcp*
+ * functions before calling Broker.
+ */
+const McpWireTargetsSchema = z
+  .array(AgentActorIdSchema)
+  .min(1)
+  .max(MAX_TARGETS_PER_MESSAGE)
+  .meta({ uniqueItems: true });
+
+const McpSendWireInputSchema = McpSendInputSchema.safeExtend({
+  to: McpWireTargetsSchema
+});
+
+const McpAskWireInputSchema = McpAskInputSchema.safeExtend({
+  to: McpWireTargetsSchema
+});
+
+const McpWireEnvelopeSchema = GroupXEnvelopeSchema.safeExtend({ body: z.json() });
+
+const McpReadWireResultSchema = McpReadResultSchema.safeExtend({
+  events: z.array(McpWireEnvelopeSchema)
+});
+
+function successResult(value: object): CallToolResult {
+  return {
+    content: [{ type: "text", text: JSON.stringify(value) }],
+    structuredContent: value as Record<string, unknown>
+  };
+}
+
+function errorResult(error: unknown): CallToolResult {
+  const body = toSafeErrorBody(error);
+  return {
+    isError: true,
+    content: [{ type: "text", text: JSON.stringify(body.error) }]
+  };
+}
+
+async function invoke<T extends object>(
+  binding: McpBindingContext,
+  request: { readonly requestId: string | number; readonly signal: AbortSignal },
+  operation: (caller: ToolCallerContext) => Promise<T>
+): Promise<CallToolResult> {
+  try {
+    return successResult(await operation(toToolCallerContext(binding, request)));
+  } catch (error) {
+    return errorResult(error);
+  }
+}
+
+/**
+ * Builds one MCP protocol endpoint for a binding-scoped connection/request.
+ *
+ * Wire names deliberately contain no dots. MCP clients normally expose these
+ * as namespaced tools such as `groupx__send` using the server name.
+ */
+export function createGroupXMcpServer(options: CreateGroupXMcpServerOptions): McpServer {
+  const knownTargetOptions: KnownTargetOptions | undefined =
+    options.knownTargets === undefined
+      ? undefined
+      : { knownTargets: options.knownTargets };
+  const server = new McpServer(
+    { name: GROUPX_MCP_SERVER_NAME, version: GROUPX_MCP_SERVER_VERSION },
+    {
+      instructions:
+        "GroupX tools route explicit local group messages and memory operations. Caller identity comes from the current Adapter/session binding."
+    }
+  );
+
+  server.registerTool(
+    "send",
+    {
+      description: "Send a public GroupX message asynchronously to one or more agents.",
+      inputSchema: McpSendWireInputSchema,
+      outputSchema: McpSendResultSchema
+    },
+    async (input, extra) =>
+      invoke(options.binding, extra, async (caller) =>
+        parseMcpSendResult(
+          await options.broker.send(
+            caller,
+            parseMcpSendInput(input, knownTargetOptions)
+          )
+        )
+      )
+  );
+
+  server.registerTool(
+    "ask",
+    {
+      description: "Ask one or more agents and wait for their terminal GroupX results.",
+      inputSchema: McpAskWireInputSchema,
+      outputSchema: McpAskResultSchema
+    },
+    async (input, extra) =>
+      invoke(options.binding, extra, async (caller) =>
+        parseMcpAskResult(
+          await options.broker.ask(
+            caller,
+            parseMcpAskInput(input, knownTargetOptions)
+          )
+        )
+      )
+  );
+
+  server.registerTool(
+    "read",
+    {
+      description: "Read durable GroupX events and turn state by correlation or sequence cursor.",
+      inputSchema: McpReadInputSchema,
+      outputSchema: McpReadWireResultSchema
+    },
+    async (input, extra) =>
+      invoke(options.binding, extra, async (caller) =>
+        parseMcpReadResult(await options.broker.read(caller, parseMcpReadInput(input)))
+      )
+  );
+
+  server.registerTool(
+    "memory_search",
+    {
+      description: "Search curated GroupX public memory.",
+      inputSchema: McpMemorySearchInputSchema,
+      outputSchema: McpMemorySearchResultSchema
+    },
+    async (input, extra) =>
+      invoke(options.binding, extra, async (caller) =>
+        parseMcpMemorySearchResult(
+          await options.broker.memorySearch(caller, parseMcpMemorySearchInput(input))
+        )
+      )
+  );
+
+  server.registerTool(
+    "memory_remember",
+    {
+      description: "Add an explicit, source-attributed record to GroupX public memory.",
+      inputSchema: McpMemoryRememberInputSchema,
+      outputSchema: McpMemoryRememberResultSchema
+    },
+    async (input, extra) =>
+      invoke(options.binding, extra, async (caller) =>
+        parseMcpMemoryRememberResult(
+          await options.broker.memoryRemember(
+            caller,
+            parseMcpMemoryRememberInput(input, knownTargetOptions)
+          )
+        )
+      )
+  );
+
+  server.registerTool(
+    "identity_read",
+    {
+      description: "Read the current caller's GroupX identity memory.",
+      inputSchema: McpIdentityReadInputSchema,
+      outputSchema: McpIdentityReadResultSchema
+    },
+    async (input, extra) =>
+      invoke(options.binding, extra, async (caller) =>
+        parseMcpIdentityReadResult(
+          await options.broker.identityRead(caller, parseMcpIdentityReadInput(input))
+        )
+      )
+  );
+
+  server.registerTool(
+    "identity_remember",
+    {
+      description: "Add an explicit identity record for the current bound GroupX actor.",
+      inputSchema: McpIdentityRememberInputSchema,
+      outputSchema: McpIdentityRememberResultSchema
+    },
+    async (input, extra) =>
+      invoke(options.binding, extra, async (caller) =>
+        parseMcpIdentityRememberResult(
+          await options.broker.identityRemember(caller, parseMcpIdentityRememberInput(input))
+        )
+      )
+  );
+
+  return server;
+}

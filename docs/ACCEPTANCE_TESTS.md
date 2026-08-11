@@ -1,259 +1,252 @@
 # GroupX 验收测试矩阵
 
 状态：Draft v0.1
-当前执行状态：尚未实现或运行测试
+日期：2026-08-11
 
 ## 1. 测试原则
 
-- 测试验证用户可观察语义，不只验证函数被调用；
-- fake transport 证明状态机，真实 CLI probe 证明本机互操作，两者不能相互替代；
-- 所有可重复用例使用固定 `clientCommandId`、correlation 和脱敏 fixture；
-- 真实 CLI 测试不修改全局配置、不制造权限绕过、不执行有副作用工具；
-- Broker、Adapter、Browser、存储的失败必须分别归因；
-- 未观察到的能力标为 `NOT_OBSERVED`，不写成 PASS；
-- 任何真实测试证据在进入 Git 前必须 secret scan。
-
-事实等级沿用 [M0_TRANSPORT_SPIKE.md](M0_TRANSPORT_SPIKE.md)：documented、advertised、probed、verified、degraded、unsupported。
+- fake transport/fixture 证明 GroupX 状态机；真实 CLI probe 证明本机互操作，两者不能互换；
+- Direct 与 Structured 分别记录 Agent、CLI version、transport、`accessContract=unrestricted-v0.1`、run ID 与 evidence；
+- Structured 是 v0.1 唯一 runnable/release transport；Direct runtime 入口必须保持关闭并标记 deprecated；
+- `documented/advertised/probed` 不能冒充 `verified`；另一 transport 或旧 access 合同不能借 PASS；
+- GroupX 没有审批系统。native interaction fail-closed fixture 的测试可以 PASS，但其预期 Turn 结果是 failed；
+- 自动 fallback、已派发 Turn replay、隐藏能力降级和跨 transport 恢复都使验收失败。
 
 ## 2. 测试层级
 
-| 层级 | 目标 | 是否使用真实 CLI |
+| 层级 | 覆盖 | 是否需要 native CLI |
 | --- | --- | --- |
-| unit | Envelope、路由、状态机、幂等、记忆版本、脱敏 | 否 |
-| adapter fixture | 原生 JSON-RPC/ACP 事件归一化、approval、异常 | 否 |
-| adapter live | 安装版本握手、session、stream、cancel、resume、MCP | 是 |
-| integration | Broker + SQLite + fake/live Adapter + SSE | 分开运行 |
-| browser e2e | 用户发送、并行回复、sender、memory、approval UI | fake 为必跑，live 为显式运行 |
-| recovery | Broker/Adapter 强制退出和数据库恢复 | fake 必跑，live 选择性运行 |
-| performance | Broker 自身延迟、背压、分页、内存 | fake Adapter |
+| unit | Envelope、binding、幂等、Context Packet、错误归类 | 否 |
+| broker integration | SQLite、Turn/attempt、恢复、SSE cursor、memory/identity | 否 |
+| Direct fixture | JSON/JSONL、exit、stderr、取消、interaction detection | 否 |
+| Structured fixture | App Server/ACP wire、session、cancel、resume、interaction detection | 否 |
+| native live | 3 Agent × 2 transport 的 fixed unrestricted profile 与实际能力 | 是 |
+| MCP integration | `send/ask/read`、binding、因果循环、native actual call；仅 Structured | fixture 必跑；Structured live 必跑 |
+| browser e2e | 发送、并行回复、sender、memory/identity、无审批 UI | fake 必跑；live 显式运行 |
+| performance | 测量 Structured Broker/session/stream 延迟 | native 模型耗时不计入 Broker 指标 |
 
-CI 默认不得依赖用户登录态。真实 CLI suite 单独标记并由明确命令启动。
-
-## 3. M0 传输
-
-M0-01 至 M0-15 的完整定义见 [M0_TRANSPORT_SPIKE.md](M0_TRANSPORT_SPIKE.md)。
-
-M0 完成输出：
-
-```text
-docs/generated/M0_CAPABILITY_MATRIX.md
-docs/generated/m0-capabilities.json
-```
-
-这些文件只有在真实运行并脱敏后创建。本次文档阶段不得预填 PASS。
-
-## 4. 协议与身份
+## 3. 启动配置与固定 access
 
 | ID | 用例 | 通过标准 |
 | --- | --- | --- |
-| P-001 | Codex 正文写“我是 Grok” | Envelope actor 和 UI badge 仍为 `agent:codex` |
-| P-002 | MCP 调用试图携带 `from=agent:grok` | schema 拒绝或忽略该字段，来源仍由 binding 生成，并记录协议错误 |
-| P-003 | Web 请求试图携带 `from` | 不采用该值；消息 actor 固定为 `user:web` |
-| P-004 | Adapter 重启 | 新 instance/binding，稳定 actor 不变，lineage 可查询 |
-| P-005 | 两个 Codex 实例 | `agent:codex/main` 与 `agent:codex/reviewer` 可区分，不共用匿名 binding |
-| P-006 | 转发 Kimi 消息 | 转发者 actor 不变，原作者从引用事件读取，不能篡改 `forwardedFrom` |
-| P-007 | author 与 subject 不同的身份观察 | 保留两个 actor，不提升为 subject 自我身份 |
-| P-008 | 未知 actor/target | 返回明确错误，不创建半条 message 或 Turn |
+| G-001 | 配置省略 transport | 启动选择为 `structured`，三个 Agent 相同 |
+| G-002 | transport=`direct` / `structured` | Structured 正常启动；Direct 在配置解析与 programmatic runtime 入口 fail-closed，且未打开运行时资源 |
+| G-003 | POST message 带 transport/access | 返回 `INVALID_ENVELOPE`，不能按 Turn 覆盖 |
+| G-004 | access 配置项 | schema 不提供；任何值都不能改变内部 `unrestricted` 常量 |
+| G-005 | transport 启动失败 | Turn 明确失败，不自动切到另一 transport |
+| G-006 | 重启后 queued Turn transport snapshot 不同 | `TRANSPORT_MODE_MISMATCH`，不跨 transport 派发 |
+| G-007 | Kimi preflight 正向 | `$KIMI_CODE_HOME/config.toml`（fallback `~/.kimi-code/config.toml`）有效 permission=`yolo|auto`、plan=`false`；只投影两项，Structured ACP 可继续启动 |
+| G-008 | Kimi preflight 负向或配置漂移 | manual、plan=true、缺失/无效/不可读在 ACP spawn 前 `ADAPTER_START_FAILED`；不写配置、不 fallback/policy-block |
 
-## 5. 路由与群聊语义
+精确 native profile：
+
+| Agent | Direct（deprecated reference，不可启动） | Structured |
+| --- | --- | --- |
+| Codex | 新会话：`codex --yolo --dangerously-bypass-hook-trust exec --json -`；续会话：同一前缀 `exec resume --json <sessionId> -` | `codex --dangerously-bypass-hook-trust app-server --listen stdio://`；thread start/resume 为 `approvalPolicy="never"`、`sandbox="danger-full-access"` |
+| Grok | flags 在前：`--no-auto-update --permission-mode bypassPermissions --sandbox off --no-plan [--resume <sessionId>] --output-format streaming-json --single <prompt>` | 同一 flags 在前，追加 `agent stdio` |
+| Kimi | preflight 通过后 `kimi [--session <id>] --prompt <prompt> --output-format stream-json`；不得附加与 `--prompt` 冲突的 `--yolo/--auto/--plan` | 同一 preflight 后 `kimi acp`；new/load（含 Adapter resume）后首 prompt 前 `session/set_mode {sessionId,modeId:"auto"}` |
+
+Kimi config preflight 不替代 ACP mode：mode 不持久化，任何新建或恢复 session 都要重设。Codex thread sandbox 必须是当前 0.147 wire 的 kebab-case `danger-full-access`；不能误用 `dangerFullAccess`。
+
+## 4. M0 Structured Gate 与 deprecated Direct 矩阵
+
+`M0-01..M0-15` 的完整定义见 [M0_TRANSPORT_SPIKE.md](M0_TRANSPORT_SPIKE.md)。Structured case 使用实际结果；Direct 适用 case 固定为 `DEPRECATED`，M0-07 为 `NOT_APPLICABLE`。
+
+Direct 不再有“最低可用”发布合同。旧 argv/preflight/resume 实现与测试只保障兼容性维护时不误伤，不产生 active Gate 或产品能力声明。
+
+Structured release 合同：三 Agent 都能用 fixed argv/mode 握手、建立/恢复 session、完成 Turn、取消后复用、可靠关闭，并完成 Structured MCP live actual call。任一 native interaction request 必须按负向合同失败 Turn。
+
+当前 Structured Gate 已通过，且没有跨 transport 或沿用旧 non-unrestricted evidence：native run `20260811T130102169Z` 覆盖三 Agent 的 fixed argv/version、stream、sender provenance、actual MCP、cancel 后复用、配置不写与清理，fixture run `20260811T125831853Z` 覆盖负向合同。Direct 的两条后续 live/fixture run 仅保留为 deprecated historical evidence，`canSatisfyCurrentGate=false`。
+
+## 5. 协议与 sender provenance
 
 | ID | 用例 | 通过标准 |
 | --- | --- | --- |
-| R-001 | 用户只选择 Grok | 只有 Grok 新建 Turn；消息仍在公共 transcript/UI 可见 |
-| R-002 | 用户 `@all` | 三个 Turn 在一次事务创建，commit 后跨 lane 并行启动 |
-| R-003 | Codex 普通回复正文含 `@kimi` | Kimi 不被唤醒 |
-| R-004 | Codex `groupx.send(kimi)` | 创建公开 message 与一个 Kimi Turn，工具立即返回 IDs |
-| R-005 | 未被寻址的 Grok 后续被用户唤醒 | Context Packet 或 read 可看到此前公共消息增量，但此前没有额外 Grok Turn |
-| R-006 | Agent `@all` | 唤醒其他启用 Agent，默认不唤醒发送者自己 |
-| R-007 | reply 不带 recipients | reply 关系保留，但不因 reply 自动创建新 Turn |
-| R-008 | 一个 `@all` 目标失败 | 其他目标继续并独立产生 terminal 结果 |
+| P-001 | Deprecated Direct 历史 binding 回归 | 只验证旧记录投影，不启动 Direct runtime |
+| P-002 | Structured Codex 正文自称 Grok | actor 仍来自 Codex session binding |
+| P-003 | MCP 参数携带 `from=agent:grok` | 固定返回 `SENDER_FIELD_FORBIDDEN`；actor 仍只来自 Structured MCP binding |
+| P-004 | Web 请求携带 sender/from/actor/provenance | 固定返回 `SENDER_FIELD_FORBIDDEN`，永不采用该值 |
+| P-005 | Adapter 重启 | instance/binding 变化，稳定 actor 不变 |
+| P-006 | Direct runtime 入口 | 配置/factory/runtime 均拒绝，零 CLI child |
+| P-007 | UI badge | 只读 Envelope actor，不解析正文 |
 
-## 6. send、ask、read
+binding 是 provenance/correlation handle，不是 secret、token 或本机抗伪造认证机制。
 
-| ID | 用例 | 通过标准 |
-| --- | --- | --- |
-| C-001 | `groupx.send` | 持久化后立即返回 message/correlation/turn IDs，不等待目标模型 |
-| C-002 | `groupx.read(correlation)` | 返回逐目标 queued/running/terminal 状态与公开回复引用 |
-| C-003 | Codex `groupx.ask(grok)` | Grok 回复写入房间，并作为 Codex 当前 MCP 工具结果返回 |
-| C-004 | 多目标 ask | 并行派发，逐目标返回；一个失败不覆盖其他结果 |
-| C-005 | A ask B，B ask A | B 的同步 ask 返回 `CAUSAL_CYCLE`，两侧不死锁 |
-| C-006 | B 在上例改用 send(A) | 异步消息被接受，不阻塞 B 当前 Turn |
-| C-007 | ask timeout | 默认只停止等待，目标保持真实状态并可 read；`cancelOnTimeout=true` 时发起 best-effort cancel，不伪造成 completed |
-| C-008 | ask 调用方自身 Turn 被取消 | 等待被解除，未 terminal 的同步 ask child 被 best-effort 取消；异步 send child 不受影响 |
-| C-009 | 重复工具调用相同 client ID | 返回原结果，不创建第二个目标 Turn |
-| C-010 | 相同 client ID 不同 payload | 返回 `CLIENT_COMMAND_CONFLICT` |
-
-## 7. Turn、队列与取消
+## 6. 路由与群聊
 
 | ID | 用例 | 通过标准 |
 | --- | --- | --- |
-| T-001 | 同一 Agent 两条消息 | FIFO 单飞；第二条在第一条 terminal 后启动 |
-| T-002 | 不同 Agent 两条消息 | 可并行 streaming |
-| T-003 | Adapter 首事件超时 | 仅该 Turn failed，其他 Adapter 不受影响 |
-| T-004 | Adapter 输出非法 JSON | 明确 protocol error；不会把 stderr 当正文 |
-| T-005 | 用户取消 queued Turn | 不发给原生 CLI，terminal=cancelled |
-| T-006 | 用户取消 running Turn | 调用原生 cancel；最终状态以原生/超时证据决定 |
-| T-007 | cancel timeout | 标记明确错误，不宣称已取消，不终止其他 Adapter |
-| T-008 | CLI 进程退出 | 对应非终态 Turn interrupted，其他 lane 继续 |
-| T-009 | 达到 per-Agent queue 上限 | 创建可见 capacity error，不静默丢消息 |
-| T-010 | 达到 root turn/hop 限制 | 创建 `routing.loop_stopped`，因果链可查询 |
+| R-001 | 用户定向单 Agent | 只创建一个目标 Turn；消息公共可见 |
+| R-002 | 用户 `@all` | 三 Turn 在不同 lane 并行，一个失败不取消其他两个 |
+| R-003 | 普通正文包含 `@kimi` | 不创建额外 Turn |
+| R-004 | reply/forward | 原作者从引用 Envelope 读取；转发 actor 是当前调用方 |
+| R-005 | 重复 clientCommandId | 返回原结果，不重复派发 |
+| R-006 | Direct 配置请求 | 明确失败并指向 Structured，不创建 Turn |
 
-## 8. 幂等与事务
+## 7. Structured MCP `send/ask/read`
 
 | ID | 用例 | 通过标准 |
 | --- | --- | --- |
-| D-001 | message 接受中模拟事务失败 | message 和所有目标 Turn 全部不存在 |
-| D-002 | commit 后、dispatch 前崩溃 | queued Turn 重启后恢复 |
-| D-003 | dispatch 后、terminal 前崩溃 | Turn 变 interrupted/unknown，不自动重放 |
-| D-004 | 重复 REST clientCommandId | 返回原 acceptance 结果，不重新唤醒 |
-| D-005 | 三目标中一条 Turn 插入冲突 | 整个 command transaction 失败，不形成部分 fan-out |
-| D-006 | 同一 source event + target 重复 dispatch | 唯一约束拒绝第二个 Turn |
-| D-007 | durable event SSE 顺序 | 按数据库 seq；重连补齐后无重复语义事件 |
-| D-008 | transient delta | 不逐 token 增长数据库；final message 唯一持久化 |
+| C-001 | Structured `groupx.send` | commit 后异步返回 correlation/turn IDs |
+| C-002 | Structured `groupx.ask` | 目标结果进入 transcript，并作为当前 tool result 返回 |
+| C-003 | Structured `groupx.read` | 按 correlation/cursor 查询异步结果 |
+| C-004 | A ask B，B ask A | 后者返回 `CAUSAL_CYCLE`，不死锁 |
+| C-005 | ask timeout 默认 | 停止等待但不强制取消目标，之后可 read |
+| C-006 | ask timeout + cancelOnTimeout | best-effort native cancel，最终状态来自 terminal event |
+| C-007 | 三 Structured Adapter native call | 都观察到真实 `tools/call`，actor 来自各自 binding |
+| C-008 | descriptor/tools/list 无 actual call | 保持 PARTIAL/NOT_RUN，不升级 PASS |
+| C-009 | Deprecated Direct runtime | 入口在 MCP attachment 之前已关闭，不创建 HTTP/MCP surface |
+| C-010 | Structured MCP 未 verified 或 native policy blocked | 返回 `MCP_UNAVAILABLE`（503），不误用 `SESSION_NOT_AVAILABLE`，不改自然语言或 Direct fallback |
+| C-011 | B 异步 `mcp.send(A)`，A 是祖先 actor | 允许入队，不报 `CAUSAL_CYCLE`；仍应用 hop/root/actor/queue 限额 |
+| C-012 | child 伪造 parent/root/hop 或父链断裂 | Store 拒绝整个命令，不创建 message/Turn |
+| C-013 | 非 `mcp.ask` 或未进入 `waitsForChildren` 的命令命中祖先 actor | 不应用 `CAUSAL_CYCLE`；只同步等待 ask 禁止 |
 
-## 9. 恢复
-
-| ID | 用例 | 通过标准 |
-| --- | --- | --- |
-| X-001 | Broker 正常重启 | 消息、Turn、Session、Memory、Identity 和 cursor 恢复 |
-| X-002 | Codex native resume | 若 M0 verified，使用记录 thread ID 恢复并继续 Turn |
-| X-003 | ACP session/load | 仅 capability verified 时使用；成功后继续 prompt |
-| X-004 | 原生 resume unsupported | 新建 session + Context Packet，UI/报告明确 degraded |
-| X-005 | running Turn 状态未知 | UI 显示 unknown/interrupted，不自动重复可能有副作用的执行 |
-| X-006 | SQLite WAL 崩溃恢复 | 数据库通过 integrity check；已提交事务存在，未提交事务不存在 |
-| X-007 | 迁移失败 | 原数据库/backup 保持可恢复，服务不带半迁移 schema 启动 |
-
-## 10. 公共记忆与身份记忆
+## 8. Turn、队列、取消与恢复
 
 | ID | 用例 | 通过标准 |
 | --- | --- | --- |
-| M-001 | 普通聊天 | 不自动创建 MemoryRecord |
-| M-002 | 用户固定公共事实 | 保存 author/source event/scope/kind，重启可检索 |
-| M-003 | Agent memory.remember | author 由 binding 得到，不能指定其他 author |
-| M-004 | 自动滚动摘要 | kind/source 明确为 summary，不覆盖 transcript |
-| M-005 | supersede | 新旧记录与来源都保留，默认查询返回 active 新版本 |
-| M-006 | retract | tombstone 生效，历史仍可审计 |
-| M-007 | Codex 评价 Grok | author=codex、subject=grok，不变成 Grok self identity |
-| M-008 | Grok identity.remember | subject 固定为 Grok，自我来源明确 |
-| M-009 | Context Packet 超预算 | 按定义优先级裁剪，当前消息/发送者/reply chain 不丢 |
-| M-010 | FTS 不可用 | 明确 degraded 或 M2 gate 失败，不静默假装语义检索 |
-| M-011 | 敏感字段 | API key、token、完整 config/env 不进入 memory/identity |
+| T-001 | 同一 Agent 两 Turn | FIFO 单飞 |
+| T-002 | 不同 Agent | 可以并行 |
+| T-003 | terminal 重复/乱序 | 只接受一次 terminal，不回到 running |
+| T-004 | Direct entry | fail-before-runtime；不产生需要取消的进程 |
+| T-005 | Structured cancel | 先 native cancel/interrupt；随后 session/进程可按能力复用 |
+| T-006 | write-ahead `prompt_invoked` marker 提交前崩溃 | `prepared + not_delivered` 且 transport 相同才可 CAS 重排 |
+| T-007 | prompt 可能已送达后崩溃 | `unknown`；不得自动 replay 或换 transport |
+| T-008 | 历史 Direct 进程失联记录 | 仅审计原 `interrupted/unknown`，当前 runtime 不恢复或 replay |
+| T-009 | 历史 Direct resume evidence | 只保留 `canSatisfyCurrentGate=false` 的证据，不执行 live Gate |
+| T-010 | Kimi Direct 旧 preflight | 仅兼容回归测试；公开入口始终先拒绝 Direct |
+| T-011 | Structured resume/load | 只关联原 native session；失败不改走 Direct |
+| T-012 | selected transport 与历史 snapshot 不同 | 旧 Turn 失败；显式新 Turn 才能使用新模式 |
+| T-013 | 一个 Adapter malformed/timeout/exit | 其他 lane 与 Broker 继续运行 |
+| T-014 | 关闭 | bounded cleanup，无遗留本次子进程树 |
+| T-015 | marker 已提交、native prompt 调用前崩溃 | `prompt_invoked + unknown`，不自动 replay |
+| T-016 | `cancelling + prepared + not_delivered` 后重启 | CAS 到 `cancelled`，不回 queued |
+| T-017 | cancel 与 native completion 竞态 | 恰好一个 terminal；completion 抢先可合法收敛 completed |
+| T-018 | delivered attempt 对账失败 | terminal 可为 interrupted，但 `delivery_certainty` 保留 delivered，不倒退 unknown |
 
-## 11. 原生权限继承
+## 9. Native interaction fail-closed
 
 | ID | 用例 | 通过标准 |
 | --- | --- | --- |
-| A-001 | 启动 argv 审计 | 只有 binary、协议子命令、stdio/cwd 和已记录 MCP binding；无 model/sandbox/approval/YOLO 覆盖 |
-| A-002 | CLI 配置前后 hash | 用户配置不变；native runtime/session 文件变化单独分类 |
-| A-003 | 原生配置自动允许 | GroupX 不新增 approval prompt |
-| A-004 | 原生配置请求 approval | UI 显示原生类型和 options，只能返回原生 option |
-| A-005 | UI 不响应 approval | pending/timeout/cancel，绝不自动允许 |
-| A-006 | CLI 拒绝 GroupX MCP | GroupX 不绕过；记录原生拒绝或 unsupported |
-| A-007 | Adapter 崩溃重启 | 不偷偷使用更宽松启动参数恢复 |
+| A-001 | Codex approval/requestUserInput fixture | 有界 cancel/teardown，Turn failed=`UNEXPECTED_NATIVE_INTERACTION` |
+| A-002 | Grok permission/question fixture | 同上；无 UI/REST/event/pending 状态 |
+| A-003 | Kimi `session/request_permission` | 回复 `cancelled` 结清协议，再 `session/cancel`；Turn failed=`UNEXPECTED_NATIVE_INTERACTION` |
+| A-004 | request 带 allow/deny 或 policy 字样 | 不持久化、不 relay、不选择；仍只能是 `UNEXPECTED_NATIVE_INTERACTION` |
+| A-005 | 重启后 bootstrap | 没有 pending approval 或可恢复审批工作 |
+| A-006 | ApprovalService/table/route/UI/event 静态审计 | active runtime/schema 全部不存在；migration 只可包含删除旧表的 `DROP`，不能创建或读取审批状态 |
+| A-007 | 独立 preflight、startup/session 创建或 mode 设置拒绝的明确 enterprise/server/static deny evidence | `NATIVE_POLICY_BLOCKED`，公开状态 `native_policy_blocked` |
+| A-008 | 任何 interaction request，包括 options/policy 字样或后续 stderr | 只能是 `UNEXPECTED_NATIVE_INTERACTION`，不得升级成 policy blocked |
+| A-009 | interaction failure | 不 fallback、不 replay |
+| A-010 | Codex `configRequirements/read {}` | null/缺失 requirements 视为无约束；显式 allowlist 缺 `never` 或 `danger-full-access` 时 `NATIVE_POLICY_BLOCKED` |
+| A-011 | 配置传入 command object | 只接受 executable + 空 prefix，或 Node executable + 单一现存 JS entrypoint；拒绝 native flags、多 prefix、shell wrapper、`wrapperPrefixArgs`/`extraArgs`，不能改写 fixed unrestricted profile |
 
-fixture 测试可覆盖 approval 状态机，但只有真实 native request 才能标为 live verified。用户配置没有触发时记录 `NOT_OBSERVED_BY_NATIVE_CONFIG`。
+## 10. 幂等、事务与 SSE
+
+| ID | 用例 | 通过标准 |
+| --- | --- | --- |
+| I-001 | 同 idempotency key + 同 payload | 返回相同结果 |
+| I-002 | 同 key + 不同 payload | `CLIENT_COMMAND_CONFLICT` |
+| I-003 | message + targets | source message、每目标 `turn.queued`、Turn 与 command result 单事务提交；`enqueue_seq` 来自 queued event，commit 后派发 |
+| I-004 | attempt write-ahead | prompt 前已提交 `prompt_invoked + unknown` |
+| I-005 | terminal transaction | 统一 terminal idempotency key + Turn CAS；final/failure、Turn、attempt、cursor 原子提交，跨 terminal type 也只有一条 |
+| I-006 | SSE reconnect | 单一 DB cursor tail/cutover watermark 保证 durable seq 无缝补齐；不出现 replay/live 窗口丢事件 |
+| I-007 | 慢客户端 | 可丢/并 transient delta，不丢 durable terminal；断开后 cursor 重连 |
+| I-008 | durable publish | 按全局 seq 顺序，不按 callback 到达顺序 |
+| I-009 | `afterSeq` 与 `Last-Event-ID` 同时存在 | 值相同才接受；不同返回 `INVALID_ENVELOPE` |
+| I-010 | bootstrap 期间并发 durable event / 多房间 active Turn | 投影与 cursor 来自同一 DB snapshot；只返回当前房间的有界最近事件与最小公开 Turn 字段；随后 SSE 从 `seq > cursor` 无缺口追上 |
+
+## 11. 公共记忆与身份记忆
+
+| ID | 用例 | 通过标准 |
+| --- | --- | --- |
+| M-001 | 用户固定公共记忆 | author/source 可追溯，重启后可检索 |
+| M-002 | 普通聊天 | 不自动升级 MemoryRecord |
+| M-003 | Structured MCP memory.remember | author 来自 binding，不能冒充他人 |
+| M-004 | supersede/retract | 追加版本/tombstone，不原地抹除 |
+| M-005 | 用户身份记录 | subject 可选 Agent，author 固定 user:web |
+| M-006 | Structured Agent identity.remember | subject 固定调用方自身 |
+| M-007 | 其他 Agent 的观察 | 保留 author != subject，不转成自我认定 |
+| M-008 | 历史 Direct Context Packet | 只验证旧持久记录可解释，不启动 Direct |
+| M-009 | transcript/summary/memory/identity | 四类逻辑分离，摘要失效不删原事件 |
 
 ## 12. Web 与本地传输
 
 | ID | 用例 | 通过标准 |
 | --- | --- | --- |
-| W-001 | 默认监听 | 仅 `127.0.0.1`/loopback |
-| W-002 | 外部 Origin/preflight | 拒绝；不能提交 JSON command |
-| W-003 | 模型输出 `<script>` | 作为文本或安全 Markdown 显示，不能执行 |
-| W-004 | path traversal | 静态服务器不读取 web root 外文件 |
-| W-005 | SSE 断开重连 | 使用 Last-Event-ID 补 durable events |
-| W-006 | 慢 SSE 客户端 | 不阻塞 Broker；delta 合并/丢弃后可重连获得 final |
-| W-007 | 两个浏览器 tab 重试 | client ID 幂等独立稳定，不产生意外冲突或重复 Turn |
-| W-008 | approval 关闭页面再打开 | pending 状态可恢复，未被自动处理 |
+| W-001 | 默认监听 | `127.0.0.1`；非 loopback 不属于 v0.1 |
+| W-002 | bootstrap | 回显 selected transport、Agent process/session health、capability、cursor |
+| W-003 | composer | 只能选择 recipients，不能设置 sender/transport/access |
+| W-004 | transcript | sender badge、final/partial/failed 状态正确 |
+| W-005 | approval surface | 没有批准/拒绝按钮、pending 卡片或 approval API 调用 |
+| W-006 | 模型输出 | 作为普通文本节点，不执行 HTML/script |
+| W-007 | 未知 event type | 非保留类型 generic render，不导致 SSE 断流；`approval.*`/`permission.*`/`user_input.*` 拒绝且不渲染 |
 
-这些边界是 localhost 传输和渲染安全，不是 CLI 文件/工具权限系统。
+loopback 与 binding 是产品范围/来源合同，不是认证或安全保证。
 
-## 13. 凭据与脱敏
+## 13. 诊断与证据
 
 | ID | 用例 | 通过标准 |
 | --- | --- | --- |
-| S-001 | stderr 含假 token fixture | 日志/事件/report 中被替换或拒绝持久化 |
-| S-002 | env dump 异常 | 不记录完整 env，只输出允许字段 |
-| S-003 | native approval 含敏感命令 | durable event 只保存白名单/脱敏摘要 |
-| S-004 | capability report | native session ID 脱敏，认证字段不存在 |
-| S-005 | JSONL 导出 | 排除 binding/native session/raw stderr/approval private fields |
-| S-006 | Git secret scan | tracked 文件没有 credential-like value |
+| S-001 | report | 记录 Agent、transport、unrestricted contract revision、run ID、时间、版本、argv/session shape、case、hash |
+| S-002 | native interaction | 只记录 kind、correlation、失败码和有界 reason；不记录 options/decision/raw payload |
+| S-003 | stderr/env/config | 不保存完整环境、全局 config 或无界 raw stderr |
+| S-004 | credential fixture | 合同字段中不存在凭据；普通用户正文不宣称自动秘密扫描 |
+| S-005 | evidence matching | PASS 的 evidence 必须同 Agent、同 transport、同 access contract 且文件/hash 可验证 |
 
 ## 14. 性能与规模
 
-指标不包含模型推理、CLI 内存和上游网络时间。
+Broker 指标不含模型网络/推理；只测 Structured session startup/reuse：
 
-| ID | 指标 | M1/M2 目标 |
+| ID | 指标 | 初始目标 |
 | --- | --- | --- |
-| F-001 | POST accepted p95 | `< 50 ms` |
-| F-002 | commit 到 Adapter enqueue p95 | `< 25 ms` |
-| F-003 | durable event 到 SSE 可见 p95 | `< 100 ms` |
-| F-004 | `@all` 三目标开始派发时间差 | `< 100 ms` |
-| F-005 | delta 合并窗口 | `20-50 ms` 可配置范围内 |
-| F-006 | 10,000 durable events | bootstrap 不全量发送；cursor 分页与恢复正确 |
-| F-007 | 一个 CLI 悬挂 | 其他两个 lane 延迟不被其队列阻塞 |
-| F-008 | 慢 Browser | Broker 写入/Adapter 消费不被 SSE socket 阻塞 |
-| F-009 | 重启恢复 | queued 数量与恢复结果一致，running 无自动重放 |
+| PF-001 | POST accepted p95 | < 50 ms |
+| PF-002 | commit 到 lane p95 | < 25 ms |
+| PF-003 | durable SSE p95 | < 100 ms |
+| PF-004 | `@all` | 三 lane 并行，不串行等待 |
+| PF-005 | 10,000 durable events | bootstrap 使用有界倒序查询，不全量扫描或返回历史；旧事件由 cursor 分页 |
+| PF-006 | Direct process startup | `DEPRECATED`，不再测量或纳入目标 |
+| PF-007 | Structured session startup/reuse | 分 Agent 报告，不借历史 Direct 数据 |
+
+未实际测量前不得写成达到。
 
 ## 15. 里程碑 Gate
 
-测试编号的最早强制里程碑：
+### M0
 
-```text
-M0: M0-01..M0-15
-M1: P-001,P-003,P-004,P-006,P-008;
-    R-001,R-002,R-003,R-007,R-008;
-    T-001..T-010; D-001..D-008;
-    X-001,X-005,X-006,X-007;
-    W-001..W-008; S-001..S-006; F-001..F-009
-M2: P-002,P-007; R-004,R-005,R-006;
-    C-001..C-010; X-002,X-003,X-004;
-    M-001..M-011; A-001..A-007
-M3: P-005 以及新增 Adapter/A2A 兼容套件
-```
+- Structured active baseline 与 Direct deprecated baseline 都存在；
+- 默认 Structured 三 Agent 的全部适用 M0 case PASS，才可关闭 v0.1 release transport Gate；
+- Direct 不得被宣称为 active/完整可用；其 baseline、Agent 和适用 case 保持 `DEPRECATED`；
+- Structured 三 Agent actual MCP call 全部 verified，才可宣称全向当前回合主动互调；
+- native interaction 负向合同通过，且无 approval surface；
+- 无自动 fallback、跨 transport recovery 或 replay。
 
-较早里程碑可以提前实现后续测试，但不能用后续功能失败阻塞前一个里程碑。
+### M1
 
-### M0 Gate
+- Web/REST/SSE、Broker、SQLite、三 Agent selected transport 闭环；
+- public transcript、sender、memory、identity、Context Packet 与重启恢复通过；
+- UI/health/bootstrap 明确显示 Structured `active`、Direct `deprecated`。
 
-- M0-01 至 M0-15 有脱敏结论；
-- 三个 Adapter 至少 handshake/session/prompt/stream 可用；
-- cancel/resume/MCP/approval 均有明确 PASS/unsupported/not-observed/degraded；
-- 配置不变与 secret scan 通过。
+### M2
 
-### M1 Gate
+- 仅 Structured：GroupX MCP `send/ask/read`、binding、因果循环、超时、取消、幂等通过；
+- 三 Agent native `tools/call` 与 provenance 全部 verified；
+- 不新增审批、权限或 user-input 系统。
 
-- P、R、T、D、W、S 的 M1 范围通过；
-- 浏览器可完成单目标和 `@all`；
-- sender、SSE reconnect、故障隔离与基础性能通过；
-- 无 Agent-to-Agent MCP 和 Memory 不算 M1 缺陷，它们属于 M2。
+### M3
 
-### M2 Gate
+- 新 Adapter 不修改核心 Envelope/存储/记忆；
+- A2A 只作为边缘 Adapter；
+- 不改变 fixed unrestricted 与 native interaction fail-turn 合同，除非另立版本决策。
 
-- C、M、A、X 全部必需语义通过；
-- `send/ask/read`、因果循环、memory provenance、identity subject/author 通过；
-- 原生 resume 不支持时降级明确；
-- v0.1 完成标准全部满足。
+## 16. 测试交付
 
-### M3 Gate
+每次 Gate 交付：
 
-- 新 Adapter 通过同一 contract suite；
-- A2A 只作为边缘 Adapter，不改变内部 Envelope/身份/权限语义；
-- 数据迁移和向后兼容测试通过。
+1. `docs/generated/m0-capabilities.json`（事实源）；
+2. 从 JSON 确定性生成的 `docs/generated/M0_CAPABILITY_MATRIX.md`；
+3. Git 忽略的有界 raw evidence 与可跟踪 evidence index/hash；
+4. 单元/集成/browser/performance 摘要；
+5. CLI/OS/Node 版本、transport、access contract revision、run ID、时间；
+6. 对 NOT_RUN/PARTIAL/FAIL 的具体下一步。
 
-## 16. 测试交付证据
-
-每个里程碑至少交付：
-
-```text
-测试命令
-版本和 capability snapshot
-通过/失败/跳过数量
-失败原因与 unsupported 边界
-性能摘要
-配置不变证据
-secret scan 结果
-Git diff scope
-```
-
-不能以“进程启动”“单元测试使用 fake response”或“CLI help 存在命令”替代真实端到端完成声明。
+生成器必须拒绝无 evidence 的 PASS、跨 transport 引用、旧 access contract 引用，以及没有 policy evidence 却声明 `NATIVE_POLICY_BLOCKED` 的结果。

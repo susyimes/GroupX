@@ -1,0 +1,1790 @@
+{
+  "$schema": "./m0-capabilities.schema.json",
+  "schemaVersion": "groupx.m0-capabilities/2",
+  "generatedAt": "2026-08-11T13:37:46.633Z",
+  "contractRevision": "unrestricted-v0.1",
+  "statusVocabulary": {
+    "test": [
+      "PASS",
+      "FAIL",
+      "PARTIAL",
+      "NOT_RUN",
+      "NOT_APPLICABLE",
+      "UNSUPPORTED"
+    ],
+    "fact": [
+      "documented",
+      "advertised",
+      "probed",
+      "verified",
+      "not_observed",
+      "unsupported"
+    ],
+    "gate": [
+      "PASS",
+      "BLOCKED"
+    ]
+  },
+  "contract": {
+    "transport": {
+      "default": "structured",
+      "selectionScope": "broker_startup",
+      "sameForAllEnabledAgentsInRun": true,
+      "requestOverrideAllowed": false,
+      "automaticFallback": false,
+      "crossTransportRecovery": false,
+      "active": [
+        "structured"
+      ],
+      "deprecated": [
+        "direct"
+      ],
+      "deprecatedCompatibilityOnly": true,
+      "knownStorageValues": [
+        "direct",
+        "structured"
+      ],
+      "publicRuntimeConfigAccepted": [
+        "structured"
+      ],
+      "directRuntimeEntryEnabled": false
+    },
+    "access": {
+      "value": "unrestricted",
+      "configurable": false,
+      "scope": "native_process_thread_or_session",
+      "globalCliConfigWrites": false,
+      "windowsUserBoundary": true,
+      "cannotBypass": [
+        "windows_uac",
+        "filesystem_acl",
+        "enterprise_requirements",
+        "server_policy",
+        "native_static_deny"
+      ]
+    },
+    "approvalSubsystem": {
+      "service": false,
+      "databaseTable": false,
+      "restApi": false,
+      "webUi": false,
+      "groupEvent": false
+    },
+    "nativeInteractionPolicy": {
+      "kinds": [
+        "approval",
+        "permission",
+        "requestUserInput",
+        "question",
+        "elicitation"
+      ],
+      "action": "fail_turn",
+      "errorCode": "UNEXPECTED_NATIVE_INTERACTION",
+      "requestOrOptionsCanUpgradeToPolicyBlocked": false,
+      "trailingStderrCanUpgradeToPolicyBlocked": false,
+      "relayToUi": false,
+      "autoDecide": false,
+      "persistPending": false,
+      "replay": false,
+      "fallback": false
+    },
+    "externalPolicyBlockPolicy": {
+      "errorCode": "NATIVE_POLICY_BLOCKED",
+      "publicState": "native_policy_blocked",
+      "allowedEvidenceSources": [
+        "preflight",
+        "startup_rejection",
+        "session_creation_rejection",
+        "mode_setting_rejection"
+      ],
+      "requiresExplicitExternalPolicyEvidence": true,
+      "inferredFromNativeInteractionRequest": false
+    },
+    "mcpInterAgentTransports": [
+      "structured"
+    ],
+    "mcpUnavailableErrorCode": "MCP_UNAVAILABLE",
+    "bindingPurpose": "sender_provenance_and_correlation",
+    "bindingIsAuthenticationCredential": false,
+    "causality": {
+      "allChildrenRequireParentRootHopValidation": true,
+      "causalCycleCommand": "mcp.ask",
+      "causalCycleRequiresWaitsForChildren": true,
+      "ancestorActorTargetForbiddenForSynchronousAsk": true,
+      "asynchronousSendToAncestorAllowed": true,
+      "asynchronousSendStillSubjectToLimits": true
+    }
+  },
+  "nativeProfiles": {
+    "direct": {
+      "codex": {
+        "supported": true,
+        "executable": "codex",
+        "argv": [
+          "--yolo",
+          "--dangerously-bypass-hook-trust",
+          "exec",
+          "--json",
+          "-"
+        ],
+        "promptInput": "stdin",
+        "resumeArgv": [
+          "--yolo",
+          "--dangerously-bypass-hook-trust",
+          "exec",
+          "resume",
+          "--json",
+          "<nativeSessionId>",
+          "-"
+        ]
+      },
+      "grok": {
+        "supported": true,
+        "executable": "grok",
+        "argv": [
+          "--no-auto-update",
+          "--permission-mode",
+          "bypassPermissions",
+          "--sandbox",
+          "off",
+          "--no-plan",
+          "--output-format",
+          "streaming-json",
+          "--single",
+          "<prompt>"
+        ],
+        "resumeInsertion": {
+          "argv": [
+            "--resume",
+            "<nativeSessionId>"
+          ],
+          "after": [
+            "--no-plan"
+          ],
+          "before": [
+            "--output-format",
+            "streaming-json",
+            "--single",
+            "<prompt>"
+          ]
+        },
+        "aliases": {
+          "--single": "-p"
+        }
+      },
+      "kimi": {
+        "supported": true,
+        "installedVersion": "0.34.0",
+        "capabilityStatus": "conditional",
+        "configPreflight": {
+          "configPath": "$KIMI_CODE_HOME/config.toml or ~/.kimi-code/config.toml",
+          "projectedKeys": [
+            "default_permission_mode",
+            "default_plan_mode"
+          ],
+          "acceptedPermissionModes": [
+            "yolo",
+            "auto"
+          ],
+          "requiredPlanMode": false,
+          "beforeStartOrResume": true,
+          "beforeEveryTurnSpawn": true,
+          "failureCode": "ADAPTER_START_FAILED",
+          "writesConfig": false,
+          "projectsUnrelatedFields": false
+        },
+        "executable": "kimi",
+        "argv": [
+          "--prompt",
+          "<prompt>",
+          "--output-format",
+          "stream-json"
+        ],
+        "resumeArgv": [
+          "--session",
+          "<nativeSessionId>",
+          "--prompt",
+          "<prompt>",
+          "--output-format",
+          "stream-json"
+        ],
+        "conflictingFlagsNotAdded": [
+          "--yolo",
+          "--auto",
+          "--plan"
+        ],
+        "fallback": false,
+        "nativePolicyBlockedOnPreflightMismatch": false
+      },
+      "lifecycleStatus": "deprecated",
+      "compatibilityOnly": true,
+      "activeGate": false,
+      "runtimeEntryEnabled": false
+    },
+    "structured": {
+      "codex": {
+        "supported": true,
+        "executable": "codex",
+        "argv": [
+          "--dangerously-bypass-hook-trust",
+          "app-server",
+          "--listen",
+          "stdio://"
+        ],
+        "threadStartOrResume": {
+          "approvalPolicy": "never",
+          "sandbox": "danger-full-access",
+          "cwd": "omitted_use_child_process_cwd"
+        },
+        "managedRequirementsPreflight": {
+          "method": "configRequirements/read",
+          "params": {},
+          "nullOrMissingRequirements": "no_constraint",
+          "missingRequiredApprovalPolicyOrSandbox": "NATIVE_POLICY_BLOCKED"
+        }
+      },
+      "grok": {
+        "supported": true,
+        "executable": "grok",
+        "argv": [
+          "--no-auto-update",
+          "--permission-mode",
+          "bypassPermissions",
+          "--sandbox",
+          "off",
+          "--no-plan",
+          "agent",
+          "stdio"
+        ]
+      },
+      "kimi": {
+        "supported": true,
+        "executable": "kimi",
+        "argv": [
+          "acp"
+        ],
+        "configPreflight": {
+          "projectedKeys": [
+            "default_permission_mode",
+            "default_plan_mode"
+          ],
+          "acceptedPermissionModes": [
+            "yolo",
+            "auto"
+          ],
+          "requiredPlanMode": false,
+          "beforeProcessSpawn": true,
+          "failureCode": "ADAPTER_START_FAILED",
+          "writesConfig": false
+        },
+        "beforeFirstPromptAfter": [
+          "session/new",
+          "session/load"
+        ],
+        "sessionSetMode": {
+          "method": "session/set_mode",
+          "params": {
+            "sessionId": "<native-session-id>",
+            "modeId": "auto"
+          },
+          "modePersists": false
+        },
+        "unexpectedPermissionSettlement": {
+          "responseOutcome": "cancelled",
+          "then": "session/cancel",
+          "turnErrorCode": "UNEXPECTED_NATIVE_INTERACTION"
+        }
+      }
+    }
+  },
+  "m0Cases": [
+    {
+      "id": "M0-01",
+      "name": "executable version and exact unrestricted argv"
+    },
+    {
+      "id": "M0-02",
+      "name": "process startup or structured handshake"
+    },
+    {
+      "id": "M0-03",
+      "name": "prompt final and transport-specific continuity"
+    },
+    {
+      "id": "M0-04",
+      "name": "stream capability and unique terminal"
+    },
+    {
+      "id": "M0-05",
+      "name": "sender provenance within normal broker-created binding flow"
+    },
+    {
+      "id": "M0-06",
+      "name": "cancel and subsequent availability"
+    },
+    {
+      "id": "M0-07",
+      "name": "GroupX MCP actual tool call and binding provenance"
+    },
+    {
+      "id": "M0-08",
+      "name": "native interaction fail-closed with no approval surface"
+    },
+    {
+      "id": "M0-09",
+      "name": "native session resume or load"
+    },
+    {
+      "id": "M0-10",
+      "name": "cross-adapter failure isolation"
+    },
+    {
+      "id": "M0-11",
+      "name": "malformed timeout exit and stderr handling"
+    },
+    {
+      "id": "M0-12",
+      "name": "global configuration non-write and native policy-block classification"
+    },
+    {
+      "id": "M0-13",
+      "name": "bounded diagnostics"
+    },
+    {
+      "id": "M0-14",
+      "name": "evidence and capability grading truthfulness"
+    },
+    {
+      "id": "M0-15",
+      "name": "bounded shutdown and process cleanup"
+    }
+  ],
+  "baselines": {
+    "direct": {
+      "requiredForRelease": false,
+      "gateStatus": "DEPRECATED",
+      "defaultCaseStatus": "DEPRECATED",
+      "caseOverrides": {
+        "M0-07": "NOT_APPLICABLE"
+      },
+      "agents": {
+        "codex": {
+          "installedVersion": "0.147.0",
+          "status": "DEPRECATED",
+          "evidenceRefs": [
+            "direct-release-native-codex-20260811T132505879Z",
+            "direct-release-fixture-codex-20260811T132257280Z"
+          ],
+          "caseResults": {
+            "M0-01": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-native-codex-20260811T132505879Z"
+              ]
+            },
+            "M0-02": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-native-codex-20260811T132505879Z"
+              ]
+            },
+            "M0-03": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-native-codex-20260811T132505879Z"
+              ]
+            },
+            "M0-04": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-native-codex-20260811T132505879Z"
+              ]
+            },
+            "M0-05": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-native-codex-20260811T132505879Z"
+              ]
+            },
+            "M0-06": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-native-codex-20260811T132505879Z"
+              ]
+            },
+            "M0-07": {
+              "status": "NOT_APPLICABLE",
+              "factLevel": "documented",
+              "evidenceRefs": []
+            },
+            "M0-08": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-fixture-codex-20260811T132257280Z"
+              ]
+            },
+            "M0-09": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-native-codex-20260811T132505879Z"
+              ]
+            },
+            "M0-10": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-fixture-codex-20260811T132257280Z"
+              ]
+            },
+            "M0-11": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-fixture-codex-20260811T132257280Z"
+              ]
+            },
+            "M0-12": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-native-codex-20260811T132505879Z",
+                "direct-release-fixture-codex-20260811T132257280Z"
+              ]
+            },
+            "M0-13": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-fixture-codex-20260811T132257280Z"
+              ]
+            },
+            "M0-14": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-fixture-codex-20260811T132257280Z"
+              ]
+            },
+            "M0-15": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-native-codex-20260811T132505879Z"
+              ]
+            }
+          },
+          "deprecationReason": "Direct is compatibility-only and has no active M0 Gate."
+        },
+        "grok": {
+          "installedVersion": "1.0.0",
+          "status": "DEPRECATED",
+          "evidenceRefs": [
+            "direct-release-native-grok-20260811T132505879Z",
+            "direct-release-fixture-grok-20260811T132257280Z"
+          ],
+          "caseResults": {
+            "M0-01": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-native-grok-20260811T132505879Z"
+              ]
+            },
+            "M0-02": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-native-grok-20260811T132505879Z"
+              ]
+            },
+            "M0-03": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-native-grok-20260811T132505879Z"
+              ]
+            },
+            "M0-04": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-native-grok-20260811T132505879Z"
+              ]
+            },
+            "M0-05": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-native-grok-20260811T132505879Z"
+              ]
+            },
+            "M0-06": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-native-grok-20260811T132505879Z"
+              ]
+            },
+            "M0-07": {
+              "status": "NOT_APPLICABLE",
+              "factLevel": "documented",
+              "evidenceRefs": []
+            },
+            "M0-08": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-fixture-grok-20260811T132257280Z"
+              ]
+            },
+            "M0-09": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-native-grok-20260811T132505879Z"
+              ]
+            },
+            "M0-10": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-fixture-grok-20260811T132257280Z"
+              ]
+            },
+            "M0-11": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-fixture-grok-20260811T132257280Z"
+              ]
+            },
+            "M0-12": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-native-grok-20260811T132505879Z",
+                "direct-release-fixture-grok-20260811T132257280Z"
+              ]
+            },
+            "M0-13": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-fixture-grok-20260811T132257280Z"
+              ]
+            },
+            "M0-14": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-fixture-grok-20260811T132257280Z"
+              ]
+            },
+            "M0-15": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-native-grok-20260811T132505879Z"
+              ]
+            }
+          },
+          "deprecationReason": "Direct is compatibility-only and has no active M0 Gate."
+        },
+        "kimi": {
+          "installedVersion": "0.34.0",
+          "status": "DEPRECATED",
+          "evidenceRefs": [
+            "direct-release-native-kimi-20260811T132505879Z",
+            "direct-release-fixture-kimi-20260811T132257280Z"
+          ],
+          "caseResults": {
+            "M0-01": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-native-kimi-20260811T132505879Z"
+              ]
+            },
+            "M0-02": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-native-kimi-20260811T132505879Z"
+              ]
+            },
+            "M0-03": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-native-kimi-20260811T132505879Z"
+              ]
+            },
+            "M0-04": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-native-kimi-20260811T132505879Z"
+              ]
+            },
+            "M0-05": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-native-kimi-20260811T132505879Z"
+              ]
+            },
+            "M0-06": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-native-kimi-20260811T132505879Z"
+              ]
+            },
+            "M0-07": {
+              "status": "NOT_APPLICABLE",
+              "factLevel": "documented",
+              "evidenceRefs": []
+            },
+            "M0-08": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-fixture-kimi-20260811T132257280Z"
+              ]
+            },
+            "M0-09": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-native-kimi-20260811T132505879Z"
+              ]
+            },
+            "M0-10": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-fixture-kimi-20260811T132257280Z"
+              ]
+            },
+            "M0-11": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-fixture-kimi-20260811T132257280Z"
+              ]
+            },
+            "M0-12": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-native-kimi-20260811T132505879Z",
+                "direct-release-fixture-kimi-20260811T132257280Z"
+              ]
+            },
+            "M0-13": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-fixture-kimi-20260811T132257280Z"
+              ]
+            },
+            "M0-14": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-fixture-kimi-20260811T132257280Z"
+              ]
+            },
+            "M0-15": {
+              "status": "DEPRECATED",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "direct-release-native-kimi-20260811T132505879Z"
+              ]
+            }
+          },
+          "deprecationReason": "Direct is compatibility-only and has no active M0 Gate."
+        }
+      },
+      "deprecation": {
+        "since": "v0.1",
+        "reason": "Structured is the sole active release path; Direct is retained only for compatibility and historical data readability."
+      }
+    },
+    "structured": {
+      "requiredForRelease": true,
+      "gateStatus": "PASS",
+      "defaultCaseStatus": "NOT_RUN",
+      "caseOverrides": {},
+      "agents": {
+        "codex": {
+          "installedVersion": "0.147.0",
+          "status": "PASS",
+          "evidenceRefs": [
+            "structured-release-native-codex-20260811T130102169Z",
+            "group-runtime-codex-20260811",
+            "structured-release-fixture-codex-20260811T125831853Z"
+          ],
+          "caseResults": {
+            "M0-01": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "structured-release-native-codex-20260811T130102169Z"
+              ]
+            },
+            "M0-02": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "group-runtime-codex-20260811"
+              ]
+            },
+            "M0-03": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "group-runtime-codex-20260811"
+              ]
+            },
+            "M0-04": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "structured-release-native-codex-20260811T130102169Z"
+              ]
+            },
+            "M0-05": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "structured-release-native-codex-20260811T130102169Z"
+              ]
+            },
+            "M0-06": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "structured-release-native-codex-20260811T130102169Z"
+              ]
+            },
+            "M0-07": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "structured-release-native-codex-20260811T130102169Z"
+              ]
+            },
+            "M0-08": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "structured-release-fixture-codex-20260811T125831853Z"
+              ]
+            },
+            "M0-09": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "group-runtime-codex-20260811"
+              ]
+            },
+            "M0-10": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "structured-release-fixture-codex-20260811T125831853Z"
+              ]
+            },
+            "M0-11": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "structured-release-fixture-codex-20260811T125831853Z"
+              ]
+            },
+            "M0-12": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "structured-release-native-codex-20260811T130102169Z",
+                "structured-release-fixture-codex-20260811T125831853Z"
+              ]
+            },
+            "M0-13": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "structured-release-fixture-codex-20260811T125831853Z"
+              ]
+            },
+            "M0-14": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "structured-release-fixture-codex-20260811T125831853Z"
+              ]
+            },
+            "M0-15": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "structured-release-native-codex-20260811T130102169Z"
+              ]
+            }
+          }
+        },
+        "grok": {
+          "installedVersion": "1.0.0",
+          "status": "PASS",
+          "evidenceRefs": [
+            "structured-release-native-grok-20260811T130102169Z",
+            "group-runtime-grok-20260811",
+            "structured-release-fixture-grok-20260811T125831853Z"
+          ],
+          "caseResults": {
+            "M0-01": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "structured-release-native-grok-20260811T130102169Z"
+              ]
+            },
+            "M0-02": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "group-runtime-grok-20260811"
+              ]
+            },
+            "M0-03": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "group-runtime-grok-20260811"
+              ]
+            },
+            "M0-04": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "structured-release-native-grok-20260811T130102169Z"
+              ]
+            },
+            "M0-05": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "structured-release-native-grok-20260811T130102169Z"
+              ]
+            },
+            "M0-06": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "structured-release-native-grok-20260811T130102169Z"
+              ]
+            },
+            "M0-07": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "structured-release-native-grok-20260811T130102169Z"
+              ]
+            },
+            "M0-08": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "structured-release-fixture-grok-20260811T125831853Z"
+              ]
+            },
+            "M0-09": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "group-runtime-grok-20260811"
+              ]
+            },
+            "M0-10": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "structured-release-fixture-grok-20260811T125831853Z"
+              ]
+            },
+            "M0-11": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "structured-release-fixture-grok-20260811T125831853Z"
+              ]
+            },
+            "M0-12": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "structured-release-native-grok-20260811T130102169Z",
+                "structured-release-fixture-grok-20260811T125831853Z"
+              ]
+            },
+            "M0-13": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "structured-release-fixture-grok-20260811T125831853Z"
+              ]
+            },
+            "M0-14": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "structured-release-fixture-grok-20260811T125831853Z"
+              ]
+            },
+            "M0-15": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "structured-release-native-grok-20260811T130102169Z"
+              ]
+            }
+          }
+        },
+        "kimi": {
+          "installedVersion": "0.34.0",
+          "status": "PASS",
+          "evidenceRefs": [
+            "structured-release-native-kimi-20260811T130102169Z",
+            "kimi-structured-yolo-mcp-20260811",
+            "structured-release-fixture-kimi-20260811T125831853Z",
+            "group-runtime-kimi-20260811"
+          ],
+          "caseResults": {
+            "M0-01": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "structured-release-native-kimi-20260811T130102169Z"
+              ]
+            },
+            "M0-02": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "kimi-structured-yolo-mcp-20260811"
+              ]
+            },
+            "M0-03": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "kimi-structured-yolo-mcp-20260811"
+              ]
+            },
+            "M0-04": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "structured-release-native-kimi-20260811T130102169Z"
+              ]
+            },
+            "M0-05": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "structured-release-native-kimi-20260811T130102169Z"
+              ]
+            },
+            "M0-06": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "structured-release-native-kimi-20260811T130102169Z"
+              ]
+            },
+            "M0-07": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "structured-release-native-kimi-20260811T130102169Z"
+              ]
+            },
+            "M0-08": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "structured-release-fixture-kimi-20260811T125831853Z"
+              ]
+            },
+            "M0-09": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "group-runtime-kimi-20260811"
+              ]
+            },
+            "M0-10": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "structured-release-fixture-kimi-20260811T125831853Z"
+              ]
+            },
+            "M0-11": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "structured-release-fixture-kimi-20260811T125831853Z"
+              ]
+            },
+            "M0-12": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "structured-release-native-kimi-20260811T130102169Z",
+                "structured-release-fixture-kimi-20260811T125831853Z"
+              ]
+            },
+            "M0-13": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "structured-release-fixture-kimi-20260811T125831853Z"
+              ]
+            },
+            "M0-14": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "structured-release-fixture-kimi-20260811T125831853Z"
+              ]
+            },
+            "M0-15": {
+              "status": "PASS",
+              "factLevel": "verified",
+              "evidenceRefs": [
+                "structured-release-native-kimi-20260811T130102169Z"
+              ]
+            }
+          }
+        }
+      }
+    }
+  },
+  "releaseGate": {
+    "requiredTransport": "structured",
+    "requiredAgents": [
+      "codex",
+      "grok",
+      "kimi"
+    ],
+    "requireAllApplicableCasesPass": true,
+    "requireStructuredMcpActualCallForAllAgents": true,
+    "status": "PASS",
+    "passed": true,
+    "blockingReasons": []
+  },
+  "directReadiness": {
+    "status": "DEPRECATED",
+    "releaseBlocking": false,
+    "gaps": [
+      "Direct transport is deprecated; no active M0 Gate is maintained."
+    ]
+  },
+  "evidenceIndex": [
+    {
+      "id": "direct-release-native-codex-20260811T132505879Z",
+      "evidenceClass": "native-live",
+      "sourceKind": "deprecated-live-conformance",
+      "agent": "codex",
+      "transport": "direct",
+      "accessContract": "unrestricted-v0.1",
+      "conformance": "matching-pass",
+      "runId": "20260811T132505879Z",
+      "recordedAt": "2026-08-11T13:25:05.879Z",
+      "relativePath": ".groupx/evidence/m0/direct-release/20260811T132505879Z/conformance.json",
+      "sha256": "1ffa44d971ab2e4b702d52c93c301f019b69f7738c1ebdf376a6650886378443",
+      "supportsCurrentCaseIds": [
+        "M0-01",
+        "M0-02",
+        "M0-03",
+        "M0-04",
+        "M0-05",
+        "M0-06",
+        "M0-09",
+        "M0-12",
+        "M0-15"
+      ],
+      "exactArgvAndVersion": true,
+      "processStartupObserved": true,
+      "promptFinalObserved": true,
+      "twoTurnContinuity": true,
+      "streamObserved": true,
+      "uniqueTerminal": true,
+      "bindingProvenance": true,
+      "nativeCancellation": true,
+      "subsequentTurnAvailable": true,
+      "nativeSessionResume": true,
+      "globalConfigInvariant": true,
+      "cleanShutdownAndNoResidual": true,
+      "canSatisfyCurrentGate": false,
+      "canSatisfyEntireAgentBaseline": false,
+      "deprecatedTransportEvidence": true
+    },
+    {
+      "id": "direct-release-fixture-codex-20260811T132257280Z",
+      "evidenceClass": "fixture",
+      "sourceKind": "deprecated-fixture-conformance",
+      "agent": "codex",
+      "transport": "direct",
+      "accessContract": "unrestricted-v0.1",
+      "conformance": "matching-pass",
+      "runId": "20260811T132257280Z",
+      "recordedAt": "2026-08-11T13:22:57.280Z",
+      "relativePath": ".groupx/evidence/m0/direct-fixture/20260811T132257280Z/conformance.json",
+      "sha256": "34ce192429ccb1a7320054fadaddfe8dcff2ed4996e39ca1947670456fbb5dc0",
+      "supportsCurrentCaseIds": [
+        "M0-08",
+        "M0-10",
+        "M0-11",
+        "M0-12",
+        "M0-13",
+        "M0-14"
+      ],
+      "interactionFailClosed": true,
+      "noApprovalSurface": true,
+      "failureIsolation": true,
+      "faultConvergence": true,
+      "explicitPolicyClassification": true,
+      "explicitPolicyEvidence": true,
+      "boundedDiagnostics": true,
+      "truthfulGrading": true,
+      "canSatisfyCurrentGate": false,
+      "canSatisfyEntireAgentBaseline": false,
+      "deprecatedTransportEvidence": true
+    },
+    {
+      "id": "direct-release-native-grok-20260811T132505879Z",
+      "evidenceClass": "native-live",
+      "sourceKind": "deprecated-live-conformance",
+      "agent": "grok",
+      "transport": "direct",
+      "accessContract": "unrestricted-v0.1",
+      "conformance": "matching-pass",
+      "runId": "20260811T132505879Z",
+      "recordedAt": "2026-08-11T13:25:05.879Z",
+      "relativePath": ".groupx/evidence/m0/direct-release/20260811T132505879Z/conformance.json",
+      "sha256": "1ffa44d971ab2e4b702d52c93c301f019b69f7738c1ebdf376a6650886378443",
+      "supportsCurrentCaseIds": [
+        "M0-01",
+        "M0-02",
+        "M0-03",
+        "M0-04",
+        "M0-05",
+        "M0-06",
+        "M0-09",
+        "M0-12",
+        "M0-15"
+      ],
+      "exactArgvAndVersion": true,
+      "processStartupObserved": true,
+      "promptFinalObserved": true,
+      "twoTurnContinuity": true,
+      "streamObserved": true,
+      "uniqueTerminal": true,
+      "bindingProvenance": true,
+      "nativeCancellation": true,
+      "subsequentTurnAvailable": true,
+      "nativeSessionResume": true,
+      "globalConfigInvariant": true,
+      "cleanShutdownAndNoResidual": true,
+      "canSatisfyCurrentGate": false,
+      "canSatisfyEntireAgentBaseline": false,
+      "deprecatedTransportEvidence": true
+    },
+    {
+      "id": "direct-release-fixture-grok-20260811T132257280Z",
+      "evidenceClass": "fixture",
+      "sourceKind": "deprecated-fixture-conformance",
+      "agent": "grok",
+      "transport": "direct",
+      "accessContract": "unrestricted-v0.1",
+      "conformance": "matching-pass",
+      "runId": "20260811T132257280Z",
+      "recordedAt": "2026-08-11T13:22:57.280Z",
+      "relativePath": ".groupx/evidence/m0/direct-fixture/20260811T132257280Z/conformance.json",
+      "sha256": "34ce192429ccb1a7320054fadaddfe8dcff2ed4996e39ca1947670456fbb5dc0",
+      "supportsCurrentCaseIds": [
+        "M0-08",
+        "M0-10",
+        "M0-11",
+        "M0-12",
+        "M0-13",
+        "M0-14"
+      ],
+      "interactionFailClosed": true,
+      "noApprovalSurface": true,
+      "failureIsolation": true,
+      "faultConvergence": true,
+      "explicitPolicyClassification": true,
+      "explicitPolicyEvidence": true,
+      "boundedDiagnostics": true,
+      "truthfulGrading": true,
+      "canSatisfyCurrentGate": false,
+      "canSatisfyEntireAgentBaseline": false,
+      "deprecatedTransportEvidence": true
+    },
+    {
+      "id": "direct-release-native-kimi-20260811T132505879Z",
+      "evidenceClass": "native-live",
+      "sourceKind": "deprecated-live-conformance",
+      "agent": "kimi",
+      "transport": "direct",
+      "accessContract": "unrestricted-v0.1",
+      "conformance": "matching-pass",
+      "runId": "20260811T132505879Z",
+      "recordedAt": "2026-08-11T13:25:05.879Z",
+      "relativePath": ".groupx/evidence/m0/direct-release/20260811T132505879Z/conformance.json",
+      "sha256": "1ffa44d971ab2e4b702d52c93c301f019b69f7738c1ebdf376a6650886378443",
+      "supportsCurrentCaseIds": [
+        "M0-01",
+        "M0-02",
+        "M0-03",
+        "M0-04",
+        "M0-05",
+        "M0-06",
+        "M0-09",
+        "M0-12",
+        "M0-15"
+      ],
+      "exactArgvAndVersion": true,
+      "processStartupObserved": true,
+      "promptFinalObserved": true,
+      "twoTurnContinuity": true,
+      "streamObserved": true,
+      "uniqueTerminal": true,
+      "bindingProvenance": true,
+      "nativeCancellation": true,
+      "subsequentTurnAvailable": true,
+      "nativeSessionResume": true,
+      "globalConfigInvariant": true,
+      "cleanShutdownAndNoResidual": true,
+      "canSatisfyCurrentGate": false,
+      "canSatisfyEntireAgentBaseline": false,
+      "deprecatedTransportEvidence": true
+    },
+    {
+      "id": "direct-release-fixture-kimi-20260811T132257280Z",
+      "evidenceClass": "fixture",
+      "sourceKind": "deprecated-fixture-conformance",
+      "agent": "kimi",
+      "transport": "direct",
+      "accessContract": "unrestricted-v0.1",
+      "conformance": "matching-pass",
+      "runId": "20260811T132257280Z",
+      "recordedAt": "2026-08-11T13:22:57.280Z",
+      "relativePath": ".groupx/evidence/m0/direct-fixture/20260811T132257280Z/conformance.json",
+      "sha256": "34ce192429ccb1a7320054fadaddfe8dcff2ed4996e39ca1947670456fbb5dc0",
+      "supportsCurrentCaseIds": [
+        "M0-08",
+        "M0-10",
+        "M0-11",
+        "M0-12",
+        "M0-13",
+        "M0-14"
+      ],
+      "interactionFailClosed": true,
+      "noApprovalSurface": true,
+      "failureIsolation": true,
+      "faultConvergence": true,
+      "explicitPolicyClassification": true,
+      "explicitPolicyEvidence": true,
+      "boundedDiagnostics": true,
+      "truthfulGrading": true,
+      "canSatisfyCurrentGate": false,
+      "canSatisfyEntireAgentBaseline": false,
+      "deprecatedTransportEvidence": true
+    },
+    {
+      "id": "structured-release-native-codex-20260811T130102169Z",
+      "evidenceClass": "native-live",
+      "sourceKind": "current-live-conformance",
+      "agent": "codex",
+      "transport": "structured",
+      "accessContract": "unrestricted-v0.1",
+      "conformance": "matching-pass",
+      "runId": "20260811T130102169Z",
+      "recordedAt": "2026-08-11T13:01:02.170Z",
+      "relativePath": ".groupx/evidence/m0/structured-release/20260811T130102169Z/conformance.json",
+      "sha256": "734d1c50277ce93daa0606d3f2ae329498c31cdef317e6e9e2991fb602ffa277",
+      "supportsCurrentCaseIds": [
+        "M0-01",
+        "M0-04",
+        "M0-05",
+        "M0-06",
+        "M0-07",
+        "M0-12",
+        "M0-15"
+      ],
+      "exactArgvAndVersion": true,
+      "streamObserved": true,
+      "uniqueTerminal": true,
+      "bindingProvenance": true,
+      "nativeCancellation": true,
+      "subsequentTurnAvailable": true,
+      "actualMcpToolCall": true,
+      "globalConfigInvariant": true,
+      "cleanShutdownAndNoResidual": true,
+      "canSatisfyCurrentGate": true,
+      "canSatisfyEntireAgentBaseline": false
+    },
+    {
+      "id": "structured-release-fixture-codex-20260811T125831853Z",
+      "evidenceClass": "fixture",
+      "sourceKind": "current-fixture-conformance",
+      "agent": "codex",
+      "transport": "structured",
+      "accessContract": "unrestricted-v0.1",
+      "conformance": "matching-pass",
+      "runId": "20260811T125831853Z",
+      "recordedAt": "2026-08-11T12:58:31.854Z",
+      "relativePath": ".groupx/evidence/m0/release-fixture/20260811T125831853Z/conformance.json",
+      "sha256": "a47f42aa9eba24f2832ff3cfb59af32a7cdda7631b93a1d0ce0f15006920a0a4",
+      "supportsCurrentCaseIds": [
+        "M0-08",
+        "M0-10",
+        "M0-11",
+        "M0-12",
+        "M0-13",
+        "M0-14"
+      ],
+      "interactionFailClosed": true,
+      "noApprovalSurface": true,
+      "failureIsolation": true,
+      "faultConvergence": true,
+      "explicitPolicyClassification": true,
+      "explicitPolicyEvidence": true,
+      "boundedDiagnostics": true,
+      "truthfulGrading": true,
+      "canSatisfyCurrentGate": true,
+      "canSatisfyEntireAgentBaseline": false
+    },
+    {
+      "id": "structured-release-native-grok-20260811T130102169Z",
+      "evidenceClass": "native-live",
+      "sourceKind": "current-live-conformance",
+      "agent": "grok",
+      "transport": "structured",
+      "accessContract": "unrestricted-v0.1",
+      "conformance": "matching-pass",
+      "runId": "20260811T130102169Z",
+      "recordedAt": "2026-08-11T13:01:02.170Z",
+      "relativePath": ".groupx/evidence/m0/structured-release/20260811T130102169Z/conformance.json",
+      "sha256": "734d1c50277ce93daa0606d3f2ae329498c31cdef317e6e9e2991fb602ffa277",
+      "supportsCurrentCaseIds": [
+        "M0-01",
+        "M0-04",
+        "M0-05",
+        "M0-06",
+        "M0-07",
+        "M0-12",
+        "M0-15"
+      ],
+      "exactArgvAndVersion": true,
+      "streamObserved": true,
+      "uniqueTerminal": true,
+      "bindingProvenance": true,
+      "nativeCancellation": true,
+      "subsequentTurnAvailable": true,
+      "actualMcpToolCall": true,
+      "globalConfigInvariant": true,
+      "cleanShutdownAndNoResidual": true,
+      "canSatisfyCurrentGate": true,
+      "canSatisfyEntireAgentBaseline": false
+    },
+    {
+      "id": "structured-release-fixture-grok-20260811T125831853Z",
+      "evidenceClass": "fixture",
+      "sourceKind": "current-fixture-conformance",
+      "agent": "grok",
+      "transport": "structured",
+      "accessContract": "unrestricted-v0.1",
+      "conformance": "matching-pass",
+      "runId": "20260811T125831853Z",
+      "recordedAt": "2026-08-11T12:58:31.854Z",
+      "relativePath": ".groupx/evidence/m0/release-fixture/20260811T125831853Z/conformance.json",
+      "sha256": "a47f42aa9eba24f2832ff3cfb59af32a7cdda7631b93a1d0ce0f15006920a0a4",
+      "supportsCurrentCaseIds": [
+        "M0-08",
+        "M0-10",
+        "M0-11",
+        "M0-12",
+        "M0-13",
+        "M0-14"
+      ],
+      "interactionFailClosed": true,
+      "noApprovalSurface": true,
+      "failureIsolation": true,
+      "faultConvergence": true,
+      "explicitPolicyClassification": true,
+      "explicitPolicyEvidence": true,
+      "boundedDiagnostics": true,
+      "truthfulGrading": true,
+      "canSatisfyCurrentGate": true,
+      "canSatisfyEntireAgentBaseline": false
+    },
+    {
+      "id": "structured-release-native-kimi-20260811T130102169Z",
+      "evidenceClass": "native-live",
+      "sourceKind": "current-live-conformance",
+      "agent": "kimi",
+      "transport": "structured",
+      "accessContract": "unrestricted-v0.1",
+      "conformance": "matching-pass",
+      "runId": "20260811T130102169Z",
+      "recordedAt": "2026-08-11T13:01:02.170Z",
+      "relativePath": ".groupx/evidence/m0/structured-release/20260811T130102169Z/conformance.json",
+      "sha256": "734d1c50277ce93daa0606d3f2ae329498c31cdef317e6e9e2991fb602ffa277",
+      "supportsCurrentCaseIds": [
+        "M0-01",
+        "M0-04",
+        "M0-05",
+        "M0-06",
+        "M0-07",
+        "M0-12",
+        "M0-15"
+      ],
+      "exactArgvAndVersion": true,
+      "streamObserved": true,
+      "uniqueTerminal": true,
+      "bindingProvenance": true,
+      "nativeCancellation": true,
+      "subsequentTurnAvailable": true,
+      "actualMcpToolCall": true,
+      "globalConfigInvariant": true,
+      "cleanShutdownAndNoResidual": true,
+      "canSatisfyCurrentGate": true,
+      "canSatisfyEntireAgentBaseline": false
+    },
+    {
+      "id": "structured-release-fixture-kimi-20260811T125831853Z",
+      "evidenceClass": "fixture",
+      "sourceKind": "current-fixture-conformance",
+      "agent": "kimi",
+      "transport": "structured",
+      "accessContract": "unrestricted-v0.1",
+      "conformance": "matching-pass",
+      "runId": "20260811T125831853Z",
+      "recordedAt": "2026-08-11T12:58:31.854Z",
+      "relativePath": ".groupx/evidence/m0/release-fixture/20260811T125831853Z/conformance.json",
+      "sha256": "a47f42aa9eba24f2832ff3cfb59af32a7cdda7631b93a1d0ce0f15006920a0a4",
+      "supportsCurrentCaseIds": [
+        "M0-08",
+        "M0-10",
+        "M0-11",
+        "M0-12",
+        "M0-13",
+        "M0-14"
+      ],
+      "interactionFailClosed": true,
+      "noApprovalSurface": true,
+      "failureIsolation": true,
+      "faultConvergence": true,
+      "explicitPolicyClassification": true,
+      "explicitPolicyEvidence": true,
+      "boundedDiagnostics": true,
+      "truthfulGrading": true,
+      "canSatisfyCurrentGate": true,
+      "canSatisfyEntireAgentBaseline": false
+    },
+    {
+      "id": "group-runtime-direct-codex-20260811",
+      "sourceKind": "deprecated-live-conformance",
+      "agent": "codex",
+      "transport": "direct",
+      "accessContract": "unrestricted-v0.1",
+      "conformance": "matching-partial",
+      "runId": "20260811T204110299+0800-direct",
+      "recordedAt": "2026-08-11T20:41:10.299+08:00",
+      "relativePath": ".groupx/evidence/m0/group-runtime/20260811T204110299+0800-direct/conformance.json",
+      "sha256": "ad8792b999eb005a60ae142498df04e725366a5f09368e7e3aa1c411f7398c2e",
+      "supportsCurrentCaseIds": [
+        "M0-02",
+        "M0-03",
+        "M0-09",
+        "M0-15"
+      ],
+      "canSatisfyCurrentGate": false,
+      "canSatisfyEntireAgentBaseline": false,
+      "evidenceClass": "native-live",
+      "cleanShutdownAndNoResidual": true,
+      "deprecatedTransportEvidence": true
+    },
+    {
+      "id": "group-runtime-direct-grok-20260811",
+      "sourceKind": "deprecated-live-conformance",
+      "agent": "grok",
+      "transport": "direct",
+      "accessContract": "unrestricted-v0.1",
+      "conformance": "matching-partial",
+      "runId": "20260811T204110299+0800-direct",
+      "recordedAt": "2026-08-11T20:41:10.299+08:00",
+      "relativePath": ".groupx/evidence/m0/group-runtime/20260811T204110299+0800-direct/conformance.json",
+      "sha256": "ad8792b999eb005a60ae142498df04e725366a5f09368e7e3aa1c411f7398c2e",
+      "supportsCurrentCaseIds": [
+        "M0-02",
+        "M0-03",
+        "M0-09",
+        "M0-15"
+      ],
+      "canSatisfyCurrentGate": false,
+      "canSatisfyEntireAgentBaseline": false,
+      "evidenceClass": "native-live",
+      "cleanShutdownAndNoResidual": true,
+      "deprecatedTransportEvidence": true
+    },
+    {
+      "id": "group-runtime-direct-kimi-20260811",
+      "sourceKind": "deprecated-live-conformance",
+      "agent": "kimi",
+      "transport": "direct",
+      "accessContract": "unrestricted-v0.1",
+      "conformance": "matching-partial",
+      "runId": "20260811T204110299+0800-direct",
+      "recordedAt": "2026-08-11T20:41:10.299+08:00",
+      "relativePath": ".groupx/evidence/m0/group-runtime/20260811T204110299+0800-direct/conformance.json",
+      "sha256": "ad8792b999eb005a60ae142498df04e725366a5f09368e7e3aa1c411f7398c2e",
+      "supportsCurrentCaseIds": [
+        "M0-02",
+        "M0-03",
+        "M0-09",
+        "M0-15"
+      ],
+      "canSatisfyCurrentGate": false,
+      "canSatisfyEntireAgentBaseline": false,
+      "evidenceClass": "native-live",
+      "cleanShutdownAndNoResidual": true,
+      "deprecatedTransportEvidence": true
+    },
+    {
+      "id": "group-runtime-codex-20260811",
+      "sourceKind": "current-live-conformance",
+      "agent": "codex",
+      "transport": "structured",
+      "accessContract": "unrestricted-v0.1",
+      "conformance": "matching-partial",
+      "runId": "20260811T203536318+0800",
+      "recordedAt": "2026-08-11T20:35:36.318+08:00",
+      "relativePath": ".groupx/evidence/m0/group-runtime/20260811T203536318+0800/conformance.json",
+      "sha256": "adddd2db1d5039118926b4aa2f1caba3e7a82292f55943aec2e065cf170344f0",
+      "supportsCurrentCaseIds": [
+        "M0-02",
+        "M0-03",
+        "M0-09",
+        "M0-15"
+      ],
+      "canSatisfyCurrentGate": true,
+      "canSatisfyEntireAgentBaseline": false,
+      "evidenceClass": "native-live"
+    },
+    {
+      "id": "group-runtime-grok-20260811",
+      "sourceKind": "current-live-conformance",
+      "agent": "grok",
+      "transport": "structured",
+      "accessContract": "unrestricted-v0.1",
+      "conformance": "matching-partial",
+      "runId": "20260811T203536318+0800",
+      "recordedAt": "2026-08-11T20:35:36.318+08:00",
+      "relativePath": ".groupx/evidence/m0/group-runtime/20260811T203536318+0800/conformance.json",
+      "sha256": "adddd2db1d5039118926b4aa2f1caba3e7a82292f55943aec2e065cf170344f0",
+      "supportsCurrentCaseIds": [
+        "M0-02",
+        "M0-03",
+        "M0-09",
+        "M0-15"
+      ],
+      "canSatisfyCurrentGate": true,
+      "canSatisfyEntireAgentBaseline": false,
+      "evidenceClass": "native-live"
+    },
+    {
+      "id": "group-runtime-kimi-20260811",
+      "sourceKind": "current-live-conformance",
+      "agent": "kimi",
+      "transport": "structured",
+      "accessContract": "unrestricted-v0.1",
+      "conformance": "matching-partial",
+      "runId": "20260811T203536318+0800",
+      "recordedAt": "2026-08-11T20:35:36.318+08:00",
+      "relativePath": ".groupx/evidence/m0/group-runtime/20260811T203536318+0800/conformance.json",
+      "sha256": "adddd2db1d5039118926b4aa2f1caba3e7a82292f55943aec2e065cf170344f0",
+      "supportsCurrentCaseIds": [
+        "M0-02",
+        "M0-03",
+        "M0-09",
+        "M0-15"
+      ],
+      "canSatisfyCurrentGate": true,
+      "canSatisfyEntireAgentBaseline": false,
+      "evidenceClass": "native-live"
+    },
+    {
+      "id": "kimi-structured-yolo-mcp-20260811",
+      "sourceKind": "current-live-conformance",
+      "agent": "kimi",
+      "transport": "structured",
+      "accessContract": "unrestricted-v0.1",
+      "conformance": "matching-partial",
+      "runId": "20260811T105613870Z-yolo-mcp",
+      "recordedAt": "2026-08-11T20:10:59.1418041+08:00",
+      "relativePath": ".groupx/evidence/m0/kimi-agent/20260811T105613870Z-yolo-mcp/conformance.json",
+      "sha256": "482744ae16527c45ebe058ff1b56580ceebf04b283f1680ab22c7b2ef70d63a1",
+      "supportsCurrentCaseIds": [
+        "M0-01",
+        "M0-02",
+        "M0-03",
+        "M0-04",
+        "M0-07",
+        "M0-13",
+        "M0-15"
+      ],
+      "canSatisfyCurrentGate": true,
+      "canSatisfyEntireAgentBaseline": false,
+      "evidenceClass": "native-live"
+    },
+    {
+      "id": "legacy-codex-summary",
+      "sourceKind": "legacy-live-summary",
+      "agent": "codex",
+      "transport": "structured",
+      "accessContract": "legacy-native-config",
+      "conformance": "legacy-nonconforming",
+      "runId": "legacy-codex-summary",
+      "recordedAt": "2026-08-11T08:48:28.4201676Z",
+      "relativePath": ".groupx/evidence/m0/codex-agent/SUMMARY.md",
+      "sha256": "255dbfd4ca6b94dc5357718d9754941ec69346ddf39e873e6108b846b738742f",
+      "supportsHistoricalCaseIds": [
+        "M0-02",
+        "M0-03",
+        "M0-04",
+        "M0-06",
+        "M0-09",
+        "M0-15"
+      ],
+      "canSatisfyCurrentGate": false,
+      "evidenceClass": "legacy"
+    },
+    {
+      "id": "legacy-codex-mcp-binding",
+      "sourceKind": "legacy-live-summary",
+      "agent": "codex",
+      "transport": "structured",
+      "accessContract": "legacy-native-config",
+      "conformance": "legacy-nonconforming",
+      "runId": "20260811T090749Z-mcp-binding",
+      "recordedAt": "2026-08-11T09:07:49Z",
+      "relativePath": ".groupx/evidence/m0/codex-agent/run-20260811T090749Z-mcp-binding/RESULT.md",
+      "sha256": "ac82b46fe2db10ab33004f55a6d98cda25ceec182697c4bebbb412bc918a00b5",
+      "supportsHistoricalCaseIds": [
+        "M0-05",
+        "M0-07"
+      ],
+      "canSatisfyCurrentGate": false,
+      "evidenceClass": "legacy"
+    },
+    {
+      "id": "legacy-grok-core",
+      "sourceKind": "legacy-live-report",
+      "agent": "grok",
+      "transport": "structured",
+      "accessContract": "legacy-native-config",
+      "conformance": "legacy-nonconforming",
+      "runId": "20260811T084326Z",
+      "recordedAt": "2026-08-11T08:43:26Z",
+      "relativePath": ".groupx/evidence/m0/grok-agent/20260811T084326Z/report.redacted.json",
+      "sha256": "a4db49c188d37d5c07f50670bf341e30d8f78c5881fceb95023f5fe23cbbe4cb",
+      "supportsHistoricalCaseIds": [
+        "M0-02",
+        "M0-03",
+        "M0-04",
+        "M0-06",
+        "M0-09",
+        "M0-15"
+      ],
+      "canSatisfyCurrentGate": false,
+      "evidenceClass": "legacy"
+    },
+    {
+      "id": "legacy-grok-mcp",
+      "sourceKind": "legacy-live-report",
+      "agent": "grok",
+      "transport": "structured",
+      "accessContract": "legacy-native-config",
+      "conformance": "legacy-nonconforming",
+      "runId": "20260811T084928Z-mcp-name",
+      "recordedAt": "2026-08-11T08:49:28Z",
+      "relativePath": ".groupx/evidence/m0/grok-agent/20260811T084928Z-mcp-name/report.redacted.json",
+      "sha256": "466d0519f9c532705e3634fd2759eb72883e7960a2341135e771fd374c6623b8",
+      "supportsHistoricalCaseIds": [
+        "M0-05",
+        "M0-07"
+      ],
+      "canSatisfyCurrentGate": false,
+      "evidenceClass": "legacy"
+    },
+    {
+      "id": "legacy-kimi-core-permission",
+      "sourceKind": "legacy-live-report",
+      "agent": "kimi",
+      "transport": "structured",
+      "accessContract": "legacy-native-config",
+      "conformance": "legacy-nonconforming",
+      "runId": "20260811T164518",
+      "recordedAt": "2026-08-11T16:45:18+08:00",
+      "relativePath": ".groupx/evidence/m0/kimi-agent/run-20260811T164518/report.json",
+      "sha256": "af03a257ab3a022b48a25b7c9b3e7111cf75c4094f11f6eb02fad45348d69082",
+      "supportsHistoricalCaseIds": [
+        "M0-02",
+        "M0-03",
+        "M0-04",
+        "M0-06",
+        "M0-09"
+      ],
+      "historicalNativeInteractionObserved": true,
+      "historicalInteractionDoesNotProvePolicyBlocked": true,
+      "canSatisfyCurrentGate": false,
+      "evidenceClass": "legacy"
+    }
+  ],
+  "evidencePolicy": {
+    "passRequiresVerifiedMatchingEvidence": true,
+    "matchingFields": [
+      "agent",
+      "transport",
+      "accessContract",
+      "caseId"
+    ],
+    "policyBlockedRequiresIndependentExplicitPolicyEvidence": true,
+    "fixtureCannotSatisfyNativeLiveGate": true,
+    "directMcpMustBeNotApplicable": true,
+    "kimiConfigPreflightRequiredBeforeBothTransports": true,
+    "kimiDirectConfigPreflightRequiredBeforeEverySpawn": true,
+    "kimiPromptConflictingFlagsForbidden": true,
+    "rawSessionIdsIncluded": false,
+    "hostnamesIncluded": false,
+    "configurationBodiesIncluded": false,
+    "ordinaryPromptOrModelTextIncluded": false,
+    "directTransportDeprecated": true,
+    "directEvidenceCannotSatisfyCurrentGate": true
+  }
+}
