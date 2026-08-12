@@ -1,5 +1,6 @@
 import { collectCursorPages } from "./pagination.js";
 import { copyPlainText, flashButtonLabel, renderRichContent } from "./rich-text.js";
+import { describeToolProgress, mergeToolProgressSnapshot } from "./tool-progress.js";
 
 type JsonRecord = Record<string, unknown>;
 type ConnectionState = "bootstrapping" | "connecting" | "live" | "reconnecting" | "offline";
@@ -47,6 +48,8 @@ interface TurnView {
 
 interface RecordView {
   id: string;
+  scopeType: "room" | "agent" | "global";
+  scopeId: string;
   kind: string;
   content: string;
   authorActorId: string;
@@ -92,12 +95,11 @@ interface AppState {
   messages: Map<string, GroupXEnvelope>;
   turns: Map<string, TurnView>;
   memories: Map<string, RecordView>;
-  identities: Map<string, RecordView>;
   seenEventIds: Set<string>;
   transientText: Map<string, DeltaState>;
   replyToEventId: string | null;
   pendingSubmission: PendingSubmission | null;
-  replacing: { identity: boolean; id: string } | null;
+  replacing: { surface: "public" | "agent"; id: string } | null;
   submitting: boolean;
 }
 
@@ -128,10 +130,13 @@ const TERMINAL_TURN_STATUSES = new Set(["completed", "failed", "cancelled", "int
 const COMPOSER_HINT = "Enter 发送 · Shift+Enter 换行";
 const DRAFT_STORAGE_KEY = "groupx:draft";
 const THEME_STORAGE_KEY = "groupx:theme";
+const CONTEXT_PANEL_STORAGE_KEY = "groupx:context-panel";
 const TIMELINE_MAX_ITEMS = 500;
 const TIMELINE_TRIM_BATCH = 100;
 const HEALTH_POLL_MS = 60_000;
 const BASE_TITLE = document.title;
+const CONTEXT_DRAWER_MEDIA = "(min-width: 761px) and (max-width: 1100px)";
+const CONTEXT_DESKTOP_MEDIA = "(min-width: 1101px)";
 
 const DOCUMENTED_EVENT_TYPES = [
   "groupx.event",
@@ -149,7 +154,12 @@ const DOCUMENTED_EVENT_TYPES = [
   "turn.reasoning.delta",
   "turn.progress",
   "tool.progress",
+  "context.compaction.started",
+  "context.compaction.retrying",
+  "context.compaction.completed",
+  "context.compaction.failed",
   "session.starting",
+  "session.retrying",
   "session.ready",
   "session.resumed",
   "session.stopped",
@@ -173,7 +183,6 @@ const state: AppState = {
   messages: new Map(),
   turns: new Map(),
   memories: new Map(),
-  identities: new Map(),
   seenEventIds: new Set(),
   transientText: new Map(),
   replyToEventId: null,
@@ -209,20 +218,27 @@ const replyContext = byId<HTMLDivElement>("reply-context");
 const replyDescription = byId<HTMLSpanElement>("reply-description");
 const clearReplyButton = byId<HTMLButtonElement>("clear-reply");
 const memoryList = byId<HTMLUListElement>("memory-list");
-const identityList = byId<HTMLUListElement>("identity-list");
 const memoryForm = byId<HTMLFormElement>("memory-form");
 const memoryKind = byId<HTMLSelectElement>("memory-kind");
 const memoryInput = byId<HTMLTextAreaElement>("memory-input");
-const identityForm = byId<HTMLFormElement>("identity-form");
-const identityActor = byId<HTMLSelectElement>("identity-actor");
-const identityKind = byId<HTMLSelectElement>("identity-kind");
-const identityInput = byId<HTMLTextAreaElement>("identity-input");
+const agentMemoryGroups = byId<HTMLDivElement>("agent-memory-groups");
+const agentMemoryForm = byId<HTMLFormElement>("agent-memory-form");
+const agentMemoryActor = byId<HTMLSelectElement>("agent-memory-actor");
+const agentMemoryKind = byId<HTMLSelectElement>("agent-memory-kind");
+const agentMemoryInput = byId<HTMLTextAreaElement>("agent-memory-input");
 const memoryReplaceBanner = byId<HTMLDivElement>("memory-replace-banner");
-const identityReplaceBanner = byId<HTMLDivElement>("identity-replace-banner");
+const agentMemoryReplaceBanner = byId<HTMLDivElement>("agent-memory-replace-banner");
 const memorySubmit = byId<HTMLButtonElement>("memory-submit");
-const identitySubmit = byId<HTMLButtonElement>("identity-submit");
+const agentMemorySubmit = byId<HTMLButtonElement>("agent-memory-submit");
 const themeToggle = byId<HTMLButtonElement>("theme-toggle");
 const targetPicker = byId<HTMLFieldSetElement>("target-picker");
+const appShell = byId<HTMLDivElement>("app");
+const contextPanel = byId<HTMLElement>("context-panel");
+const contextDrawerToggle = byId<HTMLButtonElement>("context-drawer-toggle");
+const runtimeProgress = byId<HTMLElement>("runtime-progress");
+const runtimeProgressTitle = byId<HTMLElement>("runtime-progress-title");
+const runtimeProgressDetail = byId<HTMLElement>("runtime-progress-detail");
+const runtimeProgressAttempt = byId<HTMLElement>("runtime-progress-attempt");
 
 function targetInputs(): HTMLInputElement[] {
   return Array.from(targetPicker.querySelectorAll<HTMLInputElement>('input[name="target"]'));
@@ -230,6 +246,7 @@ function targetInputs(): HTMLInputElement[] {
 const eventNodes = new Map<string, HTMLElement>();
 const turnNodes = new Map<string, HTMLElement>();
 const streamNodes = new Map<string, HTMLElement>();
+const toolProgressNodes = new Map<string, { node: HTMLElement; snapshot: unknown }>();
 const deltaBuckets = new Map<string, DeltaBucket>();
 const registeredEventTypes = new Set<string>(DOCUMENTED_EVENT_TYPES);
 const retryCommandIds = new Map<string, string>();
@@ -246,6 +263,9 @@ let newWhileScrolledUp = 0;
 let lastTimelineDate = "";
 let trimmedItemCount = 0;
 let trimNoticeNode: HTMLLIElement | null = null;
+let desktopContextExpanded = readContextPanelPreference();
+let compactContextDrawerOpen = false;
+let runtimeProgressHideTimer: number | null = null;
 
 function isRecord(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -434,8 +454,17 @@ function normalizeRecord(value: unknown, identity: boolean): RecordView | null {
   if (!id || !content) {
     return null;
   }
+  const scope = isRecord(value.scope) ? value.scope : {};
+  const scopeType =
+    readStringField(scope, "type") ||
+    readStringField(value, "scopeType") ||
+    (identity ? "agent" : "room");
+  const scopeId = readStringField(scope, "id") || readStringField(value, "scopeId");
   return {
     id,
+    scopeType:
+      scopeType === "agent" || scopeType === "global" ? scopeType : "room",
+    scopeId,
     kind: readStringField(value, "kind") || "note",
     content,
     authorActorId: readStringField(value, "authorActorId", "author") || "user:web",
@@ -523,6 +552,7 @@ function humanStatus(status: string): string {
   const names: Record<string, string> = {
     unknown: "状态未知",
     starting: "正在启动",
+    retrying: "正在重试",
     ready: "已就绪",
     resumed: "已恢复",
     online: "在线",
@@ -544,6 +574,16 @@ function humanStatus(status: string): string {
     native_policy_blocked: "原生策略阻止",
   };
   return names[status] ?? status;
+}
+
+function humanCapability(capability: string): string {
+  const names: Record<string, string> = {
+    currentTurnMcp: "回合内 MCP",
+    loadSession: "会话恢复",
+    semanticCancel: "语义取消",
+    streaming: "流式输出",
+  };
+  return names[capability] ?? capability.replace(/([a-z0-9])([A-Z])/gu, "$1 $2");
 }
 
 function setConnection(next: ConnectionState, detail = ""): void {
@@ -709,6 +749,12 @@ function cleanupRemovedItem(node: Element): void {
   if (streamKey) {
     streamNodes.delete(streamKey);
   }
+  for (const progress of node.querySelectorAll<HTMLElement>("[data-tool-progress-key]")) {
+    const key = progress.dataset.toolProgressKey;
+    if (key) {
+      toolProgressNodes.delete(key);
+    }
+  }
 }
 
 function trimTimelineIfNeeded(): void {
@@ -859,9 +905,15 @@ function renderMessage(envelope: GroupXEnvelope): void {
   if (existingArticle && existingArticle.parentElement instanceof HTMLLIElement) {
     article = existingArticle;
     item = existingArticle.parentElement;
+    const retainedToolProgress = article.querySelector<HTMLElement>(".tool-progress-list");
     article.replaceChildren();
     streamNodes.delete(key);
     state.transientText.delete(key);
+    delete article.dataset.streamKey;
+    if (retainedToolProgress) {
+      article.dataset.retainedToolProgress = "true";
+      article.append(retainedToolProgress);
+    }
   } else {
     item = document.createElement("li");
     item.className = "timeline-item";
@@ -878,6 +930,13 @@ function renderMessage(envelope: GroupXEnvelope): void {
   const body = document.createElement("div");
   body.className = "event-body";
   body.append(createActorMeta(envelope));
+
+  const retainedToolProgress = article.querySelector<HTMLElement>(".tool-progress-list");
+  if (retainedToolProgress) {
+    retainedToolProgress.remove();
+    body.append(retainedToolProgress);
+    delete article.dataset.retainedToolProgress;
+  }
 
   if (envelope.replyToEventId) {
     const sourceId = envelope.replyToEventId;
@@ -938,20 +997,24 @@ function renderMessage(envelope: GroupXEnvelope): void {
   }
 }
 
-function updateStreamingNode(bucket: DeltaBucket, text: string): void {
-  let article = streamNodes.get(bucket.key);
+function ensureStreamingNode(
+  envelope: GroupXEnvelope,
+  key: string,
+  mode: "content" | "reasoning"
+): HTMLElement {
+  let article = streamNodes.get(key);
   if (!article) {
     const item = document.createElement("li");
     item.className = "timeline-item";
     article = document.createElement("article");
-    article.className = `event-card is-streaming ${cardToneClass(bucket.envelope.actor.actorId)}`;
-    article.dataset.streamKey = bucket.key;
+    article.className = `event-card is-streaming ${cardToneClass(envelope.actor.actorId)}`;
+    article.dataset.streamKey = key;
 
     const body = document.createElement("div");
     body.className = "event-body";
-    body.append(createActorMeta(bucket.envelope));
+    body.append(createActorMeta(envelope));
 
-    if (bucket.mode === "reasoning") {
+    if (mode === "reasoning") {
       const label = document.createElement("div");
       label.className = "reply-reference";
       label.textContent = "推理流";
@@ -960,17 +1023,110 @@ function updateStreamingNode(bucket: DeltaBucket, text: string): void {
 
     const content = document.createElement("p");
     content.className = "event-content";
+    content.hidden = true;
     body.append(content);
-    article.append(createActorAvatar(bucket.envelope.actor), body);
+    article.append(createActorAvatar(envelope.actor), body);
     item.append(article);
-    streamNodes.set(bucket.key, article);
-    maybeInsertDateDivider(bucket.envelope.occurredAt);
+    streamNodes.set(key, article);
+    maybeInsertDateDivider(envelope.occurredAt);
     appendTimeline(item);
   }
+  return article;
+}
+
+function updateStreamingNode(bucket: DeltaBucket, text: string): void {
+  const article = ensureStreamingNode(bucket.envelope, bucket.key, bucket.mode);
   const content = article.querySelector<HTMLElement>(".event-content");
   if (content) {
+    content.hidden = false;
     renderRichContent(content, text);
   }
+}
+
+function toolProgressList(article: HTMLElement): HTMLElement {
+  const existing = article.querySelector<HTMLElement>(".tool-progress-list");
+  if (existing) {
+    return existing;
+  }
+  const list = document.createElement("div");
+  list.className = "tool-progress-list";
+  const content = article.querySelector<HTMLElement>(".event-content");
+  content?.before(list);
+  return list;
+}
+
+function updateToolProgressNode(node: HTMLElement, snapshot: unknown): void {
+  const presentation = describeToolProgress(snapshot);
+  node.dataset.tone = presentation.tone;
+  const label = node.querySelector<HTMLElement>(".tool-progress-label");
+  const status = node.querySelector<HTMLElement>(".tool-progress-status");
+  const details = node.querySelector<HTMLElement>(".tool-progress-details");
+  if (label) label.textContent = presentation.label;
+  if (status) status.textContent = presentation.status;
+  if (details) details.textContent = safeStringify(snapshot);
+}
+
+/** Render one tool call inside its Agent conversation bubble, collapsed by default. */
+export function renderToolProgress(envelope: GroupXEnvelope): void {
+  if (!isRecord(envelope.body)) {
+    renderGeneric(envelope);
+    return;
+  }
+  const turnId = turnIdFromBody(envelope.body);
+  if (!turnId) {
+    renderGeneric(envelope);
+    return;
+  }
+  const key = `turn:${turnId}`;
+  if (closedStreamKeys.has(key)) {
+    return;
+  }
+  const initialPresentation = describeToolProgress(envelope.body);
+  const progressKey = `${key}:tool:${initialPresentation.keyPart}`;
+  const existing = toolProgressNodes.get(progressKey);
+  if (existing) {
+    existing.snapshot = mergeToolProgressSnapshot(existing.snapshot, envelope.body);
+    updateToolProgressNode(existing.node, existing.snapshot);
+    return;
+  }
+
+  const article = ensureStreamingNode(envelope, key, "content");
+  const list = toolProgressList(article);
+  const row = document.createElement("section");
+  row.className = "tool-progress";
+  row.dataset.toolProgressKey = progressKey;
+
+  const summary = document.createElement("div");
+  summary.className = "tool-progress-summary";
+  const indicator = document.createElement("span");
+  indicator.className = "tool-progress-indicator";
+  indicator.setAttribute("aria-hidden", "true");
+  const label = document.createElement("span");
+  label.className = "tool-progress-label";
+  const status = document.createElement("span");
+  status.className = "tool-progress-status";
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "tool-progress-toggle";
+  toggle.textContent = "展开";
+  toggle.setAttribute("aria-expanded", "false");
+
+  const details = document.createElement("pre");
+  details.className = "tool-progress-details";
+  details.hidden = true;
+  toggle.addEventListener("click", () => {
+    const expanded = toggle.getAttribute("aria-expanded") === "true";
+    toggle.setAttribute("aria-expanded", String(!expanded));
+    toggle.textContent = expanded ? "展开" : "收起";
+    details.hidden = expanded;
+  });
+
+  summary.append(indicator, label, status, toggle);
+  row.append(summary, details);
+  list.append(row);
+  const entry = { node: row, snapshot: envelope.body };
+  toolProgressNodes.set(progressKey, entry);
+  updateToolProgressNode(row, entry.snapshot);
 }
 
 function flushDeltaBuckets(): void {
@@ -1164,6 +1320,57 @@ function renderGeneric(envelope: GroupXEnvelope): void {
   appendTimeline(item);
 }
 
+function renderRuntimeProgress(envelope: GroupXEnvelope): void {
+  const body = isRecord(envelope.body) ? envelope.body : {};
+  const attempt = readNumberField(body, "attempt") ?? 1;
+  const maxAttempts = readNumberField(body, "maxAttempts") ?? 1;
+  const nextDelayMs = readNumberField(body, "nextDelayMs") ?? 0;
+  const errorCode = readStringField(body, "errorCode");
+  if (runtimeProgressHideTimer !== null) {
+    window.clearTimeout(runtimeProgressHideTimer);
+    runtimeProgressHideTimer = null;
+  }
+  runtimeProgress.hidden = false;
+  runtimeProgress.dataset.phase = envelope.type.split(".").at(-1) ?? "started";
+  runtimeProgressAttempt.textContent = `${attempt} / ${maxAttempts}`;
+  if (envelope.type.startsWith("context.compaction.")) {
+    if (envelope.type.endsWith("retrying")) {
+      runtimeProgressTitle.textContent = "会话压缩暂时失败，正在重试";
+      runtimeProgressDetail.textContent = `${errorCode || "临时故障"} · ${Math.max(1, Math.ceil(nextDelayMs / 1000))} 秒后重试`;
+    } else if (envelope.type.endsWith("completed")) {
+      runtimeProgressTitle.textContent = "房间上下文已压缩";
+      runtimeProgressDetail.textContent = `已整理 ${readNumberField(body, "messageCount") ?? 0} 条较早消息，近期消息仍保留原文`;
+      runtimeProgressHideTimer = window.setTimeout(() => {
+        runtimeProgress.hidden = true;
+      }, 4_000);
+    } else if (envelope.type.endsWith("failed")) {
+      runtimeProgressTitle.textContent = "会话压缩失败";
+      runtimeProgressDetail.textContent = `${errorCode || "压缩器不可用"} · 原聊天记录未丢失`;
+    } else {
+      runtimeProgressTitle.textContent = "正在压缩较早的会话记录";
+      runtimeProgressDetail.textContent = `处理 ${readNumberField(body, "messageCount") ?? 0} 条消息，期间当前回复会等待`;
+    }
+    return;
+  }
+  const actor = state.agents.get(envelope.actor.actorId)?.displayName ?? envelope.actor.displayName;
+  if (envelope.type === "session.retrying") {
+    runtimeProgressTitle.textContent = `${actor} 会话连接失败，正在重试`;
+    runtimeProgressDetail.textContent = `${errorCode || "临时故障"} · ${Math.max(1, Math.ceil(nextDelayMs / 1000))} 秒后重试`;
+  } else if (envelope.type === "session.failed") {
+    runtimeProgressTitle.textContent = `${actor} 会话启动失败`;
+    runtimeProgressDetail.textContent = errorCode || "请检查本机 CLI 状态";
+  } else if (envelope.type === "session.ready" || envelope.type === "session.resumed") {
+    runtimeProgressTitle.textContent = `${actor} 会话已就绪`;
+    runtimeProgressDetail.textContent = "可以继续接收新的消息";
+    runtimeProgressHideTimer = window.setTimeout(() => {
+      runtimeProgress.hidden = true;
+    }, 2_500);
+  } else {
+    runtimeProgressTitle.textContent = `${actor} 正在建立会话`;
+    runtimeProgressDetail.textContent = "正在连接本机 CLI";
+  }
+}
+
 function updateAgentFromSessionEvent(envelope: GroupXEnvelope): void {
   if (envelope.actor.kind !== "agent") {
     return;
@@ -1197,17 +1404,18 @@ function renderRecordActivity(envelope: GroupXEnvelope, record: RecordView, iden
   article.dataset.eventId = envelope.eventId;
   article.append(createActorMeta(envelope));
 
-  const verb = envelope.type.endsWith(".retracted")
-    ? identity
-      ? "移除了一条身份记忆"
-      : "移除了一条公共记忆"
-    : envelope.type.endsWith(".superseded")
-      ? identity
-        ? "替换了一条身份记忆"
-        : "替换了一条公共记忆"
-      : identity
-        ? "更新了身份记忆"
-        : "固定了一条公共记忆";
+  const memoryLabel = record.scopeType === "agent" ? "Agent 记忆" : "公共记忆";
+  const verb = identity
+    ? envelope.type.endsWith(".retracted")
+      ? "移除了一条兼容身份记录"
+      : envelope.type.endsWith(".superseded")
+        ? "替换了一条兼容身份记录"
+        : "更新了一条兼容身份记录"
+    : envelope.type.endsWith(".retracted")
+      ? `移除了一条${memoryLabel}`
+      : envelope.type.endsWith(".superseded")
+        ? `替换了一条${memoryLabel}`
+        : `保存了一条${memoryLabel}`;
   const line = document.createElement("p");
   line.className = "activity-line";
   line.textContent = verb;
@@ -1229,7 +1437,14 @@ function addRecordFromEnvelope(envelope: GroupXEnvelope, identity: boolean): voi
     renderGeneric(envelope);
     return;
   }
-  const target = identity ? state.identities : state.memories;
+  // Identity records remain a supported compatibility/API data class, but are
+  // deliberately no longer exposed in the right-hand editor. Stable identity
+  // is configured per Agent in /setup.
+  if (identity) {
+    renderRecordActivity(envelope, record, true);
+    return;
+  }
+  const target = state.memories;
   if (envelope.type.endsWith(".retracted")) {
     target.delete(record.id);
   } else {
@@ -1244,8 +1459,8 @@ function addRecordFromEnvelope(envelope: GroupXEnvelope, identity: boolean): voi
     }
     target.set(record.id, record);
   }
-  renderRecords(identity);
-  renderRecordActivity(envelope, record, identity);
+  renderMemorySurfaces();
+  renderRecordActivity(envelope, record, false);
 }
 
 function dispatchEnvelope(envelope: GroupXEnvelope): void {
@@ -1263,6 +1478,15 @@ function dispatchEnvelope(envelope: GroupXEnvelope): void {
     case "turn.reasoning.delta":
       queueDelta(envelope, "reasoning");
       return;
+    case "tool.progress":
+      renderToolProgress(envelope);
+      return;
+    case "context.compaction.started":
+    case "context.compaction.retrying":
+    case "context.compaction.completed":
+    case "context.compaction.failed":
+      renderRuntimeProgress(envelope);
+      return;
     case "turn.queued":
     case "turn.dispatched":
     case "turn.started":
@@ -1274,14 +1498,13 @@ function dispatchEnvelope(envelope: GroupXEnvelope): void {
       renderTurnEnvelope(envelope);
       return;
     case "session.starting":
+    case "session.retrying":
     case "session.ready":
     case "session.resumed":
     case "session.stopped":
     case "session.failed":
       updateAgentFromSessionEvent(envelope);
-      if (envelope.type === "session.failed") {
-        renderGeneric(envelope);
-      }
+      renderRuntimeProgress(envelope);
       return;
     case "memory.remembered":
     case "memory.superseded":
@@ -1352,19 +1575,20 @@ function renderTargetPicker(): void {
   }
 }
 
-/** Keep the identity-memory subject select in sync with the configured agents. */
-function renderIdentityActorOptions(): void {
-  const previous = identityActor.value;
-  identityActor.replaceChildren();
+/** Keep the per-Agent memory scope select in sync with the configured roster. */
+function renderAgentMemoryActorOptions(): void {
+  const previous = agentMemoryActor.value;
+  agentMemoryActor.replaceChildren();
   for (const agent of orderedAgents()) {
     const option = document.createElement("option");
     option.value = agent.actorId;
     option.textContent = agent.displayName;
-    identityActor.append(option);
+    agentMemoryActor.append(option);
   }
-  if (previous && selectHasOption(identityActor, previous)) {
-    identityActor.value = previous;
+  if (previous && selectHasOption(agentMemoryActor, previous)) {
+    agentMemoryActor.value = previous;
   }
+  renderAgentMemoryRecords();
 }
 
 function renderAgents(): void {
@@ -1404,7 +1628,8 @@ function renderAgents(): void {
     cwd.textContent = agent.cwd || "cwd 未报告";
     const capabilities = document.createElement("span");
     capabilities.className = "agent-capabilities";
-    capabilities.textContent = agent.capabilities.length > 0 ? agent.capabilities.join(" · ") : "能力待现场确认";
+    capabilities.textContent =
+      agent.capabilities.length > 0 ? agent.capabilities.map(humanCapability).join(" · ") : "能力待现场确认";
     details.append(cwd, capabilities);
 
     const restart = document.createElement("button");
@@ -1418,18 +1643,6 @@ function renderAgents(): void {
     meta.append(details, restart);
 
     item.append(top, meta);
-    item.title = "点击后单独发给该 Agent";
-    item.addEventListener("click", (event) => {
-      if (event.target instanceof HTMLButtonElement || agent.enabled === false) {
-        return;
-      }
-      for (const input of targetInputs()) {
-        input.checked = input.value === agent.actorId && !input.disabled;
-      }
-      syncTargetAll();
-      invalidatePendingSubmission();
-      messageInput.focus();
-    });
     agentList.append(item);
     if (agent.enabled && !["failed", "offline", "stopped", "unknown"].includes(agent.status)) {
       available += 1;
@@ -1437,7 +1650,7 @@ function renderAgents(): void {
   }
   agentCount.textContent = `${available} / ${ordered.length}`;
   renderTargetPicker();
-  renderIdentityActorOptions();
+  renderAgentMemoryActorOptions();
   syncTargetAvailability();
 }
 
@@ -1489,69 +1702,61 @@ function selectHasOption(select: HTMLSelectElement, value: string): boolean {
   return Array.from(select.options).some((option) => option.value === value);
 }
 
-function enterReplaceMode(identity: boolean, record: RecordView): void {
-  state.replacing = { identity, id: record.id };
-  if (identity) {
-    if (selectHasOption(identityActor, record.subjectActorId)) {
-      identityActor.value = record.subjectActorId;
-    }
-    if (selectHasOption(identityKind, record.kind)) {
-      identityKind.value = record.kind;
-    }
-    identityInput.value = record.content;
-    activateContextTab("identity");
-    identityReplaceBanner.hidden = false;
-    identitySubmit.textContent = "保存替换";
-    identityInput.focus();
-  } else {
-    if (selectHasOption(memoryKind, record.kind)) {
-      memoryKind.value = record.kind;
-    }
-    memoryInput.value = record.content;
-    activateContextTab("memory");
-    memoryReplaceBanner.hidden = false;
-    memorySubmit.textContent = "保存替换";
-    memoryInput.focus();
+type MemorySurface = "public" | "agent";
+
+function enterReplaceMode(surface: MemorySurface, record: RecordView): void {
+  state.replacing = { surface, id: record.id };
+  if (surface === "agent") {
+    if (selectHasOption(agentMemoryActor, record.scopeId)) agentMemoryActor.value = record.scopeId;
+    if (selectHasOption(agentMemoryKind, record.kind)) agentMemoryKind.value = record.kind;
+    agentMemoryActor.disabled = true;
+    agentMemoryInput.value = record.content;
+    activateContextTab("agent-memory");
+    agentMemoryReplaceBanner.hidden = false;
+    agentMemorySubmit.textContent = "保存替换";
+    agentMemoryInput.focus();
+    return;
   }
+  if (selectHasOption(memoryKind, record.kind)) memoryKind.value = record.kind;
+  memoryInput.value = record.content;
+  activateContextTab("public-memory");
+  memoryReplaceBanner.hidden = false;
+  memorySubmit.textContent = "保存替换";
+  memoryInput.focus();
 }
 
-function exitReplaceMode(identity: boolean): void {
-  if (state.replacing?.identity === identity) {
-    state.replacing = null;
+function exitReplaceMode(surface: MemorySurface): void {
+  if (state.replacing?.surface === surface) state.replacing = null;
+  if (surface === "agent") {
+    agentMemoryReplaceBanner.hidden = true;
+    agentMemorySubmit.textContent = "保存到 Agent";
+    agentMemoryActor.disabled = false;
+    agentMemoryInput.value = "";
+    return;
   }
-  if (identity) {
-    identityReplaceBanner.hidden = true;
-    identitySubmit.textContent = "保存身份说明";
-    identityInput.value = "";
-  } else {
-    memoryReplaceBanner.hidden = true;
-    memorySubmit.textContent = "固定到房间";
-    memoryInput.value = "";
-  }
+  memoryReplaceBanner.hidden = true;
+  memorySubmit.textContent = "固定到房间";
+  memoryInput.value = "";
 }
 
-async function retractRecord(identity: boolean, recordId: string): Promise<void> {
-  const retryKey = `retract:${identity ? "identity" : "memory"}:${recordId}`;
-  const path = identity
-    ? `/api/identity/${encodeURIComponent(recordId)}/retract`
-    : `/api/memory/${encodeURIComponent(recordId)}/retract`;
+async function retractRecord(recordId: string): Promise<void> {
+  const retryKey = `retract:memory:${recordId}`;
+  const path = `/api/memory/${encodeURIComponent(recordId)}/retract`;
   try {
     await requestJson<unknown>(path, {
       method: "POST",
       body: JSON.stringify({ clientCommandId: retryableCommandId(retryKey, "web-retract") }),
     });
     retryCommandIds.delete(retryKey);
-    (identity ? state.identities : state.memories).delete(recordId);
-    if (state.replacing?.identity === identity && state.replacing.id === recordId) {
-      exitReplaceMode(identity);
-    }
-    renderRecords(identity);
+    state.memories.delete(recordId);
+    if (state.replacing?.id === recordId) exitReplaceMode(state.replacing.surface);
+    renderMemorySurfaces();
   } catch (error) {
     showGlobalError(errorMessage(error));
   }
 }
 
-function wireRetractButton(button: HTMLButtonElement, identity: boolean, recordId: string): void {
+function wireRetractButton(button: HTMLButtonElement, recordId: string): void {
   let armed = false;
   let armTimer: number | null = null;
   const disarm = (): void => {
@@ -1572,17 +1777,23 @@ function wireRetractButton(button: HTMLButtonElement, identity: boolean, recordI
       return;
     }
     disarm();
-    void retractRecord(identity, recordId);
+    void retractRecord(recordId);
   });
 }
 
-function renderRecords(identity: boolean): void {
-  const records = Array.from((identity ? state.identities : state.memories).values())
-    .filter((record) => record.status === "active")
+function activeMemories(surface: MemorySurface): RecordView[] {
+  const actorId = agentMemoryActor.value;
+  return Array.from(state.memories.values())
+    .filter((record) =>
+      record.status === "active" &&
+      (surface === "public"
+        ? record.scopeType === "room" && record.scopeId === state.roomId
+        : record.scopeType === "agent" && record.scopeId === actorId)
+    )
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
-  const list = identity ? identityList : memoryList;
-  list.replaceChildren();
-  for (const record of records) {
+}
+
+function createRecordCard(record: RecordView, surface: MemorySurface): HTMLLIElement {
     const item = document.createElement("li");
     item.className = "record-card";
     item.dataset.recordId = record.id;
@@ -1608,17 +1819,64 @@ function renderRecords(identity: boolean): void {
     replace.type = "button";
     replace.className = "text-button";
     replace.textContent = "替换";
-    replace.addEventListener("click", () => enterReplaceMode(identity, record));
+    replace.addEventListener("click", () => enterReplaceMode(surface, record));
     const retract = document.createElement("button");
     retract.type = "button";
     retract.className = "text-button danger-text";
     retract.textContent = "移除";
-    wireRetractButton(retract, identity, record.id);
+    wireRetractButton(retract, record.id);
     actions.append(replace, retract);
 
     item.append(meta, content, actions);
-    list.append(item);
+    return item;
+}
+
+function renderPublicMemoryRecords(): void {
+  memoryList.replaceChildren(...activeMemories("public").map((record) => createRecordCard(record, "public")));
+}
+
+function recordDateHeading(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "日期未知";
+  const relative = dateDividerLabel(date);
+  if (relative === "今天" || relative === "昨天") return relative;
+  return new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", day: "numeric" }).format(date);
+}
+
+function renderAgentMemoryRecords(): void {
+  agentMemoryGroups.replaceChildren();
+  const records = activeMemories("agent");
+  if (records.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "memory-empty";
+    empty.textContent = agentMemoryActor.value ? "这个 Agent 还没有独立记忆" : "请先配置一个 Agent";
+    agentMemoryGroups.append(empty);
+    return;
   }
+  const groups = new Map<string, RecordView[]>();
+  for (const record of records) {
+    const key = recordDateHeading(record.createdAt);
+    const group = groups.get(key) ?? [];
+    group.push(record);
+    groups.set(key, group);
+  }
+  for (const [heading, group] of groups) {
+    const section = document.createElement("section");
+    section.className = "memory-date-group";
+    const title = document.createElement("h3");
+    title.className = "memory-date-heading";
+    title.textContent = heading;
+    const list = document.createElement("ul");
+    list.className = "record-list";
+    list.append(...group.map((record) => createRecordCard(record, "agent")));
+    section.append(title, list);
+    agentMemoryGroups.append(section);
+  }
+}
+
+function renderMemorySurfaces(): void {
+  renderPublicMemoryRecords();
+  renderAgentMemoryRecords();
 }
 
 function extractCollection(value: unknown, keys: string[]): unknown[] {
@@ -1659,25 +1917,21 @@ function recordPagePath(path: "/api/memory" | "/api/identity", cursor: number | 
   return `${path}?${query.toString()}`;
 }
 
-async function loadRecords(path: "/api/memory" | "/api/identity", identity: boolean): Promise<void> {
+async function loadMemoryRecords(): Promise<void> {
   try {
-    const target = identity ? state.identities : state.memories;
     const records = await collectCursorPages(async (cursor) => {
-      const response = await requestJson<unknown>(recordPagePath(path, cursor));
-      const items = extractCollection(
-        response,
-        identity ? ["identities", "records", "items"] : ["memory", "memories", "records", "items"]
-      );
+      const response = await requestJson<unknown>(recordPagePath("/api/memory", cursor));
+      const items = extractCollection(response, ["memory", "memories", "records", "items"]);
       const nextCursor = nextCursorFromPage(response);
       return nextCursor === undefined ? { items } : { items, nextCursor };
     });
     for (const value of records) {
-      const record = normalizeRecord(value, identity);
+      const record = normalizeRecord(value, false);
       if (record) {
-        target.set(record.id, record);
+        state.memories.set(record.id, record);
       }
     }
-    renderRecords(identity);
+    renderMemorySurfaces();
   } catch (error) {
     if (!(error instanceof ApiFailure) || error.status !== 404) {
       showGlobalError(errorMessage(error));
@@ -1768,7 +2022,7 @@ async function submitMemory(): Promise<void> {
     memoryInput.focus();
     return;
   }
-  const replacing = state.replacing !== null && !state.replacing.identity ? state.replacing : null;
+  const replacing = state.replacing?.surface === "public" ? state.replacing : null;
   memorySubmit.disabled = true;
   const retryKey = replacing
     ? `supersede-memory:${replacing.id}:${memoryKind.value}:${content}`
@@ -1802,12 +2056,12 @@ async function submitMemory(): Promise<void> {
         state.memories.delete(replacing.id);
       }
       state.memories.set(memory.id, memory);
-      renderRecords(false);
+      renderMemorySurfaces();
     }
     retryCommandIds.delete(retryKey);
     memoryInput.value = "";
     if (replacing) {
-      exitReplaceMode(false);
+      exitReplaceMode("public");
     }
   } catch (error) {
     showGlobalError(errorMessage(error));
@@ -1816,57 +2070,63 @@ async function submitMemory(): Promise<void> {
   }
 }
 
-async function submitIdentity(): Promise<void> {
-  const content = identityInput.value.trim();
+async function submitAgentMemory(): Promise<void> {
+  const content = agentMemoryInput.value.trim();
   if (!content) {
-    identityInput.focus();
+    agentMemoryInput.focus();
     return;
   }
-  const replacing = state.replacing !== null && state.replacing.identity ? state.replacing : null;
-  identitySubmit.disabled = true;
+  const actorId = agentMemoryActor.value;
+  if (!actorId) {
+    agentMemoryActor.focus();
+    return;
+  }
+  const replacing = state.replacing?.surface === "agent" ? state.replacing : null;
+  agentMemorySubmit.disabled = true;
   const retryKey = replacing
-    ? `supersede-identity:${replacing.id}:${identityKind.value}:${content}`
-    : `identity:${identityActor.value}:${identityKind.value}:${content}`;
+    ? `supersede-memory:${replacing.id}:${agentMemoryKind.value}:${content}`
+    : `memory:${actorId}:${agentMemoryKind.value}:${content}`;
   try {
     const response = await requestJson<unknown>(
       replacing
-        ? `/api/identity/${encodeURIComponent(replacing.id)}/supersede`
-        : "/api/identity",
+        ? `/api/memory/${encodeURIComponent(replacing.id)}/supersede`
+        : "/api/memory",
       {
         method: "POST",
         body: JSON.stringify(
           replacing
             ? {
                 clientCommandId: retryableCommandId(retryKey, "web-supersede"),
-                kind: identityKind.value,
+                kind: agentMemoryKind.value,
                 content,
               }
             : {
-                clientCommandId: retryableCommandId(retryKey, "web-identity"),
-                subjectActorId: identityActor.value,
-                kind: identityKind.value,
+                clientCommandId: retryableCommandId(retryKey, "web-memory"),
+                scope: { type: "agent", id: actorId },
+                subjectActorId: actorId,
+                kind: agentMemoryKind.value,
                 content,
               }
         ),
       }
     );
-    const identity = isRecord(response) ? normalizeRecord(response.identity, true) : null;
-    if (identity) {
+    const memory = isRecord(response) ? normalizeRecord(response.memory, false) : null;
+    if (memory) {
       if (replacing) {
-        state.identities.delete(replacing.id);
+        state.memories.delete(replacing.id);
       }
-      state.identities.set(identity.id, identity);
-      renderRecords(true);
+      state.memories.set(memory.id, memory);
+      renderMemorySurfaces();
     }
     retryCommandIds.delete(retryKey);
-    identityInput.value = "";
+    agentMemoryInput.value = "";
     if (replacing) {
-      exitReplaceMode(true);
+      exitReplaceMode("agent");
     }
   } catch (error) {
     showGlobalError(errorMessage(error));
   } finally {
-    identitySubmit.disabled = false;
+    agentMemorySubmit.disabled = false;
   }
 }
 
@@ -1877,8 +2137,8 @@ function syncTargetAll(): void {
   targetAll.disabled = state.submitting || selectableTargets.length === 0;
 }
 
-function activateContextTab(tabId: string): void {
-  const tabs = ["memory", "identity"] as const;
+function activateContextTab(tabId: "public-memory" | "agent-memory"): void {
+  const tabs = ["public-memory", "agent-memory"] as const;
   for (const name of tabs) {
     const tab = byId<HTMLButtonElement>(`${name}-tab`);
     const panel = byId<HTMLElement>(`${name}-panel`);
@@ -1887,6 +2147,48 @@ function activateContextTab(tabId: string): void {
     tab.setAttribute("aria-selected", String(active));
     panel.hidden = !active;
   }
+}
+
+function readContextPanelPreference(): boolean {
+  try {
+    return localStorage.getItem(CONTEXT_PANEL_STORAGE_KEY) === "expanded";
+  } catch {
+    return false;
+  }
+}
+
+function persistContextPanelPreference(): void {
+  try {
+    localStorage.setItem(CONTEXT_PANEL_STORAGE_KEY, desktopContextExpanded ? "expanded" : "collapsed");
+  } catch {
+    // localStorage may be unavailable; the current layout still works for this page load
+  }
+}
+
+function applyContextPanelState(): void {
+  const desktop = window.matchMedia(CONTEXT_DESKTOP_MEDIA).matches;
+  const drawer = window.matchMedia(CONTEXT_DRAWER_MEDIA).matches;
+  const open = desktop ? desktopContextExpanded : drawer ? compactContextDrawerOpen : true;
+
+  appShell.classList.toggle("context-is-collapsed", desktop && !open);
+  contextPanel.classList.toggle("is-open", (desktop || drawer) && open);
+  contextPanel.inert = !open;
+  contextPanel.setAttribute("aria-hidden", String(!open));
+  contextDrawerToggle.classList.toggle("is-open", open);
+  contextDrawerToggle.setAttribute("aria-expanded", String(open));
+  const label = open ? "收起记忆面板" : "展开记忆面板";
+  contextDrawerToggle.setAttribute("aria-label", label);
+  contextDrawerToggle.title = label;
+}
+
+function setContextDrawerOpen(open: boolean): void {
+  if (window.matchMedia(CONTEXT_DESKTOP_MEDIA).matches) {
+    desktopContextExpanded = open;
+    persistContextPanelPreference();
+  } else if (window.matchMedia(CONTEXT_DRAWER_MEDIA).matches) {
+    compactContextDrawerOpen = open;
+  }
+  applyContextPanelState();
 }
 
 function supportedEventTypesFromBootstrap(bootstrap: JsonRecord): string[] {
@@ -2017,8 +2319,7 @@ function connectEventSource(extraTypes: string[] = []): void {
 async function bootstrap(): Promise<void> {
   setConnection("bootstrapping");
   renderAgents();
-  renderRecords(false);
-  renderRecords(true);
+  renderMemorySurfaces();
   try {
     const decoded = await requestJson<unknown>("/api/bootstrap");
     if (!isRecord(decoded)) {
@@ -2058,21 +2359,14 @@ async function bootstrap(): Promise<void> {
         state.memories.set(record.id, record);
       }
     }
-    for (const value of extractCollection(decoded, ["identities", "identity"])) {
-      const record = normalizeRecord(value, true);
-      if (record) {
-        state.identities.set(record.id, record);
-      }
-    }
-    renderRecords(false);
-    renderRecords(true);
+    renderMemorySurfaces();
 
     const throughSeq = readNumberField(room, "throughSeq") ?? readNumberField(decoded, "throughSeq") ?? 0;
     if (Number.isSafeInteger(throughSeq) && throughSeq >= 0) {
       state.lastDurableSeq = Math.max(state.lastDurableSeq, throughSeq);
     }
 
-    void Promise.allSettled([loadRecords("/api/memory", false), loadRecords("/api/identity", true)]);
+    void loadMemoryRecords();
     connectEventSource(supportedEventTypesFromBootstrap(decoded));
     void refreshHealth();
     if (healthTimer === null) {
@@ -2151,20 +2445,55 @@ memoryForm.addEventListener("submit", (event) => {
   void submitMemory();
 });
 
-identityForm.addEventListener("submit", (event) => {
+agentMemoryForm.addEventListener("submit", (event) => {
   event.preventDefault();
-  void submitIdentity();
+  void submitAgentMemory();
 });
 
-for (const tabId of ["memory", "identity"] as const) {
+for (const tabId of ["public-memory", "agent-memory"] as const) {
   byId<HTMLButtonElement>(`${tabId}-tab`).addEventListener("click", () => activateContextTab(tabId));
 }
+agentMemoryActor.addEventListener("change", () => {
+  if (state.replacing?.surface === "agent") exitReplaceMode("agent");
+  renderAgentMemoryRecords();
+});
+
+contextDrawerToggle.addEventListener("click", () => {
+  setContextDrawerOpen(contextDrawerToggle.getAttribute("aria-expanded") !== "true");
+});
+
+document.addEventListener("pointerdown", (event) => {
+  if (
+    !window.matchMedia(CONTEXT_DRAWER_MEDIA).matches ||
+    !contextPanel.classList.contains("is-open") ||
+    !(event.target instanceof Node) ||
+    contextPanel.contains(event.target) ||
+    contextDrawerToggle.contains(event.target)
+  ) {
+    return;
+  }
+  setContextDrawerOpen(false);
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && contextPanel.classList.contains("is-open")) {
+    setContextDrawerOpen(false);
+    contextDrawerToggle.focus();
+  }
+});
+
+window.addEventListener("resize", () => {
+  if (!window.matchMedia(CONTEXT_DRAWER_MEDIA).matches) {
+    compactContextDrawerOpen = false;
+  }
+  applyContextPanelState();
+});
 
 byId<HTMLButtonElement>("memory-replace-cancel").addEventListener("click", () => {
-  exitReplaceMode(false);
+  exitReplaceMode("public");
 });
-byId<HTMLButtonElement>("identity-replace-cancel").addEventListener("click", () => {
-  exitReplaceMode(true);
+byId<HTMLButtonElement>("agent-memory-replace-cancel").addEventListener("click", () => {
+  exitReplaceMode("agent");
 });
 
 document.addEventListener("visibilitychange", () => {
@@ -2206,6 +2535,7 @@ themeToggle.addEventListener("click", () => {
 });
 
 initTheme();
+applyContextPanelState();
 restoreDraft();
 updateCharacterCount();
 autoresizeComposer();

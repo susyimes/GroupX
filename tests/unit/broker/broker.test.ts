@@ -430,6 +430,18 @@ describe.sequential("GroupXBroker acceptance, dispatch and terminal semantics", 
     fixture.adapters.codex.handler = async function* (_session, input) {
       yield nativeEvent("codex", "turn.started", {}, `${input.turnId}:start`);
       yield nativeEvent("codex", "content.delta", { text: "ab" }, `${input.turnId}:1`);
+      yield nativeEvent(
+        "codex",
+        "tool.started",
+        { server: "groupx", tool: "memory_search", status: "in_progress" },
+        "tool-call-1"
+      );
+      yield nativeEvent(
+        "codex",
+        "tool.completed",
+        { status: "completed" },
+        "tool-call-1"
+      );
       yield nativeEvent("codex", "content.delta", { text: "cd" }, `${input.turnId}:2`);
       yield nativeEvent("codex", "turn.completed", {}, `${input.turnId}:done`);
     };
@@ -443,6 +455,21 @@ describe.sequential("GroupXBroker acceptance, dispatch and terminal semantics", 
       (event) => event.type === "turn.content.delta" && event.durability === "transient"
     );
     expect(transient).toHaveLength(2);
+    const toolProgress = fixture.published.filter(
+      (event) => event.type === "tool.progress" && event.durability === "transient"
+    );
+    expect(toolProgress).toHaveLength(2);
+    expect(toolProgress[0]?.body).toMatchObject({
+      turnId: accepted.turns[0]?.turnId,
+      nativeType: "tool.started",
+      toolCallId: "native-event:codex:tool-call-1",
+      details: { server: "groupx", tool: "memory_search", status: "in_progress" }
+    });
+    expect(toolProgress[1]?.body).toMatchObject({
+      nativeType: "tool.completed",
+      toolCallId: "native-event:codex:tool-call-1",
+      details: { status: "completed" }
+    });
     const read = fixture.broker.readCorrelation({ correlationId: accepted.correlationId });
     const responses = read.events.filter(
       (event) =>
@@ -489,6 +516,102 @@ describe.sequential("GroupXBroker acceptance, dispatch and terminal semantics", 
     expect(fixture.adapters.codex.prompts.map((prompt) => prompt.content)).toEqual(["next head"]);
     expect(fixture.store.getTurn(first.turns[0]!.turnId)?.status).toBe("cancelled");
     expect(fixture.store.getTurn(second.turns[0]!.turnId)?.status).toBe("completed");
+  });
+
+  it("rebuilds context when another lane supersedes its prepared summary checkpoint", async () => {
+    let fixture!: Fixture;
+    let preparationCalls = 0;
+    let seedSeq = 0;
+    fixture = createFixture({
+      contextProvider: {
+        prepare: ({ sourceEvent }) => {
+          preparationCalls += 1;
+          const active = fixture.store.getActiveSummary(sourceEvent.roomId, sourceEvent.seq);
+          if (active) {
+            return {
+              contextThroughSeq: sourceEvent.seq,
+              summaryThroughSeq: active.throughSeq
+            };
+          }
+          const stale = fixture.store.replaceActiveSummary({
+            summaryId: "summary:stale-preparation",
+            roomId: sourceEvent.roomId,
+            fromSeq: seedSeq,
+            throughSeq: seedSeq,
+            content: "stale prepared checkpoint",
+            generatorActorId: "agent:codex"
+          });
+          fixture.store.replaceActiveSummary({
+            summaryId: "summary:advanced-concurrently",
+            roomId: sourceEvent.roomId,
+            fromSeq: seedSeq,
+            throughSeq: sourceEvent.seq,
+            content: "new active checkpoint",
+            generatorActorId: "agent:grok",
+            expectedPreviousSummaryId: stale.summaryId
+          });
+          return {
+            contextThroughSeq: sourceEvent.seq,
+            summaryThroughSeq: stale.throughSeq
+          };
+        }
+      }
+    });
+    seedSeq = fixture.store.appendDurableEvent({
+      eventId: "evt_summary_race_seed",
+      roomId: "room:main",
+      eventType: "system.error",
+      actorId: "system:groupx",
+      correlationId: "corr_summary_race_seed",
+      body: { kind: "seed" }
+    }).seq;
+
+    const accepted = await fixture.broker.acceptMessage({
+      bindingId: "binding:web",
+      request: {
+        clientCommandId: "summary-race",
+        to: ["agent:codex"],
+        content: "dispatch only after rebuilding the checkpoint"
+      }
+    });
+    await fixture.broker.waitForIdle();
+
+    expect(preparationCalls).toBe(2);
+    expect(fixture.adapters.codex.prompts).toHaveLength(1);
+    expect(fixture.store.getTurn(accepted.turns[0]!.turnId)?.status).toBe("completed");
+    expect(fixture.store.listTurnAttempts(accepted.turns[0]!.turnId)[0]?.summaryThroughSeq).toBe(
+      fixture.store.getActiveSummary("room:main")?.throughSeq
+    );
+  });
+
+  it("terminalizes a queued Turn when context compaction fails without advancing its cursor", async () => {
+    const fixture = createFixture({
+      contextProvider: {
+        prepare: () => {
+          throw new GroupXError("CONTEXT_BUDGET_EXCEEDED", "compactor unavailable");
+        }
+      }
+    });
+    const accepted = await fixture.broker.acceptMessage({
+      bindingId: "binding:web",
+      request: {
+        clientCommandId: "context-compaction-failure",
+        to: ["agent:codex"],
+        content: "must not be silently skipped"
+      }
+    });
+    await fixture.broker.waitForIdle();
+
+    const turn = fixture.store.getTurn(accepted.turns[0]!.turnId);
+    expect(turn).toMatchObject({
+      status: "failed",
+      errorCode: "CONTEXT_BUDGET_EXCEEDED"
+    });
+    expect(fixture.adapters.codex.prompts).toHaveLength(0);
+    expect(fixture.store.getDeliveryCursor("agent:codex", "room:main")).toBeUndefined();
+    expect(fixture.published).toContainEqual(
+      expect.objectContaining({ type: "turn.failed" })
+    );
   });
 
   it("never claims below the durable delivery cursor when context preparation falls back", async () => {

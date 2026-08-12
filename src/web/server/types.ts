@@ -17,7 +17,10 @@ import type {
   RetractIdentityRequest,
   RetractMemoryRequest,
   SupersedeIdentityRequest,
-  SupersedeMemoryRequest
+  SupersedeMemoryRequest,
+  SetupSaveRequest,
+  SetupSaveResponse,
+  SetupSnapshot
 } from "../../contracts/index.js";
 import type { SseRuntime } from "../sse/index.js";
 
@@ -49,6 +52,11 @@ export interface IdentityMutationAccepted {
 export interface McpHttpHandler {
   handle(request: IncomingMessage, response: ServerResponse): Promise<void>;
   close?(): Promise<void>;
+}
+
+export interface SetupApi {
+  snapshot(signal: AbortSignal): Awaitable<SetupSnapshot>;
+  save(request: SetupSaveRequest, signal: AbortSignal): Awaitable<SetupSaveResponse>;
 }
 
 /**
@@ -116,6 +124,7 @@ export interface GroupXHttpServerOptions {
   readonly maxRequestBodyBytes?: number;
   readonly gracefulCloseTimeoutMs?: number;
   readonly mcpHandler?: McpHttpHandler;
+  readonly setupApi?: SetupApi;
 }
 
 export interface GroupXHttpServerAddress {

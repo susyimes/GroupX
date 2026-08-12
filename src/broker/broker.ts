@@ -14,7 +14,7 @@ import {
   type GroupXEnvelope,
   type GroupXEventType
 } from "../core/envelope.js";
-import { GroupXError, type GroupXErrorCode } from "../core/errors.js";
+import { GroupXError, toGroupXError, type GroupXErrorCode } from "../core/errors.js";
 import type {
   AcceptMessageResult,
   ClaimedTurn,
@@ -947,6 +947,7 @@ export class GroupXBroker {
       const cursor = this.#store.getDeliveryCursor(actorId, sourceEvent.roomId);
       const lastDeliveredSeq = cursor?.lastDeliveredSeq ?? 0;
       let contextThroughSeq = Math.max(sourceEvent.seq, lastDeliveredSeq);
+      let summaryThroughSeq: number | undefined;
       let contextPacket: string | undefined;
       if (this.#contextProvider) {
         try {
@@ -968,10 +969,24 @@ export class GroupXBroker {
           // this queued source. Preserve that durable watermark without
           // requiring the provider to rebuild already-delivered context.
           contextThroughSeq = Math.max(prepared.contextThroughSeq, lastDeliveredSeq);
+          if (prepared.summaryThroughSeq !== undefined) {
+            if (
+              !Number.isSafeInteger(prepared.summaryThroughSeq) ||
+              prepared.summaryThroughSeq < 0 ||
+              prepared.summaryThroughSeq > prepared.contextThroughSeq
+            ) {
+              throw new GroupXError(
+                "INVALID_ENVELOPE",
+                "Context summary cursor must be within the prepared context boundary"
+              );
+            }
+            summaryThroughSeq = prepared.summaryThroughSeq;
+          }
           contextPacket = prepared.contextPacket;
         } catch (error) {
           this.#report(error, { operation: "context", actorId, turnId: head.turnId });
-          return undefined;
+          await this.#failQueuedContext(head, error);
+          continue;
         }
       } else if (!this.#canDeliverCurrentMessageOnly(sourceEvent, lastDeliveredSeq)) {
         this.#report(
@@ -992,6 +1007,7 @@ export class GroupXBroker {
           bindingId: session.bindingId,
           instanceId: session.instanceId,
           contextThroughSeq,
+          ...(summaryThroughSeq === undefined ? {} : { summaryThroughSeq }),
           expectedTurnId: head.turnId,
           expectedTransport: this.#selectedTransport,
           claimedAt: this.#clock.now()
@@ -999,6 +1015,16 @@ export class GroupXBroker {
       } catch (error) {
         if (error instanceof GroupXError && error.code === "TRANSPORT_MODE_MISMATCH") {
           await this.#failQueuedTransportMismatch(head, "runtime_binding_mismatch");
+          continue;
+        }
+        if (
+          error instanceof GroupXError &&
+          error.code === "STORE_CONFLICT" &&
+          error.details?.reason === "summary_checkpoint_changed"
+        ) {
+          // Another lane advanced the room checkpoint after this lane built
+          // its packet. Rebuild against the new active summary; never dispatch
+          // a packet whose durable summary watermark was superseded.
           continue;
         }
         throw error;
@@ -1048,6 +1074,30 @@ export class GroupXBroker {
     } catch (error) {
       const after = this.#store.getTurn(turn.turnId);
       if (!after || !TERMINAL_TURN_STATUSES.has(after.status)) throw error;
+    }
+    this.#notifyTurnTerminal(turn.turnId);
+  }
+
+  async #failQueuedContext(turn: TurnRecord, error: unknown): Promise<void> {
+    const normalized = toGroupXError(error, "CONTEXT_BUDGET_EXCEEDED");
+    const errorCode: GroupXErrorCode =
+      normalized.code === "STORE_UNAVAILABLE" ||
+      normalized.code === "CONTEXT_BUDGET_EXCEEDED" ||
+      normalized.code === "SESSION_NOT_AVAILABLE" ||
+      normalized.code === "TURN_INTERRUPTED"
+        ? normalized.code
+        : "CONTEXT_BUDGET_EXCEEDED";
+    try {
+      const terminal = this.#store.failQueuedTurn(
+        turn.turnId,
+        errorCode,
+        this.#clock.now(),
+        { reason: "context_preparation_failed" }
+      );
+      await this.#publishStored(terminal.terminalEvent);
+    } catch (caught) {
+      const after = this.#store.getTurn(turn.turnId);
+      if (!after || !TERMINAL_TURN_STATUSES.has(after.status)) throw caught;
     }
     this.#notifyTurnTerminal(turn.turnId);
   }
@@ -1299,7 +1349,9 @@ export class GroupXBroker {
       case "tool.completed":
         await this.#publishTransient(active, "tool.progress", event.occurredAt, {
           turnId: claim.turn.turnId,
-          nativeType: event.type
+          nativeType: event.type,
+          ...(event.nativeEventId === undefined ? {} : { toolCallId: event.nativeEventId }),
+          details: event.payload
         });
         return;
       case "turn.completed":

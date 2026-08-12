@@ -4,6 +4,7 @@ coverage/
 .env
 .env.*
 !.env.example
+/groupx.json
 .groupx/
 data/
 *.db

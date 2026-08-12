@@ -177,39 +177,24 @@ describe("ACP v1 adapter kernel", () => {
     ]);
   });
 
-  it("fails Kimi config preflight before spawning the ACP process", async () => {
+  it("does not require the user's global permission defaults before setting ACP auto mode", async () => {
     const workspace = await fixtureWorkspace();
-    const adapter = new KimiAcpAdapter({
-      handshakeTimeoutMs: 1_000,
-      closeGraceMs: 250,
-      killGraceMs: 250,
-      configPreflight: async () => {
-        throw new GroupXError(
-          "ADAPTER_START_FAILED",
-          "Kimi unrestricted preflight requires default_plan_mode to be false"
-        );
-      }
+    const adapter = kimiAdapter();
+    const session = await adapter.start({
+      command: process.execPath,
+      prefixArgs: fixturePrefixArgs(workspace),
+      cwd: workspace,
+      instanceId: "instance:kimi:default-config",
+      bindingId: "binding:kimi:default-config"
     });
+    liveSessions.push({ adapter, session });
 
-    await expect(
-      adapter.start({
-        command: process.execPath,
-        prefixArgs: fixturePrefixArgs(workspace),
-        cwd: workspace,
-        instanceId: "instance:kimi:preflight",
-        bindingId: "binding:kimi:preflight"
-      })
-    ).rejects.toMatchObject({
-      code: "ADAPTER_START_FAILED",
-      message: "Kimi unrestricted preflight requires default_plan_mode to be false"
-    });
-    expect(adapter.health()).toMatchObject({
-      status: "failed",
-      nativeSessionAvailable: false
-    });
-    await expect(readFile(join(workspace, "wire-log.jsonl"), "utf8")).rejects.toMatchObject({
-      code: "ENOENT"
-    });
+    expect(incomingFrames(await wireLog(workspace)).map((frame) => frame.method)).toEqual([
+      "initialize",
+      "session/new",
+      "session/set_mode"
+    ]);
+    expect(adapter.health()).toMatchObject({ status: "ready", nativeSessionAvailable: true });
   });
 
   it("uses session/load only when loadSession was advertised", async () => {
@@ -674,12 +659,7 @@ function kimiAdapter(): KimiAcpAdapter {
   return new KimiAcpAdapter({
     handshakeTimeoutMs: 1_000,
     closeGraceMs: 250,
-    killGraceMs: 250,
-    configPreflight: async () => ({
-      permissionMode: "yolo",
-      planMode: false,
-      source: "default-home"
-    })
+    killGraceMs: 250
   });
 }
 

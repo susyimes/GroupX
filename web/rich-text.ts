@@ -29,7 +29,7 @@ const FENCE_OPEN_PATTERN = /^```([^\s`]*)\s*$/;
 const FENCE_CLOSE = "```";
 const LANGUAGE_PATTERN = /^[A-Za-z0-9+#._-]{1,24}$/;
 const INLINE_CODE_PATTERN = /`([^`\n]+)`/g;
-const URL_PATTERN = /\bhttps?:\/\/[^\s<>"'`]+/g;
+const RAW_URL_STOP_PATTERN = /[\s<>"'`\u3001\u3002\uFF0C\uFF1B\uFF1A\uFF01\uFF1F]/u;
 
 function sanitizeLanguage(raw: string): string {
   return LANGUAGE_PATTERN.test(raw) ? raw : "";
@@ -109,28 +109,97 @@ function trimUrl(raw: string): string {
   return url;
 }
 
+interface ParsedMarkdownLink {
+  readonly end: number;
+  readonly href: string;
+  readonly label: string;
+}
+
+function parseMarkdownLinkAt(text: string, start: number): ParsedMarkdownLink | undefined {
+  if (text[start] !== "[") {
+    return undefined;
+  }
+  const labelEnd = text.indexOf("](", start + 1);
+  if (labelEnd <= start + 1 || text.slice(start + 1, labelEnd).includes("\n")) {
+    return undefined;
+  }
+  const urlStart = labelEnd + 2;
+  if (!text.startsWith("http://", urlStart) && !text.startsWith("https://", urlStart)) {
+    return undefined;
+  }
+
+  let parenthesisDepth = 0;
+  for (let cursor = urlStart; cursor < text.length; cursor += 1) {
+    const character = text[cursor] ?? "";
+    if (RAW_URL_STOP_PATTERN.test(character)) {
+      return undefined;
+    }
+    if (character === "(") {
+      parenthesisDepth += 1;
+      continue;
+    }
+    if (character !== ")") {
+      continue;
+    }
+    if (parenthesisDepth > 0) {
+      parenthesisDepth -= 1;
+      continue;
+    }
+    const href = text.slice(urlStart, cursor);
+    return href.length === 0
+      ? undefined
+      : { end: cursor + 1, href, label: text.slice(start + 1, labelEnd) };
+  }
+  return undefined;
+}
+
+function rawUrlEnd(text: string, start: number): number {
+  let cursor = start;
+  while (cursor < text.length && !RAW_URL_STOP_PATTERN.test(text[cursor] ?? "")) {
+    cursor += 1;
+  }
+  return cursor;
+}
+
 function segmentLinks(text: string, output: InlinePart[]): void {
   let cursor = 0;
-  for (const match of text.matchAll(URL_PATTERN)) {
-    const raw = match[0];
-    const start = match.index ?? 0;
-    const href = trimUrl(raw);
-    if (start > cursor) {
-      output.push({ kind: "text", text: text.slice(cursor, start) });
+  let plainStart = 0;
+  while (cursor < text.length) {
+    const markdown = parseMarkdownLinkAt(text, cursor);
+    if (markdown !== undefined) {
+      if (cursor > plainStart) {
+        output.push({ kind: "text", text: text.slice(plainStart, cursor) });
+      }
+      output.push({ kind: "link", text: markdown.label, href: markdown.href });
+      cursor = markdown.end;
+      plainStart = cursor;
+      continue;
     }
+
+    const isRawUrl = text.startsWith("http://", cursor) || text.startsWith("https://", cursor);
+    if (!isRawUrl) {
+      cursor += 1;
+      continue;
+    }
+    if (cursor > plainStart) {
+      output.push({ kind: "text", text: text.slice(plainStart, cursor) });
+    }
+    const end = rawUrlEnd(text, cursor);
+    const raw = text.slice(cursor, end);
+    const href = trimUrl(raw);
     if (href.length > 0) {
       output.push({ kind: "link", text: href, href });
-      const skipped = raw.length - href.length;
-      if (skipped > 0) {
+      if (href.length < raw.length) {
         output.push({ kind: "text", text: raw.slice(href.length) });
       }
     } else {
       output.push({ kind: "text", text: raw });
     }
-    cursor = start + raw.length;
+    cursor = end;
+    plainStart = cursor;
   }
-  if (cursor < text.length) {
-    output.push({ kind: "text", text: text.slice(cursor) });
+  if (plainStart < text.length) {
+    output.push({ kind: "text", text: text.slice(plainStart) });
   }
 }
 

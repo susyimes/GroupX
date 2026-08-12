@@ -85,10 +85,15 @@ turn.failed
 turn.cancelled
 turn.interrupted
 session.starting
+session.retrying
 session.ready
 session.resumed
 session.stopped
 session.failed
+context.compaction.started
+context.compaction.retrying
+context.compaction.completed
+context.compaction.failed
 memory.remembered
 memory.superseded
 memory.retracted
@@ -99,7 +104,9 @@ routing.loop_stopped
 system.error
 ```
 
-`session.*` 表达 native session lineage，而不是进程是否长驻：Structured 在长驻连接上产生；Direct 只有实际解析到 native session ID 或 resume 成功时才产生相应事件。`session.resumed` 只在 Codex `exec resume`、Grok `--resume`、Kimi `--session`、App Server `thread/resume` 或 ACP `session/load` 真实成功时产生。Kimi config preflight 失败发生在 native spawn 前，不产生新的 invocation/session 成功事件。协议中不存在 `approval.*` 事件。
+`session.*` 表达 native session lineage，而不是进程是否长驻：Structured 在长驻连接上产生；Direct 只有实际解析到 native session ID 或 resume 成功时才产生相应事件。`session.resumed` 只在 Codex `exec resume`、Grok `--resume`、Kimi `--session`、App Server `thread/resume` 或 ACP `session/load` 真实成功时产生。Active Kimi ACP 不以 global config preflight 为启动门禁；`session/set_mode(auto)` 必须在 new/load 后、首 prompt 前完成。协议中不存在 `approval.*` 事件。
+
+`session.retrying` 与 `context.compaction.*` 是 transient 运行进度，重连后不回放。body 只包含 operation/Agent、attempt/maxAttempts、下一次退避时间、覆盖序号及稳定错误码等有界投影，不包含 prompt、摘要正文、raw stderr 或 CLI 配置。
 
 每个派发 attempt 持久化以下可靠性投影：
 
@@ -129,6 +136,8 @@ turn.progress
 tool.progress
 adapter.heartbeat
 ```
+
+`tool.progress.body` 至少携带 `turnId` 与 `nativeType`；原生事件提供稳定 id 时同时携带 `toolCallId`，`details` 只包含 Adapter 已投影的结构字段。Web UI 用 `turnId + toolCallId` 合并同一次工具调用，并将其折叠显示在对应 Agent 气泡内。transient 事件不在刷新后重放，durable transcript 仍以最终 response message 为准。
 
 每个 Turn 恰好有一个 durable terminal event。成功 response message、terminal event、Turn 与 attempt terminal 更新在同一事务提交。若崩溃发生在 final commit 前，可保存已合并的 partial text 并将 Turn 标记为 `interrupted`，但不能把 partial text 伪装成 completed message。
 
@@ -425,6 +434,14 @@ POST /api/identity/:identityId/retract
 ```
 
 Web identity 写入请求包含 `clientCommandId`、`subjectActorId`、`kind`、`content` 和可选 `sourceEventId`；author 固定为 `user:web`。supersede 追加新版本并引用旧 identity ID，retract 写 tombstone。任何请求都不能指定 author/from。
+
+Web UI 不再暴露 identity 写入面板；稳定 Agent 身份由 `/setup` 写入对应 Agent 配置。`/api/identity` 与 MCP identity 工具仅作为兼容接口保留。`/api/memory` 同时承载 room scope 的公共记忆与 agent scope 的独立记忆；客户端按 scope 分区展示，agent scope 以 `createdAt` 日期分组。
+
+### 10.5 本机 Agent 引导与配置
+
+`GET /api/setup` 返回 config 路径、是否已有配置、runtime 是否正在运行、三种 native driver 的默认命令检测结果，以及可编辑的 `serverPort/storagePath/agents[]` 草稿。`POST /api/setup` 严格接收同一草稿并要求稳定 Agent ID 唯一、至少一个 Agent 启用；每个 Agent 只包含 `id/driver/name/command/cwd/enabled`。
+
+setup contract 不包含 `transport`、`access`、approval、sandbox、model 或任意 native flags。standalone `groupx init` 成功保存后启动正式 runtime，并让引导页轮询同源 `GET /api/setup/launch`；只有该接口返回 loopback 正式 origin 的 `ready` 状态后，页面才自动跳转到群聊，随后关闭临时服务。运行中的 `/setup` 可以更新配置文件，但响应必须标记 `restartRequired=true`，不能自动跳转或在旧 runtime 中热换 binding/session。
 
 ## 11. SSE 合同
 

@@ -382,6 +382,36 @@ describe("CodexAppServerAdapter", () => {
     }
   });
 
+  it("projects stable tool identity fields without forwarding tool arguments or results", async () => {
+    const instance = adapter();
+    let session: NativeSession | undefined;
+    try {
+      session = await instance.start(profile());
+      const events = await collect(instance.prompt(session, promptInput("MODE_TOOL_PROGRESS")));
+      const tools = events.filter((event) => event.type === "tool.started" || event.type === "tool.completed");
+      expect(tools).toHaveLength(2);
+      expect(tools[0]).toMatchObject({
+        type: "tool.started",
+        payload: {
+          itemType: "mcpToolCall",
+          server: "groupx",
+          tool: "memory_search",
+          status: "inProgress"
+        }
+      });
+      expect(tools[1]).toMatchObject({
+        type: "tool.completed",
+        payload: { server: "groupx", tool: "memory_search", status: "completed" }
+      });
+      for (const event of tools) {
+        expect(event.payload).not.toHaveProperty("arguments");
+        expect(event.payload).not.toHaveProperty("result");
+      }
+    } finally {
+      await closeQuietly(instance, session);
+    }
+  });
+
   it("maps AbortSignal to native turn/interrupt and waits for the native terminal", async () => {
     const instance = adapter(true);
     let session: NativeSession | undefined;

@@ -78,7 +78,7 @@ export async function collectDoctorReport(
   const configPath = path.resolve(options.cwd, options.configPath ?? "groupx.json");
   let config: DoctorReport["config"];
   if (!explicitConfig && !dependencies.fileExists(configPath)) {
-    config = { skipped: "未找到 groupx.json,启动时将使用内置三 Agent 默认配置" };
+    config = { skipped: "未找到 groupx.json；运行 groupx init 打开 Agent 配置引导页" };
   } else {
     try {
       const loaded = await dependencies.loadConfigFrom(configPath);

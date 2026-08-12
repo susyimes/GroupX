@@ -83,6 +83,26 @@ function seedContext(fixture: MemoryTestFixture) {
     sourceEventId: root.eventId,
     sourceKind: "web"
   });
+  memory.remember({
+    memoryId: "memory_agent_codex",
+    scopeType: "agent",
+    scopeId: "agent:codex",
+    kind: "instruction",
+    authorActorId: "user:web",
+    subjectActorId: "agent:codex",
+    content: "Codex private dated memory",
+    sourceKind: "web"
+  });
+  memory.remember({
+    memoryId: "memory_agent_grok",
+    scopeType: "agent",
+    scopeId: "agent:grok",
+    kind: "note",
+    authorActorId: "user:web",
+    subjectActorId: "agent:grok",
+    content: "Grok-only memory",
+    sourceKind: "web"
+  });
   const inactive = memory.remember({
     memoryId: "memory_inactive",
     scopeType: "room",
@@ -131,6 +151,7 @@ describe("ContextPacketBuilder provenance and cursor semantics", () => {
     const packet = builder.buildContextPacket({
       roomId: "room:main",
       targetActorId: "agent:codex",
+      configuredIdentity: "Stable reviewer identity from groupx.json",
       currentEvent: seeded.current,
       throughSeq: seeded.current.seq,
       maxChars: 100_000
@@ -163,6 +184,24 @@ describe("ContextPacketBuilder provenance and cursor semantics", () => {
         content: "Public decision"
       })
     ]);
+    expect(packet.sections.configuredIdentity).toEqual([
+      expect.objectContaining({
+        id: "config:agent:codex",
+        subject: "agent:codex",
+        perspective: "configured",
+        content: "Stable reviewer identity from groupx.json"
+      })
+    ]);
+    expect(packet.sections.agentMemory).toEqual([
+      expect.objectContaining({
+        id: "memory_agent_codex",
+        subject: "agent:codex",
+        content: "Codex private dated memory"
+      })
+    ]);
+    expect(packet.text).toContain("[configured_agent_identity]");
+    expect(packet.text).toContain("[agent_memory]");
+    expect(packet.text).not.toContain("Grok-only memory");
     expect(packet.text).not.toContain("Retracted public memory");
 
     expect(packet.sections.selfIdentity).toEqual([
@@ -247,10 +286,13 @@ describe("ContextPacketBuilder deterministic budget", () => {
       maxChars: 100_000
     });
     const mandatorySections: ContextPacketSections = {
+      configuredIdentity: [],
       selfIdentity: [],
       userAuthoredIdentity: [],
       observedIdentity: [],
+      agentMemory: [],
       publicMemory: [],
+      generatedSummary: [],
       unreadTranscript: [],
       replyChain: full.sections.replyChain,
       currentMessage: full.sections.currentMessage
@@ -285,7 +327,9 @@ describe("ContextPacketBuilder deterministic budget", () => {
       selfIdentity: 1,
       userAuthoredIdentity: 1,
       observedIdentity: 1,
+      agentMemory: 1,
       publicMemory: 1,
+      generatedSummary: 0,
       unreadTranscript: 2
     });
 
@@ -322,10 +366,13 @@ describe("ContextPacketBuilder deterministic budget", () => {
       afterSeq: seeded.root.seq,
       throughSeq: seeded.current.seq,
       sections: {
+        configuredIdentity: [],
         selfIdentity: [],
         userAuthoredIdentity: [],
         observedIdentity: [],
+        agentMemory: [],
         publicMemory: [],
+        generatedSummary: [],
         unreadTranscript: [newestUnread],
         replyChain: full.sections.replyChain,
         currentMessage: full.sections.currentMessage
@@ -345,5 +392,62 @@ describe("ContextPacketBuilder deterministic budget", () => {
     expect(packet.sections.publicMemory).toEqual([]);
     expect(packet.sections.selfIdentity).toEqual([]);
     expect(packet.text).toBe(oneUnreadText);
+  });
+});
+
+describe("ContextPacketBuilder durable room checkpoint", () => {
+  it("injects an active summary and reads transcript only after its boundary", () => {
+    const fixture = createMemoryTestFixture();
+    const old = appendMessage(fixture, {
+      eventId: "evt_summary_old",
+      actorId: "user:web",
+      content: "old transcript represented by checkpoint"
+    });
+    const boundary = appendMessage(fixture, {
+      eventId: "evt_summary_boundary",
+      actorId: "agent:grok",
+      content: "last compacted message"
+    });
+    const recent = appendMessage(fixture, {
+      eventId: "evt_summary_recent",
+      actorId: "agent:kimi",
+      content: "recent uncompressed message"
+    });
+    const current = appendMessage(fixture, {
+      eventId: "evt_summary_current",
+      actorId: "user:web",
+      content: "current request",
+      targets: ["agent:codex"]
+    });
+    fixture.store.replaceActiveSummary({
+      summaryId: "summary:context",
+      roomId: "room:main",
+      fromSeq: old.seq,
+      throughSeq: boundary.seq,
+      content: "Checkpoint preserves the important old decision.",
+      generatorActorId: "agent:grok"
+    });
+
+    const packet = new ContextPacketBuilder(fixture.store).buildContextPacket({
+      roomId: "room:main",
+      targetActorId: "agent:codex",
+      currentEvent: current,
+      throughSeq: current.seq,
+      maxChars: 100_000
+    });
+    expect(packet.schema).toBe("groupx.context/0.3");
+    expect(packet.sections.generatedSummary).toEqual([
+      expect.objectContaining({
+        id: "summary:context",
+        entryType: "summary",
+        seq: boundary.seq,
+        content: "Checkpoint preserves the important old decision."
+      })
+    ]);
+    expect(packet.sections.unreadTranscript.map((entry) => entry.id)).toEqual([
+      recent.eventId
+    ]);
+    expect(packet.text).toContain("[room_checkpoint_summary]");
+    expect(packet.text).not.toContain("old transcript represented by checkpoint");
   });
 });

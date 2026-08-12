@@ -2,7 +2,8 @@ import { GroupXError } from "../core/errors.js";
 import type {
   IdentityRecord,
   MemoryRecord,
-  StoredEventRecord
+  StoredEventRecord,
+  SummaryRecord
 } from "../storage/types.js";
 import { classifyIdentityPerspective } from "./service.js";
 import type {
@@ -17,11 +18,11 @@ import type {
   IdentityContextEntry
 } from "./types.js";
 
-const CONTEXT_SCHEMA = "groupx.context/0.1" as const;
+const CONTEXT_SCHEMA = "groupx.context/0.3" as const;
 const QUERY_LIMIT = 500;
 const MAX_REPLY_DEPTH = 64;
 
-type OptionalSectionName = Exclude<keyof ContextPacketOmissions, never>;
+type OptionalSectionName = Exclude<keyof ContextPacketOmissions, "generatedSummary">;
 
 function requireNonBlank(value: string, field: string): void {
   if (value.trim().length === 0) {
@@ -144,6 +145,31 @@ function identityEntry(identity: IdentityRecord): IdentityContextEntry {
   };
 }
 
+function configuredIdentityEntry(targetActorId: string, content: string): IdentityContextEntry {
+  return {
+    entryType: "identity",
+    id: `config:${targetActorId}`,
+    authorActorId: "system:groupx",
+    subject: targetActorId,
+    source: sourceLabel({ kind: "agent_config" }),
+    content,
+    perspective: "configured"
+  };
+}
+
+function summaryEntry(summary: SummaryRecord): ContextEntry {
+  return {
+    entryType: "summary",
+    id: summary.summaryId,
+    authorActorId: summary.generatorActorId,
+    subject: summary.roomId,
+    source: sourceLabel({ kind: "generated_summary", recordId: summary.summaryId }),
+    content: summary.content,
+    seq: summary.throughSeq,
+    occurredAt: summary.createdAt
+  };
+}
+
 function sourceText(source: ContextSourceLabel): string {
   return [
     source.kind,
@@ -174,10 +200,13 @@ export function renderContextPacket(input: {
   const parts = [
     `[groupx_protocol]\nschema=${CONTEXT_SCHEMA}\nroom=${input.roomId}\ntarget=${input.targetActorId}\nafter_seq=${input.afterSeq}\nthrough_seq=${input.throughSeq}`
   ];
+  pushSection(parts, "configured_agent_identity", input.sections.configuredIdentity);
   pushSection(parts, "self_identity", input.sections.selfIdentity);
   pushSection(parts, "user_authored_identity", input.sections.userAuthoredIdentity);
   pushSection(parts, "observed_identity", input.sections.observedIdentity);
+  pushSection(parts, "agent_memory", input.sections.agentMemory);
   pushSection(parts, "public_memory", input.sections.publicMemory);
+  pushSection(parts, "room_checkpoint_summary", input.sections.generatedSummary);
   pushSection(parts, "room_delta_since_cursor", input.sections.unreadTranscript);
   pushSection(parts, "reply_chain", input.sections.replyChain);
   pushSection(parts, "current_message", [input.sections.currentMessage]);
@@ -225,6 +254,15 @@ export class ContextPacketBuilder {
       this.#store.getDeliveryCursor(input.targetActorId, input.roomId)?.lastDeliveredSeq ?? 0,
       input.throughSeq
     );
+    const activeSummary = this.#store.getActiveSummary(input.roomId, input.throughSeq);
+    const generatedSummary =
+      activeSummary !== undefined && activeSummary.throughSeq > afterSeq
+        ? [summaryEntry(activeSummary)]
+        : [];
+    const transcriptAfterSeq = Math.max(
+      afterSeq,
+      generatedSummary[0]?.seq ?? afterSeq
+    );
 
     const excludedEventIds = new Set<string>([
       currentMessage.id,
@@ -232,7 +270,7 @@ export class ContextPacketBuilder {
     ]);
     const unreadTranscript = this.#readUnreadTranscript(
       input.roomId,
-      afterSeq,
+      transcriptAfterSeq,
       input.throughSeq,
       excludedEventIds
     );
@@ -241,6 +279,17 @@ export class ContextPacketBuilder {
         .searchMemory({
           scopeType: "room",
           scopeId: input.roomId,
+          includeHistory: false,
+          limit: QUERY_LIMIT
+        })
+        .filter((memory) => memory.status === "active")
+        .map(memoryEntry)
+    );
+    const agentMemory = sortRecent(
+      this.#store
+        .searchMemory({
+          scopeType: "agent",
+          scopeId: input.targetActorId,
           includeHistory: false,
           limit: QUERY_LIMIT
         })
@@ -266,10 +315,16 @@ export class ContextPacketBuilder {
     };
 
     const sections: ContextPacketSections = {
+      configuredIdentity:
+        input.configuredIdentity?.trim().length
+          ? [configuredIdentityEntry(input.targetActorId, input.configuredIdentity.trim())]
+          : [],
       selfIdentity: [],
       userAuthoredIdentity: [],
       observedIdentity: [],
+      agentMemory: [],
       publicMemory: [],
+      generatedSummary,
       unreadTranscript: [],
       replyChain,
       currentMessage
@@ -287,7 +342,7 @@ export class ContextPacketBuilder {
     if (text.length > input.maxChars) {
       throw new GroupXError(
         "CONTEXT_BUDGET_EXCEEDED",
-        "Context budget cannot preserve the current message and reply chain",
+        "Context budget cannot preserve the current message, reply chain, and checkpoint summary",
         { requiredChars: text.length, maxChars: input.maxChars }
       );
     }
@@ -299,6 +354,7 @@ export class ContextPacketBuilder {
       ...[...unreadTranscript]
         .sort((left, right) => (right.seq ?? 0) - (left.seq ?? 0))
         .map((entry) => ({ section: "unreadTranscript" as const, entry })),
+      ...agentMemory.map((entry) => ({ section: "agentMemory" as const, entry })),
       ...publicMemory.map((entry) => ({ section: "publicMemory" as const, entry })),
       ...identityGroups.selfIdentity.map((entry) => ({
         section: "selfIdentity" as const,
@@ -320,7 +376,7 @@ export class ContextPacketBuilder {
       const nextText = render();
       if (nextText.length > input.maxChars) {
         collection.pop();
-        break;
+        continue;
       }
       text = nextText;
     }
@@ -332,7 +388,9 @@ export class ContextPacketBuilder {
       userAuthoredIdentity:
         identityGroups.userAuthoredIdentity.length - sections.userAuthoredIdentity.length,
       observedIdentity: identityGroups.observedIdentity.length - sections.observedIdentity.length,
+      agentMemory: agentMemory.length - sections.agentMemory.length,
       publicMemory: publicMemory.length - sections.publicMemory.length,
+      generatedSummary: 0,
       unreadTranscript: unreadTranscript.length - sections.unreadTranscript.length
     };
 
@@ -411,10 +469,14 @@ export class ContextPacketBuilder {
     const events: ContextEntry[] = [];
     let cursor = afterSeq;
     while (cursor < throughSeq) {
-      const page = this.#store.listEvents({ roomId, afterSeq: cursor, limit: QUERY_LIMIT });
+      const page = this.#store.listEventsThrough({
+        roomId,
+        afterSeq: cursor,
+        throughSeq,
+        limit: QUERY_LIMIT
+      });
       if (page.events.length === 0) break;
       for (const event of page.events) {
-        if (event.seq > throughSeq) break;
         if (event.eventType === "message.created" && !excludedEventIds.has(event.eventId)) {
           events.push(eventEntry(event));
         }

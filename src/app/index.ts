@@ -1,4 +1,5 @@
 export * from "./adapter-factory.js";
+export * from "./context-summarizer.js";
 export * from "./event-stream.js";
 export * from "./readiness.js";
 export * from "./record-mappers.js";
@@ -7,4 +8,5 @@ export * from "./runtime.js";
 export * from "./session-manager.js";
 export * from "./tool-broker-api.js";
 export * from "./turn-lifecycle.js";
+export * from "./update.js";
 export * from "./web-broker-api.js";

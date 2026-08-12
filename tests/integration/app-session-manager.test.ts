@@ -28,6 +28,7 @@ class FakeAdapter implements CliAdapter {
   readonly resumes: Array<LaunchProfile & { nativeSessionId: string }> = [];
   readonly closes: NativeSession[] = [];
   failStart = false;
+  failStartsRemaining = 0;
   failResume = false;
   hangClose = false;
 
@@ -47,6 +48,10 @@ class FakeAdapter implements CliAdapter {
 
   async start(input: LaunchProfile): Promise<NativeSession> {
     this.starts.push(input);
+    if (this.failStartsRemaining > 0) {
+      this.failStartsRemaining -= 1;
+      throw new GroupXError("ADAPTER_START_FAILED", "temporary fixture start failure");
+    }
     if (this.failStart) throw new GroupXError("ADAPTER_START_FAILED", "fixture start failed");
     return this.session(input, input.mcp ? `native:${this.adapterId}` : undefined);
   }
@@ -280,7 +285,7 @@ describe("AgentSessionManager lifecycle", () => {
         nativeSessionIds: { codex: "native:stale-empty-thread" }
       });
 
-      expect(f.adapters.codex.resumes).toHaveLength(1);
+      expect(f.adapters.codex.resumes).toHaveLength(3);
       expect(f.adapters.codex.starts).toHaveLength(1);
       expect(sessions.find((session) => session.actorId === "agent:codex")?.nativeSessionId).toBe(
         "native:codex"
@@ -316,6 +321,60 @@ describe("AgentSessionManager lifecycle", () => {
     } finally {
       await f.manager.close().catch(() => undefined);
       f.store.close();
+    }
+  });
+
+  it("retries a transient session start failure with bounded backoff", async () => {
+    const store = new SqliteGroupXStore(":memory:");
+    const registry = new AdapterRegistry();
+    const adapters = {
+      codex: new FakeAdapter("codex", "agent:codex"),
+      grok: new FakeAdapter("grok", "agent:grok"),
+      kimi: new FakeAdapter("kimi", "agent:kimi")
+    };
+    for (const adapter of Object.values(adapters)) registry.register(adapter);
+    const bindings = new McpBindingRegistry();
+    const config: SessionManagerOptions["config"] = {
+      transport: "structured",
+      agents: {
+        codex: agentConfig("codex"),
+        grok: agentConfig("grok"),
+        kimi: agentConfig("kimi")
+      },
+      timeouts: {
+        handshakeMs: 100, requestMs: 100, firstEventMs: 100, idleMs: 100,
+        cancelMs: 100, closeMs: 25, askMs: 100
+      }
+    };
+    const progress: Array<{ phase: string; agentId: string; attempt: number }> = [];
+    const manager = new AgentSessionManager({
+      config,
+      store,
+      adapters: registry,
+      mcpBindings: bindings,
+      startAttempts: 2,
+      retryBaseMs: 1,
+      onProgress(event) {
+        progress.push({ phase: event.phase, agentId: event.agentId, attempt: event.attempt });
+      },
+      idFactory: (() => {
+        let sequence = 1_000;
+        return (kind, agentId) => `${kind}:${agentId}:${sequence++}`;
+      })()
+    });
+    adapters.codex.failStartsRemaining = 1;
+    try {
+      manager.setStructuredMcpUrl("http://127.0.0.1:4310/mcp");
+      await manager.startAll();
+      expect(adapters.codex.starts).toHaveLength(2);
+      expect(progress.filter((event) => event.agentId === "codex").slice(0, 3)).toEqual([
+        { phase: "starting", agentId: "codex", attempt: 1 },
+        { phase: "retrying", agentId: "codex", attempt: 1 },
+        { phase: "starting", agentId: "codex", attempt: 2 }
+      ]);
+    } finally {
+      await manager.close().catch(() => undefined);
+      store.close();
     }
   });
 });

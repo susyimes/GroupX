@@ -749,11 +749,16 @@ export class CodexAppServerAdapter implements CliAdapter {
     if (item === undefined || itemType === undefined || !TOOL_ITEM_TYPES.has(itemType)) {
       return;
     }
-    this.#emit(runtime, context, completed ? "tool.completed" : "tool.started", {
+    const projection: Record<string, unknown> = {
       itemId: optionalString(item.id),
       itemType,
       status: optionalString(item.status)
-    }, optionalString(item.id));
+    };
+    for (const key of ["server", "tool", "toolName", "title", "kind"] as const) {
+      const value = optionalString(item[key]);
+      if (value !== undefined) projection[key] = value;
+    }
+    this.#emit(runtime, context, completed ? "tool.completed" : "tool.started", projection, optionalString(item.id));
   }
 
   #emitAgentMessageFallback(runtime: CodexRuntime, context: TurnContext, params: Record<string, unknown>): void {

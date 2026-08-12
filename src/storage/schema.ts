@@ -1,4 +1,4 @@
-export const CURRENT_SCHEMA_VERSION = 4;
+export const CURRENT_SCHEMA_VERSION = 5;
 
 export interface Migration {
   version: number;
@@ -311,6 +311,33 @@ export const MIGRATIONS: readonly Migration[] = [
       UPDATE session_bindings
       SET transport = 'structured'
       WHERE actor_id IN (SELECT actor_id FROM actors WHERE kind = 'agent');
+    `
+  },
+  {
+    version: 5,
+    name: "durable_room_context_checkpoints",
+    sql: `
+      UPDATE summaries
+      SET status = 'superseded'
+      WHERE status = 'active'
+        AND summary_id NOT IN (
+          SELECT summary_id FROM summaries AS newest
+          WHERE newest.room_id = summaries.room_id
+            AND newest.status = 'active'
+          ORDER BY newest.through_seq DESC, newest.created_at DESC, newest.summary_id DESC
+          LIMIT 1
+        );
+
+      ALTER TABLE turn_attempts
+        ADD COLUMN summary_through_seq INTEGER
+        CHECK (summary_through_seq IS NULL OR summary_through_seq >= 0);
+
+      CREATE INDEX IF NOT EXISTS summaries_room_status_through_idx
+        ON summaries(room_id, status, through_seq DESC);
+
+      CREATE UNIQUE INDEX IF NOT EXISTS summaries_one_active_room_idx
+        ON summaries(room_id)
+        WHERE status = 'active';
     `
   }
 ];

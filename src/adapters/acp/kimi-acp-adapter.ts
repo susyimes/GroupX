@@ -1,31 +1,18 @@
 import { GroupXError } from "../../core/errors.js";
 import type { JsonLineRpcClient } from "../jsonline-rpc.js";
-import {
-  preflightKimiUnrestrictedConfig,
-  type KimiUnrestrictedConfigPreflight
-} from "../kimi-config-preflight.js";
-import type { LaunchProfile } from "../types.js";
 import { AcpV1Adapter, type AcpV1AdapterOptions } from "./acp-v1-adapter.js";
 import { isRecord } from "./protocol.js";
 
 export interface KimiAcpAdapterOptions extends AcpV1AdapterOptions {
-  configPreflight?: KimiUnrestrictedConfigPreflight;
   /** Room-local agent key; defaults to the builtin `kimi`. */
   agentId?: string;
 }
 
 /** ACP v1 adapter for the fixed `kimi acp` entrypoint. */
 export class KimiAcpAdapter extends AcpV1Adapter {
-  readonly #configPreflight: KimiUnrestrictedConfigPreflight;
-
   constructor(options: KimiAcpAdapterOptions = {}) {
-    const { configPreflight = preflightKimiUnrestrictedConfig, agentId = "kimi", ...acpOptions } = options;
+    const { agentId = "kimi", ...acpOptions } = options;
     super(agentId, `agent:${agentId}`, ["acp"], acpOptions);
-    this.#configPreflight = configPreflight;
-  }
-
-  protected override async preflightLaunch(_input: LaunchProfile): Promise<void> {
-    await this.#configPreflight();
   }
 
   protected override async configureSession(

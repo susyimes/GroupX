@@ -4,9 +4,18 @@ import { AdapterRegistry } from "../adapters/registry.js";
 import { GroupXBroker } from "../broker/broker.js";
 import type { BrokerContextProvider, BrokerErrorContext } from "../broker/types.js";
 import { assertActiveTransport, isBuiltinAgentId, type GroupXConfig } from "../config.js";
-import { DEFAULT_ROOM_ID } from "../core/envelope.js";
+import {
+  asTransientEnvelope,
+  createCorrelationId,
+  createId,
+  DEFAULT_ROOM_ID
+} from "../core/envelope.js";
 import { GroupXError } from "../core/errors.js";
-import { ContextPacketBuilder } from "../memory/context-packet.js";
+import {
+  RoomContextEngine,
+  type RoomCompactionProgress,
+  type RoomContextSummarizer
+} from "../memory/context-engine.js";
 import { McpBindingRegistry } from "../mcp/binding-registry.js";
 import {
   createGroupXMcpHttpHandler,
@@ -17,14 +26,20 @@ import type { GroupXStore } from "../storage/types.js";
 import {
   createGroupXHttpServer,
   type GroupXHttpServer,
-  type GroupXHttpServerAddress
+  type GroupXHttpServerAddress,
+  type SetupApi
 } from "../web/server/index.js";
 import { SseRuntime } from "../web/sse/index.js";
 import { createAdapterRegistry } from "./adapter-factory.js";
+import { FirstAvailableAgentSummarizer } from "./context-summarizer.js";
 import { SequencedEventPublisher, SqliteSseEventReader } from "./event-stream.js";
 import { RuntimeReadiness } from "./readiness.js";
 import { RestartAgentCommandCoordinator } from "./restart-commands.js";
-import { AgentSessionManager, type SessionResumePlan } from "./session-manager.js";
+import {
+  AgentSessionManager,
+  type SessionProgress,
+  type SessionResumePlan
+} from "./session-manager.js";
 import { GroupXToolBrokerApi } from "./tool-broker-api.js";
 import { ActiveTurnCoordinator } from "./turn-lifecycle.js";
 import { GroupXWebBrokerApi } from "./web-broker-api.js";
@@ -38,7 +53,10 @@ export interface GroupXRuntimeOptions {
   port?: number;
   staticRoot?: string;
   roomId?: string;
+  setupApi?: SetupApi;
   onError?: (error: unknown, context: BrokerErrorContext) => void;
+  /** Test/custom injection. Runtime defaults to the first healthy configured Agent. */
+  contextSummarizer?: RoomContextSummarizer;
 }
 
 export interface GroupXRuntimeStartResult {
@@ -49,23 +67,60 @@ export interface GroupXRuntimeStartResult {
 export const LOCAL_REST_WEB_INSTANCE_ID = "instance:web" as const;
 export const LOCAL_REST_WEB_BINDING_ID = "binding:web" as const;
 
-function contextProvider(
-  store: GroupXStore,
-  maxChars: number
-): BrokerContextProvider {
-  const builder = new ContextPacketBuilder(store);
+function compactionEventType(progress: RoomCompactionProgress) {
+  return `context.compaction.${progress.phase}` as const;
+}
+
+function publishCompactionProgress(
+  publisher: SequencedEventPublisher,
+  progress: RoomCompactionProgress
+): Promise<void> {
+  const correlationId = createCorrelationId();
+  return publisher.publish(
+    asTransientEnvelope({
+      eventId: createId(`context_compaction_${progress.phase}`),
+      roomId: progress.roomId,
+      type: compactionEventType(progress),
+      actor: { actorId: "system:groupx", kind: "system", displayName: "GroupX" },
+      to: [],
+      causationId: progress.operationId,
+      correlationId,
+      rootCorrelationId: correlationId,
+      body: progress,
+      provenance: { sourceKind: "system", labels: ["context-compaction"] }
+    })
+  );
+}
+
+function sessionEventType(progress: SessionProgress) {
+  if (progress.phase === "retrying") return "session.retrying" as const;
+  if (progress.phase === "starting") return "session.starting" as const;
+  if (progress.phase === "ready") {
+    return progress.continuity === "resumed" ? "session.resumed" as const : "session.ready" as const;
+  }
+  return "session.failed" as const;
+}
+
+function contextProvider(engine: RoomContextEngine, config: GroupXConfig): BrokerContextProvider {
   return {
-    prepare({ turn, sourceEvent }) {
-      const packet = builder.buildContextPacket({
+    async prepare({ turn, sourceEvent }) {
+      const agentId = turn.targetActorId.startsWith("agent:")
+        ? turn.targetActorId.slice("agent:".length)
+        : "";
+      const configuredIdentity = config.agents[agentId]?.identity?.trim();
+      const packet = await engine.prepare({
         roomId: sourceEvent.roomId,
         targetActorId: turn.targetActorId,
+        ...(configuredIdentity ? { configuredIdentity } : {}),
         throughSeq: sourceEvent.seq,
-        maxChars,
         currentEvent: sourceEvent
       });
       return {
         contextPacket: packet.text,
-        contextThroughSeq: packet.throughSeq
+        contextThroughSeq: packet.throughSeq,
+        ...(packet.sections.generatedSummary[0]?.seq === undefined
+          ? {}
+          : { summaryThroughSeq: packet.sections.generatedSummary[0].seq })
       };
     }
   };
@@ -81,12 +136,14 @@ export class GroupXRuntime {
   readonly sse: SseRuntime;
   readonly publisher: SequencedEventPublisher;
   readonly sessions: AgentSessionManager;
+  readonly contextEngine: RoomContextEngine;
   readonly roomId: string;
 
   readonly #closeStore: boolean;
   readonly #port: number;
   readonly #staticRoot: string | undefined;
   readonly #onError: GroupXRuntimeOptions["onError"];
+  readonly #setupApi: SetupApi | undefined;
 
   #broker: GroupXBroker | undefined;
   #turns: ActiveTurnCoordinator | undefined;
@@ -110,6 +167,7 @@ export class GroupXRuntime {
     this.#port = options.port ?? config.server.port;
     this.#staticRoot = options.staticRoot;
     this.#onError = options.onError;
+    this.#setupApi = options.setupApi;
     this.roomId = options.roomId ?? DEFAULT_ROOM_ID;
 
     const reader = new SqliteSseEventReader(this.store);
@@ -126,7 +184,39 @@ export class GroupXRuntime {
       store: this.store,
       adapters: this.adapters,
       mcpBindings: this.bindings,
-      closeTimeoutMs: config.timeouts.closeMs
+      closeTimeoutMs: config.timeouts.closeMs,
+      onProgress: async (progress) => {
+        if (!this.publisher) return;
+        const correlationId = createCorrelationId();
+        await this.publisher.publish(
+          asTransientEnvelope({
+            eventId: createId(`session_${progress.phase}`),
+            roomId: this.roomId,
+            type: sessionEventType(progress),
+            actor: {
+              actorId: progress.actorId,
+              kind: "agent",
+              displayName: config.agents[progress.agentId]?.name ?? progress.agentId
+            },
+            to: [],
+            correlationId,
+            rootCorrelationId: correlationId,
+            body: progress,
+            provenance: { sourceKind: "system", labels: ["session-lifecycle"] }
+          })
+        );
+      }
+    });
+    this.contextEngine = new RoomContextEngine({
+      store: this.store,
+      summarizer:
+        options.contextSummarizer ??
+        new FirstAvailableAgentSummarizer({
+          config,
+          primaryAdapters: this.adapters
+        }),
+      maxChars: config.limits.contextCharacters,
+      onProgress: async (progress) => await publishCompactionProgress(this.publisher, progress)
     });
     this.#registerConfiguredActors();
   }
@@ -192,7 +282,6 @@ export class GroupXRuntime {
 
   async #performStart(): Promise<GroupXRuntimeStartResult> {
     try {
-      const recovery = this.sessions.prepareRecovery();
       this.#createWebBinding();
       const turns = new ActiveTurnCoordinator({
         transport: this.config.transport,
@@ -209,7 +298,7 @@ export class GroupXRuntime {
             await this.sessions.restart(actorId);
           }
         },
-        contextProvider: contextProvider(this.store, this.config.limits.contextCharacters),
+        contextProvider: contextProvider(this.contextEngine, this.config),
         turnLifecycle: turns,
         acceptMessageLimits: {
           rootTurns: this.config.limits.rootTurns,
@@ -262,7 +351,8 @@ export class GroupXRuntime {
         ...(this.#staticRoot === undefined
           ? { staticRoot: fileURLToPath(new URL("../../web/", import.meta.url)) }
           : { staticRoot: this.#staticRoot }),
-        ...(mcpHandler === undefined ? {} : { mcpHandler })
+        ...(mcpHandler === undefined ? {} : { mcpHandler }),
+        ...(this.#setupApi === undefined ? {} : { setupApi: this.#setupApi })
       });
       this.#broker = broker;
       this.#turns = turns;
@@ -272,8 +362,12 @@ export class GroupXRuntime {
       this.#http = http;
 
       // Structured sessions need the actual bound origin. HTTP therefore
-      // listens first, while readiness keeps all write commands closed.
+      // listens first, while readiness keeps all write commands closed. The
+      // loopback listener is also the single-runtime lease: stale process
+      // recovery must not mutate a live runtime's bindings before this process
+      // has successfully claimed the configured port.
       const address = await http.start();
+      const recovery = this.sessions.prepareRecovery();
       if (this.config.transport === "structured") {
         this.sessions.setStructuredMcpUrl(`${address.origin}/mcp`);
       }
@@ -348,6 +442,7 @@ export class GroupXRuntime {
 
     await settle(async () => await this.#http?.close());
     await settle(async () => await this.#mcpHandler?.close());
+    await settle(() => this.contextEngine.close());
     await settle(async () => await this.#broker?.close());
     await settle(async () => await this.sessions.close());
     await settle(async () => await this.publisher.close());

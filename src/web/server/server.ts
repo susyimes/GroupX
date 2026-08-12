@@ -30,6 +30,9 @@ import {
   parseRememberMemoryRequest,
   parseRestartAgentAccepted,
   parseRestartAgentRequest,
+  parseSetupSaveRequest,
+  parseSetupSaveResponse,
+  parseSetupSnapshot,
   parseRetractIdentityRequest,
   parseRetractMemoryRequest,
   parseSupersedeIdentityRequest,
@@ -51,7 +54,16 @@ const DEFAULT_BODY_LIMIT = 256 * 1_024;
 const DEFAULT_GRACEFUL_CLOSE_TIMEOUT_MS = 5_000;
 
 interface StaticAsset {
-  readonly fileName: "index.html" | "app.js" | "pagination.js" | "rich-text.js" | "styles.css";
+  readonly fileName:
+    | "index.html"
+    | "app.js"
+    | "pagination.js"
+    | "rich-text.js"
+    | "tool-progress.js"
+    | "styles.css"
+    | "setup.html"
+    | "setup.js"
+    | "setup.css";
   readonly contentType: string;
 }
 
@@ -60,7 +72,12 @@ const STATIC_ASSETS = new Map<string, StaticAsset>([
   ["/app.js", { fileName: "app.js", contentType: "application/javascript; charset=utf-8" }],
   ["/pagination.js", { fileName: "pagination.js", contentType: "application/javascript; charset=utf-8" }],
   ["/rich-text.js", { fileName: "rich-text.js", contentType: "application/javascript; charset=utf-8" }],
-  ["/styles.css", { fileName: "styles.css", contentType: "text/css; charset=utf-8" }]
+  ["/tool-progress.js", { fileName: "tool-progress.js", contentType: "application/javascript; charset=utf-8" }],
+  ["/styles.css", { fileName: "styles.css", contentType: "text/css; charset=utf-8" }],
+  ["/setup", { fileName: "setup.html", contentType: "text/html; charset=utf-8" }],
+  ["/setup.html", { fileName: "setup.html", contentType: "text/html; charset=utf-8" }],
+  ["/setup.js", { fileName: "setup.js", contentType: "application/javascript; charset=utf-8" }],
+  ["/setup.css", { fileName: "setup.css", contentType: "text/css; charset=utf-8" }]
 ]);
 
 class HttpStatusError extends GroupXError {
@@ -365,6 +382,7 @@ export class GroupXHttpServer {
     readonly maxRequestBodyBytes: number;
     readonly gracefulCloseTimeoutMs: number;
     readonly mcpHandler?: McpHttpHandler;
+    readonly setupApi?: GroupXHttpServerOptions["setupApi"];
   };
   readonly #server: Server;
   readonly #sseConnections = new Set<SseConnection>();
@@ -393,7 +411,8 @@ export class GroupXHttpServer {
         options.gracefulCloseTimeoutMs ?? DEFAULT_GRACEFUL_CLOSE_TIMEOUT_MS,
         "gracefulCloseTimeoutMs"
       ),
-      ...(options.mcpHandler === undefined ? {} : { mcpHandler: options.mcpHandler })
+      ...(options.mcpHandler === undefined ? {} : { mcpHandler: options.mcpHandler }),
+      ...(options.setupApi === undefined ? {} : { setupApi: options.setupApi })
     };
     this.#server = createServer((request, response) => {
       void this.#handle(request, response).catch((error: unknown) => {
@@ -560,6 +579,35 @@ export class GroupXHttpServer {
           )
         );
         return;
+      }
+      if (url.pathname === "/api/setup") {
+        if (!this.#options.setupApi) {
+          writeProblem(response, 404, "The setup API is not available.");
+          return;
+        }
+        if (method === "GET") {
+          writeJson(
+            response,
+            200,
+            validateBrokerOutput(parseSetupSnapshot, await this.#options.setupApi.snapshot(abort.signal))
+          );
+          return;
+        }
+        if (method === "POST") {
+          const body = parseSetupSaveRequest(
+            await readJsonBody(request, this.#options.maxRequestBodyBytes)
+          );
+          writeJson(
+            response,
+            200,
+            validateBrokerOutput(
+              parseSetupSaveResponse,
+              await this.#options.setupApi.save(body, abort.signal)
+            )
+          );
+          return;
+        }
+        return methodNotAllowed(response, ["GET", "POST"]);
       }
       if (url.pathname === "/api/messages") {
         if (method !== "POST") return methodNotAllowed(response, ["POST"]);

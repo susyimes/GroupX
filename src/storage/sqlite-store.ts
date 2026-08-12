@@ -47,10 +47,12 @@ import type {
   MutateIdentityInput,
   MutateMemoryInput,
   RecoveryResult,
+  ReplaceRoomSummaryInput,
   RoomBootstrapSnapshot,
   RuntimeRecoveryResult,
   SessionBindingRecord,
   StoredEventRecord,
+  SummaryRecord,
   TerminalTurnInput,
   TerminalTurnResult,
   TurnAttemptRecord,
@@ -328,14 +330,30 @@ function mapTurnAttempt(row: Row): TurnAttemptRecord {
     ) as TurnAttemptRecord["deliveryCertainty"]
   };
   const nativeTurnId = optionalString(row.native_turn_id);
+  const summaryThroughSeq =
+    typeof row.summary_through_seq === "number" ? row.summary_through_seq : undefined;
   const promptInvokedAt = optionalString(row.prompt_invoked_at);
   const startedAt = optionalString(row.started_at);
   const terminalAt = optionalString(row.terminal_at);
   if (nativeTurnId !== undefined) record.nativeTurnId = nativeTurnId;
+  if (summaryThroughSeq !== undefined) record.summaryThroughSeq = summaryThroughSeq;
   if (promptInvokedAt !== undefined) record.promptInvokedAt = promptInvokedAt;
   if (startedAt !== undefined) record.startedAt = startedAt;
   if (terminalAt !== undefined) record.terminalAt = terminalAt;
   return record;
+}
+
+function mapSummary(row: Row): SummaryRecord {
+  return {
+    summaryId: requiredString(row.summary_id, "summary_id"),
+    roomId: requiredString(row.room_id, "room_id"),
+    fromSeq: requiredNumber(row.from_seq, "from_seq"),
+    throughSeq: requiredNumber(row.through_seq, "through_seq"),
+    content: requiredString(row.content, "content"),
+    generatorActorId: requiredString(row.generator_actor_id, "generator_actor_id"),
+    status: requiredString(row.status, "status") as SummaryRecord["status"],
+    createdAt: requiredString(row.created_at, "created_at")
+  };
 }
 
 function mapCursor(row: Row): DeliveryCursorRecord {
@@ -1731,6 +1749,7 @@ export class SqliteGroupXStore implements GroupXStore {
     bindingId: string;
     instanceId: string;
     contextThroughSeq: number;
+    summaryThroughSeq?: number;
     expectedTurnId: string;
     expectedTransport: TurnRecord["transport"];
     claimedAt?: string;
@@ -1740,6 +1759,17 @@ export class SqliteGroupXStore implements GroupXStore {
       throw new GroupXError(
         "INVALID_ENVELOPE",
         "contextThroughSeq must be a non-negative integer"
+      );
+    }
+    if (
+      input.summaryThroughSeq !== undefined &&
+      (!Number.isSafeInteger(input.summaryThroughSeq) ||
+        input.summaryThroughSeq < 0 ||
+        input.summaryThroughSeq > input.contextThroughSeq)
+    ) {
+      throw new GroupXError(
+        "INVALID_ENVELOPE",
+        "summaryThroughSeq must be a non-negative integer within the context boundary"
       );
     }
     const binding = this.#requireOpenBinding(input.bindingId);
@@ -1807,7 +1837,8 @@ export class SqliteGroupXStore implements GroupXStore {
       this.#validateContextThroughSeqUnsafe(
         turnId,
         input.targetActorId,
-        input.contextThroughSeq
+        input.contextThroughSeq,
+        input.summaryThroughSeq
       );
       const claimedAt = input.claimedAt ?? nowIso();
       const claimed = this.#database
@@ -1826,8 +1857,8 @@ export class SqliteGroupXStore implements GroupXStore {
         .prepare(`
           INSERT INTO turn_attempts(
             attempt_id, turn_id, binding_id, instance_id, context_through_seq,
-            dispatch_phase, claimed_at, delivery_certainty
-          ) VALUES (?, ?, ?, ?, ?, 'prepared', ?, 'not_delivered')
+            summary_through_seq, dispatch_phase, claimed_at, delivery_certainty
+          ) VALUES (?, ?, ?, ?, ?, ?, 'prepared', ?, 'not_delivered')
         `)
         .run(
           attemptId,
@@ -1835,6 +1866,7 @@ export class SqliteGroupXStore implements GroupXStore {
           input.bindingId,
           input.instanceId,
           input.contextThroughSeq,
+          input.summaryThroughSeq ?? null,
           claimedAt
         );
       return {
@@ -1847,7 +1879,8 @@ export class SqliteGroupXStore implements GroupXStore {
   #validateContextThroughSeqUnsafe(
     turnId: string,
     actorId: string,
-    contextThroughSeq: number
+    contextThroughSeq: number,
+    summaryThroughSeq: number | undefined
   ): void {
     const bounds = this.#database
       .prepare(`
@@ -1882,6 +1915,22 @@ export class SqliteGroupXStore implements GroupXStore {
         "INVALID_ENVELOPE",
         `contextThroughSeq must be between required context floor ${minimumSeq} and room high-water ${maxRoomSeq}`
       );
+    }
+    if (summaryThroughSeq !== undefined) {
+      const summary = this.#database
+        .prepare(`
+          SELECT 1 FROM summaries
+          WHERE room_id = ? AND status = 'active' AND through_seq = ?
+          LIMIT 1
+        `)
+        .get(roomId, summaryThroughSeq);
+      if (summary === undefined) {
+        throw new GroupXError(
+          "STORE_CONFLICT",
+          "Dispatch summary checkpoint is no longer the active persisted room summary",
+          { reason: "summary_checkpoint_changed", roomId, summaryThroughSeq }
+        );
+      }
     }
   }
 
@@ -2107,7 +2156,7 @@ export class SqliteGroupXStore implements GroupXStore {
         turn.targetActorId,
         requiredString(source.room_id, "room_id"),
         attempt.contextThroughSeq,
-        undefined,
+        attempt.summaryThroughSeq,
         startedAt
       );
       return {
@@ -2349,6 +2398,157 @@ export class SqliteGroupXStore implements GroupXStore {
     return row ? mapCursor(row) : undefined;
   }
 
+  getActiveSummary(roomId: string, throughSeq?: number): SummaryRecord | undefined {
+    this.#assertOpen();
+    if (roomId.trim().length === 0) {
+      throw new GroupXError("INVALID_ENVELOPE", "roomId must not be blank");
+    }
+    if (
+      throughSeq !== undefined &&
+      (!Number.isSafeInteger(throughSeq) || throughSeq < 0)
+    ) {
+      throw new GroupXError("INVALID_ENVELOPE", "throughSeq must be non-negative");
+    }
+    const rows = this.#database
+      .prepare(`
+        SELECT * FROM summaries
+        WHERE room_id = ? AND status = 'active'
+          AND (? IS NULL OR through_seq <= ?)
+        ORDER BY through_seq DESC, summary_id DESC
+        LIMIT 2
+      `)
+      .all(roomId, throughSeq ?? null, throughSeq ?? null) as Row[];
+    if (rows.length > 1) {
+      throw new GroupXError("STORE_UNAVAILABLE", "Room has multiple active summaries");
+    }
+    return rows[0] ? mapSummary(rows[0]) : undefined;
+  }
+
+  listSummaries(input: {
+    roomId: string;
+    includeHistory?: boolean;
+    limit?: number;
+  }): SummaryRecord[] {
+    this.#assertOpen();
+    if (input.roomId.trim().length === 0) {
+      throw new GroupXError("INVALID_ENVELOPE", "roomId must not be blank");
+    }
+    const limit = boundedLimit(input.limit);
+    return (
+      this.#database
+        .prepare(`
+          SELECT * FROM summaries
+          WHERE room_id = ?
+            AND (? = 1 OR status = 'active')
+          ORDER BY through_seq DESC, summary_id DESC
+          LIMIT ?
+        `)
+        .all(input.roomId, input.includeHistory === true ? 1 : 0, limit) as Row[]
+    ).map(mapSummary);
+  }
+
+  replaceActiveSummary(input: ReplaceRoomSummaryInput): SummaryRecord {
+    this.#assertOpen();
+    const content = input.content.trim();
+    if (
+      input.roomId.trim().length === 0 ||
+      input.generatorActorId.trim().length === 0 ||
+      content.length === 0
+    ) {
+      throw new GroupXError(
+        "INVALID_ENVELOPE",
+        "Summary room, generator, and content must not be blank"
+      );
+    }
+    if (
+      !Number.isSafeInteger(input.fromSeq) ||
+      !Number.isSafeInteger(input.throughSeq) ||
+      input.fromSeq < 1 ||
+      input.throughSeq < input.fromSeq
+    ) {
+      throw new GroupXError("INVALID_ENVELOPE", "Summary sequence range is invalid");
+    }
+    if (content.length > 32_768) {
+      throw new GroupXError("MESSAGE_TOO_LARGE", "Summary exceeds 32768 characters");
+    }
+
+    return this.#withImmediateTransaction(() => {
+      const actor = this.getActor(input.generatorActorId);
+      if (!actor || actor.kind !== "agent" || !actor.enabled) {
+        throw new GroupXError("UNKNOWN_ACTOR", "Summary generator must be an enabled Agent");
+      }
+      const bounds = this.#database
+        .prepare(`
+          SELECT COUNT(*) AS count, MIN(seq) AS min_seq, MAX(seq) AS max_seq
+          FROM events
+          WHERE room_id = ? AND seq BETWEEN ? AND ?
+        `)
+        .get(input.roomId, input.fromSeq, input.throughSeq) as Row;
+      if (
+        requiredNumber(bounds.count, "count") < 1 ||
+        requiredNumber(bounds.min_seq, "min_seq") !== input.fromSeq ||
+        requiredNumber(bounds.max_seq, "max_seq") !== input.throughSeq
+      ) {
+        throw new GroupXError(
+          "INVALID_ENVELOPE",
+          "Summary range must start and end on durable events in the same room"
+        );
+      }
+
+      const activeRows = this.#database
+        .prepare("SELECT * FROM summaries WHERE room_id = ? AND status = 'active' LIMIT 2")
+        .all(input.roomId) as Row[];
+      if (activeRows.length > 1) {
+        throw new GroupXError("STORE_UNAVAILABLE", "Room has multiple active summaries");
+      }
+      const activeRow = activeRows[0];
+      const active = activeRow ? mapSummary(activeRow) : undefined;
+      if (active?.summaryId !== input.expectedPreviousSummaryId) {
+        throw new GroupXError("STORE_CONFLICT", "Active room summary changed during compaction");
+      }
+      if (active) {
+        if (input.fromSeq !== active.fromSeq || input.throughSeq <= active.throughSeq) {
+          throw new GroupXError(
+            "INVALID_ENVELOPE",
+            "A rolling room summary must preserve its start and advance its boundary"
+          );
+        }
+        const superseded = this.#database
+          .prepare(`
+            UPDATE summaries SET status = 'superseded'
+            WHERE summary_id = ? AND status = 'active'
+          `)
+          .run(active.summaryId);
+        if (superseded.changes !== 1) {
+          throw new GroupXError("STORE_CONFLICT", "Summary compare-and-set failed");
+        }
+      }
+
+      const summaryId = input.summaryId ?? createId("summary");
+      this.#database
+        .prepare(`
+          INSERT INTO summaries(
+            summary_id, room_id, from_seq, through_seq, content,
+            generator_actor_id, status, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?)
+        `)
+        .run(
+          summaryId,
+          input.roomId,
+          input.fromSeq,
+          input.throughSeq,
+          content,
+          input.generatorActorId,
+          input.createdAt ?? nowIso()
+        );
+      return mapSummary(
+        this.#database
+          .prepare("SELECT * FROM summaries WHERE summary_id = ?")
+          .get(summaryId) as Row
+      );
+    });
+  }
+
   #advanceDeliveryCursorUnsafe(
     actorId: string,
     roomId: string,
@@ -2496,7 +2696,7 @@ export class SqliteGroupXStore implements GroupXStore {
             turn.targetActorId,
             requiredString(source.room_id, "room_id"),
             attempt.contextThroughSeq,
-            undefined,
+            attempt.summaryThroughSeq,
             now
           );
         }

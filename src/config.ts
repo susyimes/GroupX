@@ -13,10 +13,12 @@ import {
 } from "./launch/command-spec.js";
 
 export const TRANSPORT_MODES = ["direct", "structured"] as const;
+export const DEFAULT_CONTEXT_CHARACTERS = 256_000;
+export const LEGACY_CONTEXT_CHARACTERS = 48_000;
 
 export type TransportMode = (typeof TRANSPORT_MODES)[number];
 
-/** Direct remains readable/runnable for compatibility, but is not an active product or release path. */
+/** Direct is a storage/history discriminator only; every public runtime entry rejects it. */
 export const TRANSPORT_LIFECYCLE = {
   direct: "deprecated",
   structured: "active"
@@ -62,6 +64,8 @@ const agentConfigSchema = z
     // Omit for the builtin ids (codex/grok/kimi); required for custom ids.
     driver: z.enum(BUILTIN_AGENT_IDS).optional(),
     name: z.string().min(1).max(64).optional(),
+    /** Stable GroupX room identity injected into every turn for this Agent. */
+    identity: z.string().max(32_768).optional(),
     command: commandInputSchema,
     cwd: z.string().min(1),
     enabled: z.boolean().default(true)
@@ -128,7 +132,17 @@ const groupXConfigSchema = z
         rootTurns: z.number().int().min(1).max(1_000).default(24),
         hopCount: z.number().int().min(1).max(1_000).default(12),
         actorCallsPerRoot: z.number().int().min(1).max(1_000).default(8),
-        contextCharacters: z.number().int().min(1_024).max(10_000_000).default(48_000),
+        // Cross-Agent room budget. This is a deterministic character bound,
+        // not a claim about any provider's token window (Codex may expose a
+        // much larger model-specific window). RoomContextEngine compacts at a
+        // 75% soft target to leave native instructions/response headroom while
+        // this value remains the hard ceiling.
+        contextCharacters: z
+          .number()
+          .int()
+          .min(1_024)
+          .max(10_000_000)
+          .default(DEFAULT_CONTEXT_CHARACTERS),
         sseEvents: z.number().int().min(8).max(100_000).default(512),
         sseBytes: z.number().int().min(16_384).max(100_000_000).default(524_288)
       })
@@ -139,7 +153,7 @@ const groupXConfigSchema = z
         rootTurns: 24,
         hopCount: 12,
         actorCallsPerRoot: 8,
-        contextCharacters: 48_000,
+        contextCharacters: DEFAULT_CONTEXT_CHARACTERS,
         sseEvents: 512,
         sseBytes: 524_288
       }),
@@ -167,6 +181,26 @@ const groupXConfigSchema = z
   .strict();
 
 export type GroupXConfig = z.infer<typeof groupXConfigSchema>;
+
+/** Parse a config document without resolving commands or filesystem-relative paths. */
+export function parseConfigDocument(input: unknown): GroupXConfig {
+  const parsed = groupXConfigSchema.safeParse(input);
+  if (!parsed.success) {
+    throw new GroupXError("INVALID_ENVELOPE", "Invalid GroupX config", {
+      issues: parsed.error.issues.map((issue) => ({ path: issue.path.join("."), message: issue.message }))
+    });
+  }
+  return parsed.data;
+}
+
+/** Resolve a parsed document for one concrete config-directory/runtime context. */
+export function resolveConfigDocument(
+  config: GroupXConfig,
+  baseDirectory: string,
+  commandDependencies: CommandResolverDependencies = systemCommandResolverDependencies
+): GroupXConfig {
+  return resolveConfigPaths(config, baseDirectory, commandDependencies);
+}
 
 export function defaultConfig(
   cwd = process.cwd(),
@@ -199,13 +233,13 @@ export async function loadConfig(
       cause: error
     });
   }
-  const parsed = groupXConfigSchema.safeParse(raw);
-  if (!parsed.success) {
-    throw new GroupXError("INVALID_ENVELOPE", "Invalid GroupX config", {
-      issues: parsed.error.issues.map((issue) => ({ path: issue.path.join("."), message: issue.message }))
-    });
+  const parsed = parseConfigDocument(raw);
+  // 48k was the pre-compaction generated default. Upgrade only an exact
+  // legacy value; explicit custom budgets remain user-owned.
+  if (parsed.limits.contextCharacters === LEGACY_CONTEXT_CHARACTERS) {
+    parsed.limits.contextCharacters = DEFAULT_CONTEXT_CHARACTERS;
   }
-  return resolveConfigPaths(parsed.data, path.dirname(absolutePath), commandDependencies);
+  return resolveConfigDocument(parsed, path.dirname(absolutePath), commandDependencies);
 }
 
 function resolveConfigPaths(
@@ -219,7 +253,9 @@ function resolveConfigPaths(
     storage: { path: path.resolve(resolvedBaseDirectory, config.storage.path) },
     agents: mapAgentConfigs(config.agents, (agentId, agent) => ({
       ...agent,
-      command: resolveAgentCommand(agentId, agent.driver, agent.command, resolvedBaseDirectory, commandDependencies),
+      command: agent.enabled
+        ? resolveAgentCommand(agentId, agent.driver, agent.command, resolvedBaseDirectory, commandDependencies)
+        : agent.command,
       cwd: path.resolve(resolvedBaseDirectory, agent.cwd)
     }))
   };

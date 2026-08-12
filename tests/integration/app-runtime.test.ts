@@ -1,8 +1,9 @@
 import path from "node:path";
 import { mkdtempSync, rmSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { AdapterRegistry } from "../../src/adapters/registry.js";
 import type {
@@ -26,6 +27,7 @@ class RuntimeAdapter implements CliAdapter {
   readonly actorId = "agent:codex";
   readonly starts: LaunchProfile[] = [];
   readonly closes: NativeSession[] = [];
+  readonly prompts: PromptInput[] = [];
   mcpReachableStatus: number | undefined;
   failStart = false;
 
@@ -54,8 +56,16 @@ class RuntimeAdapter implements CliAdapter {
     return { ...this.session(input), nativeSessionId: input.nativeSessionId };
   }
 
-  async *prompt(_session: NativeSession, _input: PromptInput): AsyncIterable<NativeEvent> {
-    return;
+  async *prompt(_session: NativeSession, input: PromptInput): AsyncIterable<NativeEvent> {
+    this.prompts.push(input);
+    yield {
+      adapterId: this.adapterId,
+      type: "turn.completed",
+      instanceId: _session.instanceId,
+      nativeTurnId: input.turnId,
+      payload: {},
+      occurredAt: "2026-08-11T00:00:01.000Z"
+    };
   }
 
   async cancel(_session: NativeSession, _nativeTurnId: string): Promise<CancelResult> {
@@ -106,7 +116,7 @@ function config(transport: "direct" | "structured"): GroupXConfig {
     server: { host: "127.0.0.1", port: 4_310 },
     storage: { path: path.resolve("unused-runtime-test.db") },
     agents: {
-      codex: agent("codex", true),
+      codex: { ...agent("codex", true), identity: "Stable Codex identity from settings" },
       grok: agent("grok", false),
       kimi: agent("kimi", false)
     },
@@ -116,7 +126,7 @@ function config(transport: "direct" | "structured"): GroupXConfig {
       rootTurns: 24,
       hopCount: 12,
       actorCallsPerRoot: 8,
-      contextCharacters: 48_000,
+      contextCharacters: 256_000,
       sseEvents: 64,
       sseBytes: 65_536
     },
@@ -180,6 +190,29 @@ describe("GroupXRuntime composition", () => {
     }
   });
 
+  it("injects the configured Agent identity into the target context packet", async () => {
+    const f = fixture("structured");
+    try {
+      const started = await f.runtime.start();
+      const response = await fetch(`${started.address.origin}/api/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clientCommandId: "runtime:configured-identity",
+          to: ["agent:codex"],
+          content: "identity injection check"
+        })
+      });
+      expect(response.status).toBe(202);
+      await vi.waitFor(() => expect(f.adapter.prompts).toHaveLength(1));
+      expect(f.adapter.prompts[0]?.contextPacket).toContain("[configured_agent_identity]");
+      expect(f.adapter.prompts[0]?.contextPacket).toContain("Stable Codex identity from settings");
+    } finally {
+      await f.runtime.close().catch(() => undefined);
+      f.store.close();
+    }
+  });
+
   it("rejects deprecated Direct before opening the runtime", () => {
     expect(() => createAdapterRegistry(config("direct"))).toThrowError(
       expect.objectContaining({
@@ -226,6 +259,56 @@ describe("GroupXRuntime composition", () => {
     } finally {
       await f.runtime.close().catch(() => undefined);
       f.store.close();
+    }
+  });
+
+  it("does not recover or interrupt live session records when the HTTP port is already occupied", async () => {
+    const store = new SqliteGroupXStore(":memory:");
+    const adapters = new AdapterRegistry();
+    adapters.register(new RuntimeAdapter());
+    store.createAgentInstance({
+      instanceId: "instance:already-running",
+      actorId: "agent:codex",
+      adapterId: "codex",
+      status: "ready",
+      transport: "structured"
+    });
+    store.createSessionBinding({
+      bindingId: "binding:already-running",
+      instanceId: "instance:already-running",
+      actorId: "agent:codex",
+      nativeSessionId: "native:already-running",
+      protocol: "codex-app-server-stdio-jsonrpc-v2",
+      status: "ready",
+      capabilities: { cwd: path.resolve("workspace-codex") },
+      transport: "structured"
+    });
+    const occupied = createServer();
+    await new Promise<void>((resolve, reject) => {
+      occupied.once("error", reject);
+      occupied.listen(0, "127.0.0.1", resolve);
+    });
+    const address = occupied.address();
+    if (address === null || typeof address === "string") throw new Error("fixture port missing");
+    const runtime = new GroupXRuntime(config("structured"), {
+      store,
+      adapters,
+      port: address.port,
+      staticRoot: path.resolve("missing-static-root")
+    });
+
+    try {
+      await expect(runtime.start()).rejects.toMatchObject({ code: "EADDRINUSE" });
+      const persistedInstance = store.getAgentInstance("instance:already-running");
+      const persistedBinding = store.getSessionBinding("binding:already-running");
+      expect(persistedInstance?.status).toBe("ready");
+      expect(persistedInstance?.processEndedAt).toBeUndefined();
+      expect(persistedBinding?.status).toBe("ready");
+      expect(persistedBinding?.closedAt).toBeUndefined();
+    } finally {
+      await runtime.close().catch(() => undefined);
+      await new Promise<void>((resolve, reject) => occupied.close((error) => error ? reject(error) : resolve()));
+      store.close();
     }
   });
 

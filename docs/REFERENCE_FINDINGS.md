@@ -132,7 +132,7 @@ GroupX mapping：Direct 使用 fixed yolo argv；Structured thread start/resume 
 - `auto` 关闭 Plan、自动处理工具权限且不向用户提问，但仍受 static deny；
 - ACP mode 不持久化，`session/new` 或 `session/load`（含 Adapter resume）后首 prompt 前必须再次 `session/set_mode(auto)`。
 
-历史 Kimi 0.34 Direct 实现曾使用只读 config preflight + `--prompt`，现已 deprecated 且入口关闭。Active Structured 在进程 spawn 前做 permission/plan preflight，随后用 `session/set_mode(auto)` 明确关闭当前 ACP session 的 Plan。任何 preflight 不兼容以 `ADAPTER_START_FAILED` 失败，不自动改配置或 transport。
+历史 Kimi 0.34 Direct 实现曾使用只读 config preflight + `--prompt`，现已 deprecated 且入口关闭。Active Structured 不复用这个门禁：官方 `kimi acp` 支持 `session/set_mode`，因此接受默认 global `manual`，随后用 `session/set_mode(auto)` 明确关闭当前 ACP session 的 Plan。mode 拒绝按原生错误证据收敛，不自动改配置或 transport。
 
 如果设置 auto 后仍出现 `session/request_permission`，GroupX 返回 `cancelled` 结清 request、发送 `session/cancel`，然后一律以 `UNEXPECTED_NATIVE_INTERACTION` 失败。`NATIVE_POLICY_BLOCKED` 只能由独立 preflight、startup/session 创建或 mode 设置拒绝的明确 static-deny evidence 产生，request/options 不能触发升级。
 
@@ -167,7 +167,7 @@ A2A 面向独立/远程 Agent，包含 Agent Card、Message、Task、Artifact、
 | 旧 Codex App Server session/cancel/resume/MCP | 历史 wire evidence | `legacy-nonconforming`，不可关闭 |
 | 旧 Grok ACP session/cancel/load/MCP | 历史 wire evidence | `legacy-nonconforming`，不可关闭 |
 | 旧 Kimi ACP session/cancel/load/permission | 历史 wire evidence | `legacy-nonconforming`，不可关闭 |
-| 当前 Kimi ACP preflight/new/set-mode/prompt/MCP/close | matching live evidence | 作为新版 Structured Kimi 历史匹配证据保留 |
+| 当前 Kimi ACP new/set-mode/prompt/MCP/close | matching live evidence | 作为 Structured Kimi 历史匹配证据保留；global-config preflight 已从 active 路径移除 |
 | 当前 Structured runtime Web 群发/resume/三回复/close | matching live evidence | Codex/Grok/Kimi 的 M0-02/M0-03/M0-09/M0-15 为 PASS |
 | 本机 argv/help/parser 与最小 wire probe | advertised/probed | 可固定命令/字段，不等于 live PASS |
 | 当前 Direct runtime 新会话 + 重启续会话 | deprecated historical evidence | 仅说明旧兼容实现曾具备连续性，不满足当前 Gate |

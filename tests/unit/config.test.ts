@@ -88,6 +88,7 @@ describe("GroupX configuration", () => {
     expect(defaults.transport).toBe("structured");
     expect(defaults.server).toEqual({ host: "127.0.0.1", port: 4_310 });
     expect(defaults.storage.path).toBe(".groupx/groupx.db");
+    expect(defaults.limits.contextCharacters).toBe(256_000);
     expect(defaults.agents.codex!.command).toEqual({
       executable: nodeExecutable,
       prefixArgs: [codexEntrypoint]
@@ -99,6 +100,7 @@ describe("GroupX configuration", () => {
     });
     expect(config.server).toEqual({ host: "127.0.0.1", port: 4_310 });
     expect(config.storage.path).toBe(path.join(cwd, ".groupx", "groupx.db"));
+    expect(config.limits.contextCharacters).toBe(256_000);
     expect(Object.values(config.agents).map((agent) => agent.cwd)).toEqual([cwd, cwd, cwd]);
   });
 
@@ -113,6 +115,28 @@ describe("GroupX configuration", () => {
     expect(config.agents.codex!.cwd).toBe(directory);
     expect(config.agents.grok!.cwd).toBe(directory);
     expect(config.agents.kimi!.cwd).toBe(directory);
+  });
+
+  it("upgrades the retired 48k generated context default but preserves custom budgets", async () => {
+    const legacy = validConfig();
+    legacy.limits = { contextCharacters: 48_000 };
+    const legacyFile = await writeConfig(legacy);
+    const upgraded = await loadConfig(
+      legacyFile.configPath,
+      process.cwd(),
+      commandDependencies()
+    );
+    expect(upgraded.limits.contextCharacters).toBe(256_000);
+
+    const custom = validConfig();
+    custom.limits = { contextCharacters: 96_000 };
+    const customFile = await writeConfig(custom);
+    const preserved = await loadConfig(
+      customFile.configPath,
+      process.cwd(),
+      commandDependencies()
+    );
+    expect(preserved.limits.contextCharacters).toBe(96_000);
   });
 
   it("treats the agents map as the explicit room roster", async () => {
@@ -256,13 +280,25 @@ describe("GroupX configuration", () => {
   it("loads custom agents with an explicit driver and display name", async () => {
     const input = validConfig();
     const agents = input.agents as Record<string, Record<string, unknown>>;
-    agents.rex = { driver: "codex", name: "小R", command: "codex", cwd: ".", enabled: true };
+    agents.rex = {
+      driver: "codex",
+      name: "小R",
+      identity: "专注协议与回归风险的代码评审员",
+      command: "codex",
+      cwd: ".",
+      enabled: true
+    };
     agents["grok-2"] = { driver: "grok", command: "grok", cwd: ".", enabled: false };
     const { configPath } = await writeConfig(input);
 
     const config = await loadConfig(configPath, process.cwd(), commandDependencies());
 
-    expect(config.agents.rex).toMatchObject({ driver: "codex", name: "小R", enabled: true });
+    expect(config.agents.rex).toMatchObject({
+      driver: "codex",
+      name: "小R",
+      identity: "专注协议与回归风险的代码评审员",
+      enabled: true
+    });
     expect(config.agents.rex!.command).toEqual({ executable: nodeExecutable, prefixArgs: [codexEntrypoint] });
     expect(config.agents["grok-2"]).toMatchObject({ driver: "grok", enabled: false });
     expect(config.agents.codex).toMatchObject({ driver: "codex" });

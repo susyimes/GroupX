@@ -47,7 +47,7 @@ GroupX 按定义字段记录诊断数据，不主动采集完整环境、CLI 配
 | --- | --- | --- | --- |
 | Codex | 新会话：`codex --yolo --dangerously-bypass-hook-trust exec --json -`；续会话：同一前缀后 `exec resume --json <sessionId> -` | `codex --dangerously-bypass-hook-trust app-server --listen stdio://`；thread start/resume 固定 `approvalPolicy="never"`、`sandbox="danger-full-access"` | 长驻 thread、语义化 interrupt、GroupX MCP |
 | Grok | `grok --no-auto-update --permission-mode bypassPermissions --sandbox off --no-plan [--resume <sessionId>] --output-format streaming-json --single <prompt>`（`-p` 是短别名） | 相同全局前缀后追加 `agent stdio` | 长驻 ACP、语义化 cancel、GroupX MCP |
-| Kimi | 只读预检原生 `default_permission_mode=yolo|auto`、`default_plan_mode=false`；随后 `kimi [--session <id>] --prompt <prompt> --output-format stream-json`，不传冲突 flags | 同一 preflight 后启动 `kimi acp`；session new/load（含 Adapter resume）后、首 prompt 前 `session/set_mode(modeId="auto")`；mode 不持久化 | Direct session continuation；Structured 长驻 ACP、语义化 cancel、GroupX MCP |
+| Kimi | deprecated Direct 参考实现保留只读配置预检后使用 `kimi [--session <id>] --prompt <prompt> --output-format stream-json` | 直接启动 `kimi acp`，不要求全局默认 yolo/auto；session new/load（含 Adapter resume）后、首 prompt 前 `session/set_mode(modeId="auto")`；mode 不持久化 | Structured 长驻 ACP、语义化 cancel、GroupX MCP |
 
 Direct 的 one-shot、resume 与 Kimi preflight 逻辑只为兼容旧配置/记录保留，不再成为里程碑、M0 Gate 或新功能落点。Structured 维持长驻 session，是唯一完整三 Agent 路径。任何 Structured 失败都在本 transport 内收敛，不自动 fallback 到 Direct。
 
@@ -221,6 +221,7 @@ Memory Service 提供：
 - supersede/retract；
 - 按 scope/kind/text/cursor 检索；
 - 生成有明确 `summary` 标签的滚动摘要；
+- 以 transient `context.compaction.started/retrying/completed/failed` 向 Web 反馈压缩过程；
 - 为 Adapter 构建受长度预算约束的 Context Packet。
 
 Memory Service 不允许摘要覆盖原始 transcript，也不把其他 Agent 对某身份的描述直接写成该身份的稳定事实。
@@ -282,6 +283,7 @@ M1 UI 使用原生 HTML/CSS/TypeScript，避免在首版引入大型框架。
 - 底部：composer，明确选择 `@codex/@grok/@kimi/@all`。
 
 UI 只根据 Envelope actor 渲染发送者，不解析正文决定头像或身份。
+`tool.progress` 按 `turnId + toolCallId` 归并到对应 Agent 的会话气泡，started/completed 更新同一条；默认只显示一行工具名与状态，用户点击“展开”后才显示受限长度的结构化详情。它不得回退成独立的全量 JSON 事件卡。
 首版将模型输出作为普通文本渲染，不执行其中的 HTML/脚本。服务器只绑定 loopback；GroupX 不在其上叠加认证、Origin 防护或浏览器安全策略。
 
 ## 6. 关键消息流程
@@ -342,14 +344,25 @@ GroupX 只承诺命令接收与派发记录幂等，不虚构模型执行的 exa
 
 每个 Adapter 维护 `lastDeliveredSeq`。一次 prompt 的 Context Packet 最多包含：
 
-1. GroupX 协议与当前 actor 身份的简短说明；
-2. 与当前 actor 相关的身份记忆摘要；
-3. 当前有效的固定公共记忆；
-4. 自上次投递后的相关消息增量；
-5. 当前目标消息和 reply chain；
-6. 必要时的滚动摘要引用。
+1. GroupX 协议与 Agent 设置中的稳定身份；
+2. 与当前 actor 相关的兼容身份记录；
+3. 当前 Agent 的独立记忆（按 `created_at` 日期展示、按 actor scope 注入）；
+4. 当前有效的固定公共记忆；
+5. 自上次投递后的相关消息增量；
+6. 当前目标消息和 reply chain；
+7. 必要时的持久滚动摘要检查点。
 
-不把完整数据库或完整房间历史重复注入每个 turn。Context Packet 有字符/token 预算，截断顺序必须保留当前消息和明确 reply chain。
+不把完整数据库或完整房间历史重复注入每个 turn。默认 Context Packet 硬上限是 `256,000` 字符，Room Context Engine 以其约 `75%`（默认 `192,000` 字符）作为压缩软目标，给原生 instructions、工具调用和回复留余量；这是跨 Agent 的确定性字符预算，不等同于某个模型的 token window（例如 Codex UI 可能显示约 258k tokens）。用户可通过 `limits.contextCharacters` 覆盖硬上限。
+
+配置加载器只把历史自动生成默认值 `48,000` 迁移为 `256,000`；任何其他显式自定义预算保持不变。
+
+当软目标将省略未投递消息时，Room Context Engine 采用与 Codex checkpoint compaction 相同的核心形态：把既有检查点与较旧消息交给配置顺序中第一个健康 Agent，生成新的累计摘要，同时保留近期真实消息、完整 reply chain 和当前消息。若不可压缩的当前消息/reply chain 只超过软目标而未超过硬上限，则允许本 Turn 使用硬上限。压缩使用独立、短生命周期、无 GroupX MCP 的 Structured session；首个 Agent 不可用或返回无效摘要时按配置顺序尝试下一个。
+
+只有新摘要先持久化且实际进入 Context Packet，attempt 才记录 `summary_through_seq`；native start 被确认后，delivery cursor 与 `last_summary_seq` 一起推进。压缩失败会把当前 Turn 明确标为失败，原 transcript、旧摘要和 cursor 均不改变，不能静默裁掉历史。
+
+每轮压缩按配置顺序逐一尝试健康 Agent；若整轮只遇到临时启动、握手、首事件、空闲中断或 session unavailable，最多进行 3 轮并指数退避。单个 Agent 失败后先切换下一个，不在同一轮反复占用它。空摘要、超长摘要、协议非法、native interaction、外部策略阻断与摘要持久化错误不重试。
+
+Structured session 的启动/恢复对明确的临时启动、握手、session unavailable 和未交付中断最多尝试 3 次并指数退避。resume 仍失败时可为**未来 Turn**创建新的同 transport session；任何可能已送达的业务 prompt 都不自动重放。Web 通过 transient `session.starting/retrying/ready/failed` 展示这一过程。
 
 ## 8. 并发、性能与背压
 
@@ -441,7 +454,11 @@ CONTEXT_BUDGET_EXCEEDED
 
 公开 `transport` 配置只接受 `structured`;`direct` 会在解析和 runtime construction 阶段明确失败。message/Turn API 不允许覆盖。运行态公开 Structured、版本、健康状态和 capability snapshot。
 
-Agent `enabled` 默认 true;`enabled: false` 的 agent 不建 Adapter、不进名册 UI。Kimi driver enabled 时,在 ACP process spawn 前读取 `$KIMI_CODE_HOME/config.toml`(fallback `~/.kimi-code/config.toml`)并只投影 `default_permission_mode` 与 `default_plan_mode`;前者必须为 `yolo|auto`,后者有效值必须为 `false`。失败返回 `ADAPTER_START_FAILED`;不自动禁用 Kimi、不切 transport、不写配置。
+Agent `enabled` 默认 true;`enabled: false` 的 agent 不建 Adapter、不进名册 UI。Kimi driver enabled 时不读取或要求修改全局 permission/plan 默认值；ACP process 建立 session 后用 `session/set_mode(auto)` 固定当前 session。若 mode RPC 的明确 native policy 拒绝成立，则返回 `NATIVE_POLICY_BLOCKED`;其他协议/启动错误按对应 Adapter 错误收敛，不自动禁用 Kimi、不切 transport、不写配置。
+
+`groupx init` 启动一个临时 loopback 引导服务并打开浏览器；首次 `groupx start` 没有配置时复用同一流程。引导页可创建多个相同 driver 实例并填写 id/name/cwd/command；保存严格配置后，CLI 启动正式 runtime，临时服务通过同源 launch 状态通知当前页面，并在正式服务 ready 后自动跳转到群聊。运行中的 `/setup` 使用同一合同编辑名册；保存只更新配置文件并提示重启，不自动跳转，也不在运行时热增删 Adapter/session。setup API 不暴露 transport、access、approval 或 sandbox 字段。
+
+正式 runtime 必须先成功绑定配置的 loopback HTTP 端口，才能执行 stale Agent instance/session recovery。该监听是单 runtime 启动租约：若端口已被另一个 GroupX 占用，新进程以 `EADDRINUSE` 失败且不得把现有 runtime 的 ready binding 标成 interrupted，也不得留下永久 queued Turn。
 
 公开配置没有 `access` 字段。`access` 在 v0.1 内部恒为 unrestricted；Adapter 根据 Agent + transport 生成固定 argv/session mode。用户不能通过 `extraArgs` 改写、删除或替换这些访问参数。
 
@@ -463,8 +480,8 @@ Windows 上 npm shim 不能假设可由 `shell:false` 直接启动。启动阶�
 - 使用 argv 数组，不经过 shell；
 - Windows 设置 `windowsHide: true`；
 - 继承当前用户环境，但 GroupX 不主动采集完整环境；
-- stdout 按对应 Direct JSON/JSONL 或 App Server/ACP 合同解析，stderr 独立、限长，并只生成有界诊断摘要；
-- Structured 取消先发原生 cancel/interrupt；Direct 取消终止该 Turn 子进程；关闭均有明确期限且只作用于所属进程树。
+- Structured stdout 按 App Server/ACP 合同解析，stderr 独立、限长，并只生成有界诊断摘要；Direct 解析器只保留为历史迁移与 fixture 审计代码，不存在公开运行入口；
+- Structured 取消先发原生 cancel/interrupt；关闭有明确期限且只作用于所属进程树。
 
 ## 11. 项目结构
 
@@ -474,16 +491,16 @@ D:\GroupX
 ├─ AGENTS.md
 ├─ package.json                  # @susyimes/groupx;bin: groupx → dist/src/cli.js
 ├─ src
-│  ├─ cli.ts                     # groupx start/doctor/init 命令入口
+│  ├─ cli.ts                     # groupx start/doctor/init/update 命令入口
 │  ├─ main.ts                    # Broker 启动(被 cli.ts 复用)
 │  ├─ config.ts                  # transport/server/storage/agents 名册 schema
 │  ├─ core                       # envelope / dispatcher / identity-binding / errors
 │  ├─ launch                     # command-spec:跨平台 shell-free 命令解析
-│  ├─ app                        # runtime / session-manager / adapter-factory / doctor / init-config
+│  ├─ app                        # runtime / session-manager / adapter-factory / doctor / init-config / update
 │  ├─ adapters                   # codex app-server、acp(grok/kimi)、direct(deprecated)
 │  ├─ broker
 │  ├─ storage                    # sqlite-store(WAL)
-│  ├─ memory                     # 公共/身份记忆与 context packet
+│  ├─ memory                     # 公共/Agent 独立记忆、兼容身份记录与 context packet
 │  ├─ mcp                        # Structured 当前回合主动互调
 │  ├─ m0                         # release Gate 探针与矩阵
 │  ├─ supervisor                 # jsonline-process
@@ -507,13 +524,13 @@ D:\GroupX
 
 ## 12. 实施里程碑
 
-### M0：Direct / Structured 传输验证
+### M0：Structured 传输发布验证
 
 - 建立 TypeScript 测试 harness；
-- 对三个本机 CLI 分别建立 Direct 与 Structured capability baseline；验证固定 unrestricted argv/session mode/preflight、输出/terminal、取消和进程关闭；
-- Direct 验证 Codex `exec resume`、Grok `--resume`、Kimi `--session` 在新进程延续 session，并验证 Kimi 配置漂移会在下一次 spawn 前稳定 fail-fast；Structured 额外验证 initialize、长驻 session/thread、resume/load 与 MCP 注入/真实调用；
+- 对三个本机 CLI 建立 Structured capability baseline；验证固定 unrestricted argv/session mode、输出/terminal、取消和进程关闭；
+- 验证 initialize、长驻 session/thread、resume/load 与 MCP 注入/真实调用；Direct fixture 只用于历史格式和迁移审计，不计入发布 Gate；
 - 验证 approval/permission/user-input request 不进入产品状态机，并且一律以 `UNEXPECTED_NATIVE_INTERACTION` 终止；另用独立外部策略 fixture 验证 `NATIVE_POLICY_BLOCKED`；
-- 保存两套 capability matrix，不把旧配置或另一 transport 的结果借用为通过；
+- 保存 Structured capability matrix；旧 Direct evidence 只标记 deprecated，不得借用为通过；
 - 验证 GroupX 没有写入 CLI 全局配置；固定 argv/mode 只发生在进程/session 范围；
 - 固定统一 Adapter 接口、事件归一化合同和失败不切换 transport 的语义。
 
@@ -525,7 +542,7 @@ D:\GroupX
 - REST/SSE；
 - 原生 Web UI；
 - 用户定向消息、`@all` 并行、最终输出与可用增量显示；
-- cancel、failure、sender badge；Direct 覆盖新进程 native resume，Structured 覆盖 session restart 与 resume/load；
+- cancel、failure、sender badge；Structured 覆盖 session restart 与 resume/load；
 - 公共记忆、身份记忆、Context Packet 与 delivery cursor；
 - Broker 重启后恢复 queued 工作；running 状态不明的 Turn 不自动重放；
 - 基础性能测试。

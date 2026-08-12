@@ -26,7 +26,9 @@ SQLite/WAL 是 GroupX 唯一权威事实源。Broker 是唯一写入者。
 | final messages | 是 | 是 | 完成或明确 partial 的正文 |
 | token delta | 否 | 否 | 仅 live SSE，短时内存合并 |
 | public memory | 是 | 是 | 显式记忆、来源可追溯 |
+| per-Agent dated memory | 是 | 是 | `scope_type=agent`，按目标 actor 隔离，日期来自 `created_at` |
 | identity memory | 是 | 是 | 群组层身份记录，不替换 CLI 原生身份 |
+| configured Agent identity | 配置 | 是 | 存在 `groupx.json`，每轮注入，不写入 memory 表 |
 | generated summary | 派生 | 是 | 标记 summary，可重新生成 |
 | native interaction failure summary | 是 | 是 | 只保存 request kind、错误码与有界 native reason；没有 pending/options/decision |
 | raw stderr/env/config | 否 | 否 | 不属于 GroupX 数据模型，不主动采集 |
@@ -224,6 +226,8 @@ turn_attempts(
 
 `dispatch_phase` 至少区分 `prepared`、`prompt_invoked`、`native_started`、`terminal`。Structured prompt request 在越过可能交付边界前必须先持久化 `prompt_invoked + delivery_certainty=unknown + prompt_invoked_at`；因此只有仍为 `prepared + not_delivered` 的 Structured attempt 才能通过 CAS 重新排队。历史 Direct attempt 保留同一字段语义但不再被 runtime claim。
 
+schema v5 为 attempt 增加可空 `summary_through_seq`。它只能指向该房间当前 active、且确实嵌入本次 Context Packet 的摘要边界，并且不得超过 `context_through_seq`。
+
 这不是 exactly-once 承诺，而是守住“可能已经执行就不自动重放”的持久证据。attempt 不重复存 transport；实际 transport 从不可变 Turn 读取，并校验其 binding/instance 与 expected transport 一致，不能用另一个 transport 的 capability 或恢复路径替代。
 
 ### 3.8 delivery_cursors
@@ -239,7 +243,7 @@ delivery_cursors(
 )
 ```
 
-该表用于构建增量 Context Packet，不表示用户已读回执，也不证明 native session 已持有这些历史。cursor 只能推进到成功交付 Structured attempt 的 `context_through_seq`。历史 Direct cursor 仅按旧事实读取。
+该表用于构建增量 Context Packet，不表示用户已读回执，也不证明 native session 已持有这些历史。cursor 只能推进到成功交付 Structured attempt 的 `context_through_seq`；`last_summary_seq` 只能随含该持久摘要的 attempt 在 native start 被确认后推进。历史 Direct cursor 仅按旧事实读取。
 
 ### 3.9 memory_records
 
@@ -316,7 +320,7 @@ summaries(
 )
 ```
 
-摘要永远是派生数据。删除/失效摘要不能删除原事件。
+摘要永远是派生数据。每个房间最多一条 active 累计摘要；滚动更新以 compare-and-set 把旧摘要标为 superseded 后再写入新摘要。删除/失效摘要不能删除原事件。
 
 ## 4. 事务不变量
 
@@ -341,7 +345,7 @@ Turn terminal transaction 先对 `terminal_event_id IS NULL` 和当前 non-termi
 2. 以统一 idempotency key `turn:<turnId>:terminal` 插入唯一 durable terminal event，不论 event type 为 completed/failed/cancelled/interrupted；
 3. 更新 Turn terminal 状态、错误码及 event 引用；
 4. 更新当前 attempt 的 `dispatch_phase=terminal`、delivery certainty 和 `terminal_at`；
-5. 仅在 confirmed delivered 时把 delivery cursor 最多推进到该 attempt 的 `context_through_seq`；
+5. 仅在 confirmed delivered 时把 delivery cursor 最多推进到该 attempt 的 `context_through_seq`；若 attempt 带 `summary_through_seq`，同事务推进 `last_summary_seq`；
 6. commit；
 7. 唤醒 SQLite-backed SSE cursor tail，再由它按 durable seq 发布。
 
@@ -447,27 +451,26 @@ IdentityRecord 没有以下专用字段：
 
 ```text
 [groupx_protocol]
+[configured_agent_identity]
 [self_identity]
+[agent_memory]
 [pinned_group_memory]
 [relevant_memory]
+[room_checkpoint_summary]
 [room_delta_since_cursor]
 [reply_chain]
 [current_message]
 ```
 
-优先级由低到高：
+Agent 设置中的稳定身份、滚动摘要、当前消息和完整 reply chain 是强制区段。滚动摘要是已省略旧 transcript 的覆盖证明，因此不能先推进 cursor 再丢掉摘要。其余可选区段在预算内优先保留近期 room delta，再保留目标 Agent 独立记忆、公共记忆和兼容身份记录。
 
-```text
-generated summary
-older room delta
-relevant memory
-pinned memory
-self identity
-reply chain
-current message
-```
+`memory_records.scope_type=agent` 且 `scope_id=agent:<id>` 的记录只进入该目标 Agent 的 Context Packet。Web 以 `created_at` 的本地日期分组展示；公共记忆仍使用 `scope_type=room`，两者不会相互提升或复制。Agent 稳定身份不在右侧记忆面板编辑，而在 Agent 设置中写入配置。
 
-超出预算时从低优先级开始裁剪。当前消息、发送者和目标不可被摘要替代。
+默认硬上限为 `256,000` 字符，可配置；该值不是 token 数。Room Context Engine 在约 `75%` 的软目标（默认 `192,000` 字符）将省略 unread transcript 时触发，并以“旧检查点 + 有界旧消息块”滚动生成下一检查点，为原生 instructions、工具和回复保留余量。不可压缩的强制区段可以使用到硬上限。生成者是配置顺序中第一个健康 Agent；不可用或返回无效摘要时尝试下一个健康 Agent。
+
+压缩 session 不挂载 GroupX MCP，不形成公开聊天 Turn，也不让压缩任务主动调用其他 Agent。若所有 Agent 都失败，当前业务 Turn 以 `CONTEXT_BUDGET_EXCEEDED` 结束；原文、旧摘要和 delivery cursor 保持不变。
+
+压缩状态仅用 transient SSE 提示，不进入 `events` 表。只对生成阶段可确认的临时 session/transport 错误做有界退避重试；摘要校验或持久化失败不自动重写。只有完整生成、校验并通过摘要 CAS 后才发布 completed 并替换 active summary。会话启动重试同样不能放宽 Turn 的交付不确定边界：prompt 一旦可能送达便禁止自动 replay。
 
 Context Packet 中每条记忆应带最小来源标签，例如：
 
@@ -524,10 +527,12 @@ GroupX 诊断日志只记录实现合同需要的有界字段：
 6. token delta 不导致数据库逐 token 增长。
 7. queued 在重启后恢复；running 不自动重放。
 8. public/identity memory 重启后保持 author/subject/source/supersedes。
-9. 摘要失效不影响原 transcript。
-10. 默认导出只包含合同定义的公共事件/记忆字段，不带 binding、native session、raw stderr 或未建模的原生 payload。
-11. Structured binding 按 active 合同持久化；历史 Direct invocation 仍可读取与恢复其已有语义，但状态明确为 deprecated，不形成新 Gate 或跨 transport fallback。
-12. binding 的 transport、协议、实测 capability 与 instance lineage 可查询；重建 process/session 不修改稳定 actor 或历史 Turn。
-13. schema 中不存在 approval table；native interaction request 只形成一次 terminal failure，重启后没有 pending approval 可恢复。
-14. 默认 transport 是 Structured；同一运行三个 Agent 的 Turn、binding、instance transport snapshot 一致，attempt 从 Turn 推导，不重复存列；请求不能覆盖 transport/access。
-15. SQLite-backed SSE cursor tail 在历史补齐与 commit 唤醒之间不丢 durable event。
+9. 摘要失效不影响原 transcript；滚动替换保持单 active 摘要和完整历史。
+10. 长房间触发压缩后，Context Packet 同时包含累计检查点与近期逐条原文；只有确认 native start 后 `last_summary_seq` 才推进。
+11. 压缩 Agent 失败时不更新摘要或 cursor，业务 Turn 产生明确 terminal failure；不得静默漏历史。
+12. 默认导出只包含合同定义的公共事件/记忆字段，不带 binding、native session、raw stderr 或未建模的原生 payload。
+13. Structured binding 按 active 合同持久化；历史 Direct invocation 仍可读取与恢复其已有语义，但状态明确为 deprecated，不形成新 Gate 或跨 transport fallback。
+14. binding 的 transport、协议、实测 capability 与 instance lineage 可查询；重建 process/session 不修改稳定 actor 或历史 Turn。
+15. schema 中不存在 approval table；native interaction request 只形成一次 terminal failure，重启后没有 pending approval 可恢复。
+16. 默认 transport 是 Structured；同一运行三个 Agent 的 Turn、binding、instance transport snapshot 一致，attempt 从 Turn 推导，不重复存列；请求不能覆盖 transport/access。
+17. SQLite-backed SSE cursor tail 在历史补齐与 commit 唤醒之间不丢 durable event。

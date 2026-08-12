@@ -14,7 +14,7 @@
     <script type="module" src="/app.js"></script>
   </head>
   <body>
-    <div id="app" class="app-shell">
+    <div id="app" class="app-shell context-is-collapsed">
       <header class="app-header">
         <div class="brand-lockup">
           <span class="brand-mark" aria-hidden="true">GX</span>
@@ -29,6 +29,10 @@
             <span id="connection-label">正在启动</span>
           </output>
           <span id="room-label" class="room-label">本地房间</span>
+          <a class="setup-link" href="/setup" aria-label="管理 Agent" title="管理 Agent">
+            <span aria-hidden="true">⚙</span>
+            <span class="setup-link-label">Agent 设置</span>
+          </a>
           <button id="theme-toggle" class="theme-toggle" type="button" aria-label="切换到夜间模式" title="切换到夜间模式">☾</button>
         </div>
         <div id="global-error" class="global-error" role="alert" hidden></div>
@@ -45,7 +49,7 @@
         <ul id="agent-list" class="agent-list"></ul>
         <div class="local-note">
           <span class="local-note-icon" aria-hidden="true">⌂</span>
-          <p>仅连接本机 GroupX Broker。各 CLI 的权限仍由其原生配置决定。</p>
+          <p>仅连接本机 GroupX Broker。GroupX 固定以 unrestricted 启动 CLI；UAC、ACL 与企业策略仍由原生环境约束。</p>
         </div>
       </aside>
 
@@ -57,6 +61,15 @@
           </div>
           <button id="jump-latest" class="quiet-button" type="button" hidden>回到最新</button>
         </div>
+
+        <section id="runtime-progress" class="runtime-progress" role="status" aria-live="polite" hidden>
+          <span class="runtime-progress-spinner" aria-hidden="true"></span>
+          <div class="runtime-progress-copy">
+            <strong id="runtime-progress-title">正在整理房间上下文</strong>
+            <span id="runtime-progress-detail">准备压缩较早的会话记录</span>
+          </div>
+          <span id="runtime-progress-attempt" class="runtime-progress-attempt"></span>
+        </section>
 
         <ol
           id="timeline"
@@ -115,13 +128,26 @@
         </form>
       </main>
 
-      <aside id="context-panel" class="side-panel context-panel" aria-label="房间上下文">
-        <div class="context-tabs" role="tablist" aria-label="上下文面板">
-          <button id="memory-tab" class="context-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="memory-panel">记忆</button>
-          <button id="identity-tab" class="context-tab" type="button" role="tab" aria-selected="false" aria-controls="identity-panel">身份</button>
+      <button
+        id="context-drawer-toggle"
+        class="context-drawer-toggle"
+        type="button"
+        aria-controls="context-panel"
+        aria-expanded="false"
+        aria-label="展开记忆面板"
+        title="展开记忆面板"
+      >
+        <span aria-hidden="true">‹</span>
+        <span>记忆</span>
+      </button>
+
+      <aside id="context-panel" class="side-panel context-panel" aria-label="房间记忆">
+        <div class="context-tabs" role="tablist" aria-label="记忆面板">
+          <button id="public-memory-tab" class="context-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="public-memory-panel">公共记忆</button>
+          <button id="agent-memory-tab" class="context-tab" type="button" role="tab" aria-selected="false" aria-controls="agent-memory-panel">Agent 记忆</button>
         </div>
 
-        <section id="memory-panel" class="context-section" role="tabpanel" aria-labelledby="memory-tab">
+        <section id="public-memory-panel" class="context-section" role="tabpanel" aria-labelledby="public-memory-tab">
           <div class="panel-heading compact">
             <div>
               <p class="eyebrow">Public memory</p>
@@ -150,32 +176,36 @@
           </form>
         </section>
 
-        <section id="identity-panel" class="context-section" role="tabpanel" aria-labelledby="identity-tab" hidden>
+        <section id="agent-memory-panel" class="context-section" role="tabpanel" aria-labelledby="agent-memory-tab" hidden>
           <div class="panel-heading compact">
             <div>
-              <p class="eyebrow">Identity memory</p>
-              <h2>身份记忆</h2>
+              <p class="eyebrow">Agent memory</p>
+              <h2>Agent 独立记忆</h2>
             </div>
           </div>
-          <p class="section-description">这是 GroupX 内的身份叠加，不会改写 CLI 的全局 persona 或配置。</p>
-          <ul id="identity-list" class="record-list"></ul>
-          <form id="identity-form" class="record-form">
-            <div id="identity-replace-banner" class="replace-banner" hidden>
-              <span>正在替换一条身份记忆</span>
-              <button id="identity-replace-cancel" class="text-button" type="button">取消</button>
+          <p class="section-description">每个 Agent 单独保存，按日期分组；不会进入其他 Agent 的记忆，也不同于公共记忆。</p>
+          <label class="memory-agent-picker" for="agent-memory-actor">
+            <span>选择 Agent</span>
+            <select id="agent-memory-actor"></select>
+          </label>
+          <div id="agent-memory-groups" class="memory-date-groups"></div>
+          <form id="agent-memory-form" class="record-form">
+            <div id="agent-memory-replace-banner" class="replace-banner" hidden>
+              <span>正在替换一条 Agent 记忆</span>
+              <button id="agent-memory-replace-cancel" class="text-button" type="button">取消</button>
             </div>
-            <label for="identity-actor">对象</label>
-            <select id="identity-actor"></select>
-            <label for="identity-kind">类型</label>
-            <select id="identity-kind">
+            <label for="agent-memory-kind">类型</label>
+            <select id="agent-memory-kind">
+              <option value="fact">事实</option>
+              <option value="decision">决定</option>
               <option value="preference">偏好</option>
               <option value="instruction">指令</option>
               <option value="constraint">约束</option>
               <option value="note">备注</option>
             </select>
-            <label for="identity-input">添加群内身份说明</label>
-            <textarea id="identity-input" maxlength="32768" rows="3" placeholder="例如：在评审中优先关注协议风险"></textarea>
-            <button id="identity-submit" class="secondary-button" type="submit">保存身份说明</button>
+            <label for="agent-memory-input">记录一条 Agent 记忆</label>
+            <textarea id="agent-memory-input" maxlength="32768" rows="3" placeholder="写下只供这个 Agent 后续回合使用的信息"></textarea>
+            <button id="agent-memory-submit" class="secondary-button" type="submit">保存到 Agent</button>
           </form>
         </section>
 

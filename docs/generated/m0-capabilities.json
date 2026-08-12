@@ -263,20 +263,8 @@
         "argv": [
           "acp"
         ],
-        "configPreflight": {
-          "projectedKeys": [
-            "default_permission_mode",
-            "default_plan_mode"
-          ],
-          "acceptedPermissionModes": [
-            "yolo",
-            "auto"
-          ],
-          "requiredPlanMode": false,
-          "beforeProcessSpawn": true,
-          "failureCode": "ADAPTER_START_FAILED",
-          "writesConfig": false
-        },
+        "globalConfigPreflight": false,
+        "acceptsOfficialDefaultPermissionMode": true,
         "beforeFirstPromptAfter": [
           "session/new",
           "session/load"

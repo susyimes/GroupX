@@ -6,7 +6,7 @@
 ## 1. 测试原则
 
 - fake transport/fixture 证明 GroupX 状态机；真实 CLI probe 证明本机互操作，两者不能互换；
-- Direct 与 Structured 分别记录 Agent、CLI version、transport、`accessContract=unrestricted-v0.1`、run ID 与 evidence；
+- Structured 记录 Agent、CLI version、transport、`accessContract=unrestricted-v0.1`、run ID 与 evidence；Direct evidence 只作为 deprecated 历史参考；
 - Structured 是 v0.1 唯一 runnable/release transport；Direct runtime 入口必须保持关闭并标记 deprecated；
 - `documented/advertised/probed` 不能冒充 `verified`；另一 transport 或旧 access 合同不能借 PASS；
 - GroupX 没有审批系统。native interaction fail-closed fixture 的测试可以 PASS，但其预期 Turn 结果是 failed；
@@ -20,7 +20,7 @@
 | broker integration | SQLite、Turn/attempt、恢复、SSE cursor、memory/identity | 否 |
 | Direct fixture | JSON/JSONL、exit、stderr、取消、interaction detection | 否 |
 | Structured fixture | App Server/ACP wire、session、cancel、resume、interaction detection | 否 |
-| native live | 3 Agent × 2 transport 的 fixed unrestricted profile 与实际能力 | 是 |
+| native live | 3 Agent × Structured 的 fixed unrestricted profile 与实际能力 | 是 |
 | MCP integration | `send/ask/read`、binding、因果循环、native actual call；仅 Structured | fixture 必跑；Structured live 必跑 |
 | browser e2e | 发送、并行回复、sender、memory/identity、无审批 UI | fake 必跑；live 显式运行 |
 | performance | 测量 Structured Broker/session/stream 延迟 | native 模型耗时不计入 Broker 指标 |
@@ -35,8 +35,8 @@
 | G-004 | access 配置项 | schema 不提供；任何值都不能改变内部 `unrestricted` 常量 |
 | G-005 | transport 启动失败 | Turn 明确失败，不自动切到另一 transport |
 | G-006 | 重启后 queued Turn transport snapshot 不同 | `TRANSPORT_MODE_MISMATCH`，不跨 transport 派发 |
-| G-007 | Kimi preflight 正向 | `$KIMI_CODE_HOME/config.toml`（fallback `~/.kimi-code/config.toml`）有效 permission=`yolo|auto`、plan=`false`；只投影两项，Structured ACP 可继续启动 |
-| G-008 | Kimi preflight 负向或配置漂移 | manual、plan=true、缺失/无效/不可读在 ACP spawn 前 `ADAPTER_START_FAILED`；不写配置、不 fallback/policy-block |
+| G-007 | Kimi 官方默认全局配置 | global permission=`manual` 或配置键缺省不阻断 Structured ACP；new/load 后在首 prompt 前成功发送 `session/set_mode(auto)` |
+| G-008 | Kimi session mode 负向 | `session/set_mode(auto)` 的明确 native policy 拒绝为 `NATIVE_POLICY_BLOCKED`；普通协议失败按 Adapter 错误收敛；不写全局配置、不 fallback |
 
 精确 native profile：
 
@@ -44,9 +44,9 @@
 | --- | --- | --- |
 | Codex | 新会话：`codex --yolo --dangerously-bypass-hook-trust exec --json -`；续会话：同一前缀 `exec resume --json <sessionId> -` | `codex --dangerously-bypass-hook-trust app-server --listen stdio://`；thread start/resume 为 `approvalPolicy="never"`、`sandbox="danger-full-access"` |
 | Grok | flags 在前：`--no-auto-update --permission-mode bypassPermissions --sandbox off --no-plan [--resume <sessionId>] --output-format streaming-json --single <prompt>` | 同一 flags 在前，追加 `agent stdio` |
-| Kimi | preflight 通过后 `kimi [--session <id>] --prompt <prompt> --output-format stream-json`；不得附加与 `--prompt` 冲突的 `--yolo/--auto/--plan` | 同一 preflight 后 `kimi acp`；new/load（含 Adapter resume）后首 prompt 前 `session/set_mode {sessionId,modeId:"auto"}` |
+| Kimi | deprecated Direct 参考实现保留 preflight 后的 one-shot argv | `kimi acp`；不要求 global default mode；new/load（含 Adapter resume）后首 prompt 前 `session/set_mode {sessionId,modeId:"auto"}` |
 
-Kimi config preflight 不替代 ACP mode：mode 不持久化，任何新建或恢复 session 都要重设。Codex thread sandbox 必须是当前 0.147 wire 的 kebab-case `danger-full-access`；不能误用 `dangerFullAccess`。
+Kimi ACP 不读取 global defaults 作为启动门禁；mode 不持久化，任何新建或恢复 session 都要重设。Codex thread sandbox 必须是当前 0.147 wire 的 kebab-case `danger-full-access`；不能误用 `dangerFullAccess`。
 
 ## 4. M0 Structured Gate 与 deprecated Direct 矩阵
 
@@ -168,6 +168,9 @@ binding 是 provenance/correlation handle，不是 secret、token 或本机抗�
 | M-007 | 其他 Agent 的观察 | 保留 author != subject，不转成自我认定 |
 | M-008 | 历史 Direct Context Packet | 只验证旧持久记录可解释，不启动 Direct |
 | M-009 | transcript/summary/memory/identity | 四类逻辑分离，摘要失效不删原事件 |
+| M-010 | 长房间滚动压缩 | 默认在 256k 字符硬上限的约 75% 软目标处，若未压缩包将省略 unread transcript，则由配置顺序中第一个健康 Agent 生成累计检查点，近期消息仍逐条保留 |
+| M-011 | 摘要与 cursor 原子边界 | 只有已持久且嵌入 attempt 的摘要可写 `summary_through_seq`，native start 确认后才推进 `last_summary_seq` |
+| M-012 | 压缩失败 | 尝试后续健康 Agent；全失败则 Turn 明确失败，原 transcript、旧摘要和 cursor 不变 |
 
 ## 12. Web 与本地传输
 
@@ -180,6 +183,10 @@ binding 是 provenance/correlation handle，不是 secret、token 或本机抗�
 | W-005 | approval surface | 没有批准/拒绝按钮、pending 卡片或 approval API 调用 |
 | W-006 | 模型输出 | 作为普通文本节点，不执行 HTML/script |
 | W-007 | 未知 event type | 非保留类型 generic render，不导致 SSE 断流；`approval.*`/`permission.*`/`user_input.*` 拒绝且不渲染 |
+| W-008 | 首次 init/start | 无配置时打开 loopback 引导页；添加并保存后生成严格 groupx.json，再启动主 UI |
+| W-009 | 多实例名册 | 可添加两个以上 Codex App Server，稳定 id 唯一，name/cwd 独立；保存后 runtime 各有独立 actor/binding/session |
+| W-010 | 运行中 Agent 设置 | `/setup` 载入现有名册，保存返回 restartRequired；不热换当前 session，不出现 access/approval/sandbox 控件 |
+| W-011 | `groupx update` | 查询 npm latest；已最新/本地更高不安装，`--check` 无副作用，有更新时锁定精确版本并通过 shell-free npm 入口全局安装 |
 
 loopback 与 binding 是产品范围/来源合同，不是认证或安全保证。
 

@@ -335,6 +335,8 @@ export interface TurnAttemptRecord {
   bindingId: string;
   instanceId: string;
   contextThroughSeq: number;
+  /** Highest room sequence represented by a persisted summary in this attempt. */
+  summaryThroughSeq?: number;
   nativeTurnId?: string;
   dispatchPhase: DispatchPhase;
   claimedAt: string;
@@ -355,6 +357,33 @@ export interface DeliveryCursorRecord {
   lastDeliveredSeq: number;
   lastSummarySeq?: number;
   updatedAt: string;
+}
+
+export const SUMMARY_STATUSES = ["active", "superseded"] as const;
+export type SummaryStatus = (typeof SUMMARY_STATUSES)[number];
+
+/** A cumulative, derived room checkpoint. The source transcript remains authoritative. */
+export interface SummaryRecord {
+  summaryId: string;
+  roomId: string;
+  fromSeq: number;
+  throughSeq: number;
+  content: string;
+  generatorActorId: string;
+  status: SummaryStatus;
+  createdAt: string;
+}
+
+export interface ReplaceRoomSummaryInput {
+  summaryId?: string;
+  roomId: string;
+  fromSeq: number;
+  throughSeq: number;
+  content: string;
+  generatorActorId: string;
+  /** Compare-and-set guard. Omit only when the room has no active summary. */
+  expectedPreviousSummaryId?: string;
+  createdAt?: string;
 }
 
 export interface RecoveryResult {
@@ -574,6 +603,7 @@ export interface GroupXStore {
     bindingId: string;
     instanceId: string;
     contextThroughSeq: number;
+    summaryThroughSeq?: number;
     expectedTurnId: string;
     expectedTransport: RuntimeTransport;
     claimedAt?: string;
@@ -594,6 +624,13 @@ export interface GroupXStore {
   saveTurnPartialText(turnId: string, partialText: string): TurnRecord;
   terminalizeTurn(input: TerminalTurnInput): TerminalTurnResult;
   getDeliveryCursor(actorId: string, roomId: string): DeliveryCursorRecord | undefined;
+  getActiveSummary(roomId: string, throughSeq?: number): SummaryRecord | undefined;
+  listSummaries(input: {
+    roomId: string;
+    includeHistory?: boolean;
+    limit?: number;
+  }): SummaryRecord[];
+  replaceActiveSummary(input: ReplaceRoomSummaryInput): SummaryRecord;
   recoverAfterRestart(now?: string): RecoveryResult;
   rememberMemory(input: CreateMemoryInput): MemoryRecord;
   mutateMemoryWithDisposition(input: MutateMemoryInput): MemoryMutationOutcome;

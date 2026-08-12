@@ -1,15 +1,26 @@
 {
   "name": "@susyimes/groupx",
-  "version": "0.1.1",
+  "version": "0.1.4",
   "description": "Local transparent group-chat broker for Codex, Grok, and Kimi CLIs",
   "type": "module",
   "main": "dist/src/main.js",
+  "types": "dist/src/main.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/main.d.ts",
+      "import": "./dist/src/main.js",
+      "default": "./dist/src/main.js"
+    }
+  },
   "bin": {
     "groupx": "dist/src/cli.js"
   },
   "files": [
     "dist/src",
-    "dist/web"
+    "!dist/src/adapters/direct",
+    "!dist/src/adapters/kimi-config-preflight*",
+    "dist/web",
+    "docs/assets"
   ],
   "engines": {
     "node": ">=24.14.1 <25"
@@ -36,8 +47,8 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/copy-web.mjs",
-    "dev": "npm run build && node --enable-source-maps dist/src/main.js",
-    "start": "node --enable-source-maps dist/src/main.js",
+    "dev": "npm run build && node --enable-source-maps dist/src/cli.js start",
+    "start": "node --enable-source-maps dist/src/cli.js start",
     "m0:matrix": "tsx src/m0/cli.ts render",
     "m0:apply:structured-gate": "tsx src/m0/probe-cli.ts apply-structured-gate",
     "m0:probe:fixtures": "tsx src/m0/probe-cli.ts fixtures",

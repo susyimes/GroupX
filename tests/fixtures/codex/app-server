@@ -208,6 +208,27 @@ function startTurn(id, params) {
     emitCompleted(threadId, turnId);
     return;
   }
+  if (text.includes("MODE_TOOL_PROGRESS")) {
+    const item = {
+      id: `tool-${turnId}`,
+      type: "mcpToolCall",
+      server: "groupx",
+      tool: "memory_search",
+      status: "inProgress",
+      arguments: { query: "fixture" },
+      result: null,
+      error: null
+    };
+    notify("item/started", { threadId, turnId, startedAtMs: Date.now(), item });
+    notify("item/completed", {
+      threadId,
+      turnId,
+      completedAtMs: Date.now(),
+      item: { ...item, status: "completed", result: { content: [] } }
+    });
+    emitNormal(threadId, turnId, "tool-finished");
+    return;
+  }
   if (text.includes("MODE_ERROR_NOTIFICATION")) {
     notify("error", { threadId, turnId, message: "fixture native error" });
     emitCompleted(threadId, turnId, "failed", { message: "fixture failure after error notification" });

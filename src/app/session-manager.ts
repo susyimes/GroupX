@@ -40,6 +40,60 @@ export interface SessionManagerOptions {
   idFactory?: (kind: "instance" | "binding", agentId: ManagedAgentId) => string;
   protocolFor?: (agentId: ManagedAgentId, transport: TransportMode) => string;
   closeTimeoutMs?: number;
+  /** Total attempts for transient native start/resume failures. */
+  startAttempts?: number;
+  retryBaseMs?: number;
+  onProgress?: (progress: SessionProgress) => void | Promise<void>;
+}
+
+export type SessionProgress =
+  | {
+      phase: "starting";
+      agentId: string;
+      actorId: string;
+      attempt: number;
+      maxAttempts: number;
+      continuity: "new_session" | "resume";
+    }
+  | {
+      phase: "retrying";
+      agentId: string;
+      actorId: string;
+      attempt: number;
+      maxAttempts: number;
+      continuity: "new_session" | "resume";
+      nextDelayMs: number;
+      errorCode: string;
+    }
+  | {
+      phase: "ready";
+      agentId: string;
+      actorId: string;
+      attempt: number;
+      maxAttempts: number;
+      continuity: "new_session" | "resumed" | "new_session_after_resume_failure";
+    }
+  | {
+      phase: "failed";
+      agentId: string;
+      actorId: string;
+      attempt: number;
+      maxAttempts: number;
+      continuity: "new_session" | "resume";
+      errorCode: string;
+    };
+
+function waitForRetry(delayMs: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
+function isRetryableSessionFailure(error: unknown): boolean {
+  return new Set([
+    "ADAPTER_START_FAILED",
+    "PROTOCOL_HANDSHAKE_TIMEOUT",
+    "SESSION_NOT_AVAILABLE",
+    "TURN_INTERRUPTED"
+  ]).has(toGroupXError(error, "ADAPTER_START_FAILED").code);
 }
 
 interface ManagedSession {
@@ -62,6 +116,9 @@ export class AgentSessionManager {
   readonly #idFactory: NonNullable<SessionManagerOptions["idFactory"]>;
   readonly #protocolFor: NonNullable<SessionManagerOptions["protocolFor"]>;
   readonly #closeTimeoutMs: number;
+  readonly #startAttempts: number;
+  readonly #retryBaseMs: number;
+  readonly #onProgress: SessionManagerOptions["onProgress"];
   readonly #sessions = new Map<string, ManagedSession>();
   readonly #sessionsByBinding = new Map<string, ManagedSession>();
   #mcpUrl: string | undefined;
@@ -83,8 +140,17 @@ export class AgentSessionManager {
           : "acp";
       });
     this.#closeTimeoutMs = options.closeTimeoutMs ?? options.config.timeouts.closeMs;
+    this.#startAttempts = options.startAttempts ?? 3;
+    this.#retryBaseMs = options.retryBaseMs ?? 400;
+    this.#onProgress = options.onProgress;
     if (!Number.isSafeInteger(this.#closeTimeoutMs) || this.#closeTimeoutMs < 1) {
       throw new RangeError("closeTimeoutMs must be a positive integer");
+    }
+    if (!Number.isSafeInteger(this.#startAttempts) || this.#startAttempts < 1) {
+      throw new RangeError("startAttempts must be a positive integer");
+    }
+    if (!Number.isSafeInteger(this.#retryBaseMs) || this.#retryBaseMs < 1) {
+      throw new RangeError("retryBaseMs must be a positive integer");
     }
   }
 
@@ -273,6 +339,7 @@ export class AgentSessionManager {
     const bindingId = this.#idFactory("binding", agentId);
     const protocol = this.#protocolFor(agentId, this.#config.transport);
     let session: NativeSession | undefined;
+    let readyAttempt = 1;
     let bindingCreated = false;
     let mcpRegistered = false;
     const effectiveResumeNativeSessionId = resumeNativeSessionId;
@@ -316,23 +383,39 @@ export class AgentSessionManager {
       const profile = this.#launchProfile(agentId, instanceId, bindingId);
       if (effectiveResumeNativeSessionId !== undefined) {
         try {
-          session = await adapter.resume({
-            ...profile,
-            nativeSessionId: effectiveResumeNativeSessionId
+          const resumed = await this.#openWithRetry({
+            agentId,
+            adapter,
+            continuity: "resume",
+            open: async () =>
+              await adapter.resume({ ...profile, nativeSessionId: effectiveResumeNativeSessionId })
           });
+          session = resumed.session;
+          readyAttempt = resumed.attempt;
         } catch (error) {
           if (!canStartFreshAfterResumeFailure(error)) throw error;
-          // A native session hint can become stale independently of the
-          // durable GroupX transcript (for example, an empty Codex thread is
-          // not persisted by the CLI). Starting a fresh session stays within
-          // the selected transport and never replays an already-dispatched
-          // Turn, so it is the safe recovery path for future work.
+          // A failed resume is never retried as a prompt. Once bounded resume
+          // attempts are exhausted, only future work gets a fresh session.
           continuity = "new_session_after_resume_failure";
           assertedResumeNativeSessionId = undefined;
-          session = await adapter.start(profile);
+          const fresh = await this.#openWithRetry({
+            agentId,
+            adapter,
+            continuity: "new_session",
+            open: async () => await adapter.start(profile)
+          });
+          session = fresh.session;
+          readyAttempt = fresh.attempt;
         }
       } else {
-        session = await adapter.start(profile);
+        const fresh = await this.#openWithRetry({
+          agentId,
+          adapter,
+          continuity: "new_session",
+          open: async () => await adapter.start(profile)
+        });
+        session = fresh.session;
+        readyAttempt = fresh.attempt;
       }
       this.#assertSession(
         adapter,
@@ -361,6 +444,14 @@ export class AgentSessionManager {
       const managed: ManagedSession = { agentId, adapter, session, mcpRegistered };
       this.#sessions.set(adapter.actorId, managed);
       this.#sessionsByBinding.set(session.bindingId, managed);
+      await this.#emitProgress({
+        phase: "ready",
+        agentId,
+        actorId: adapter.actorId,
+        attempt: readyAttempt,
+        maxAttempts: this.#startAttempts,
+        continuity
+      });
       return managed;
     } catch (error) {
       if (session !== undefined) {
@@ -386,6 +477,64 @@ export class AgentSessionManager {
         // Preserve the original Adapter failure.
       }
       throw toGroupXError(error, "ADAPTER_START_FAILED");
+    }
+  }
+
+  async #openWithRetry(input: {
+    agentId: string;
+    adapter: CliAdapter;
+    continuity: "new_session" | "resume";
+    open: () => Promise<NativeSession>;
+  }): Promise<{ session: NativeSession; attempt: number }> {
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= this.#startAttempts; attempt += 1) {
+      await this.#emitProgress({
+        phase: "starting",
+        agentId: input.agentId,
+        actorId: input.adapter.actorId,
+        attempt,
+        maxAttempts: this.#startAttempts,
+        continuity: input.continuity
+      });
+      try {
+        return { session: await input.open(), attempt };
+      } catch (error) {
+        lastError = error;
+        const normalized = toGroupXError(error, "ADAPTER_START_FAILED");
+        if (attempt >= this.#startAttempts || !isRetryableSessionFailure(error)) {
+          await this.#emitProgress({
+            phase: "failed",
+            agentId: input.agentId,
+            actorId: input.adapter.actorId,
+            attempt,
+            maxAttempts: this.#startAttempts,
+            continuity: input.continuity,
+            errorCode: normalized.code
+          });
+          break;
+        }
+        const nextDelayMs = this.#retryBaseMs * 2 ** (attempt - 1);
+        await this.#emitProgress({
+          phase: "retrying",
+          agentId: input.agentId,
+          actorId: input.adapter.actorId,
+          attempt,
+          maxAttempts: this.#startAttempts,
+          continuity: input.continuity,
+          nextDelayMs,
+          errorCode: normalized.code
+        });
+        await waitForRetry(nextDelayMs);
+      }
+    }
+    throw toGroupXError(lastError, "ADAPTER_START_FAILED");
+  }
+
+  async #emitProgress(progress: SessionProgress): Promise<void> {
+    try {
+      await this.#onProgress?.(progress);
+    } catch {
+      // Session progress is advisory and must not decide session readiness.
     }
   }
 

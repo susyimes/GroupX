@@ -9,5 +9,6 @@ export type {
   IdentityPage,
   MemoryMutationAccepted,
   MemoryPage,
-  McpHttpHandler
+  McpHttpHandler,
+  SetupApi
 } from "./types.js";

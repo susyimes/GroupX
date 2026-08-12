@@ -2,12 +2,16 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { startGroupXRuntime, type GroupXRuntime } from "./app/runtime.js";
+import { GroupXConfigSetupService } from "./app/init-config.js";
 import { loadConfig, parseConfigPath } from "./config.js";
 import { toSafeErrorBody } from "./contracts/index.js";
 
 export async function main(argv: readonly string[] = process.argv.slice(2)): Promise<GroupXRuntime> {
-  const config = await loadConfig(parseConfigPath(argv));
-  const runtime = await startGroupXRuntime(config);
+  const configPath = path.resolve(process.cwd(), parseConfigPath(argv) ?? "groupx.json");
+  const config = await loadConfig(configPath);
+  const runtime = await startGroupXRuntime(config, {
+    setupApi: new GroupXConfigSetupService({ configPath, runtimeActive: true })
+  });
   let shuttingDown = false;
   const shutdown = (): void => {
     if (shuttingDown) return;

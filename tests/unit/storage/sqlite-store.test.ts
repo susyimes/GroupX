@@ -1116,6 +1116,83 @@ describe.sequential("SqliteGroupXStore transactions and idempotency", () => {
     });
   });
 
+  it("advances the summary watermark only when the attempt containing it reaches native start", () => {
+    const fixture = createFixture();
+    const first = sourceEvent(fixture.store, "cursor-summary-first");
+    const summary = fixture.store.replaceActiveSummary({
+      roomId: "room:main",
+      fromSeq: first.seq,
+      throughSeq: first.seq,
+      content: "durable checkpoint",
+      generatorActorId: "agent:codex"
+    });
+    const accepted = fixture.store.acceptMessage(messageInput("summary-cursor"));
+    const contextThroughSeq = fixture.store.getEvent(accepted.messageEventId)!.seq;
+    const claim = fixture.store.claimNextQueuedTurn({
+      targetActorId: "agent:codex",
+      bindingId: "binding:codex",
+      instanceId: "instance:codex",
+      contextThroughSeq,
+      summaryThroughSeq: summary.throughSeq,
+      expectedTurnId: accepted.turns[0]!.turnId,
+      expectedTransport: "structured"
+    })!;
+    expect(claim.attempt.summaryThroughSeq).toBe(summary.throughSeq);
+    expect(fixture.store.getDeliveryCursor("agent:codex", "room:main")).toBeUndefined();
+
+    fixture.store.markPromptInvoked(claim.attempt.attemptId);
+    fixture.store.markAttemptRunning(claim.attempt.attemptId, "native:summary");
+    expect(fixture.store.getDeliveryCursor("agent:codex", "room:main")).toMatchObject({
+      lastDeliveredSeq: contextThroughSeq,
+      lastSummarySeq: summary.throughSeq
+    });
+  });
+
+  it("rejects a dispatch checkpoint that was superseded after context preparation", () => {
+    const fixture = createFixture();
+    const first = sourceEvent(fixture.store, "summary-race-first");
+    const stale = fixture.store.replaceActiveSummary({
+      summaryId: "summary:dispatch-stale",
+      roomId: "room:main",
+      fromSeq: first.seq,
+      throughSeq: first.seq,
+      content: "prepared checkpoint",
+      generatorActorId: "agent:codex"
+    });
+    const accepted = fixture.store.acceptMessage(messageInput("summary-race-claim"));
+    const contextThroughSeq = fixture.store.getEvent(accepted.messageEventId)!.seq;
+    fixture.store.replaceActiveSummary({
+      summaryId: "summary:dispatch-current",
+      roomId: "room:main",
+      fromSeq: first.seq,
+      throughSeq: contextThroughSeq,
+      content: "advanced checkpoint",
+      generatorActorId: "agent:grok",
+      expectedPreviousSummaryId: stale.summaryId
+    });
+
+    try {
+      fixture.store.claimNextQueuedTurn({
+        targetActorId: "agent:codex",
+        bindingId: "binding:codex",
+        instanceId: "instance:codex",
+        contextThroughSeq,
+        summaryThroughSeq: stale.throughSeq,
+        expectedTurnId: accepted.turns[0]!.turnId,
+        expectedTransport: "structured"
+      });
+      throw new Error("expected stale summary claim to fail");
+    } catch (error) {
+      expect(error).toBeInstanceOf(GroupXError);
+      expect(error).toMatchObject({
+        code: "STORE_CONFLICT",
+        details: { reason: "summary_checkpoint_changed" }
+      });
+    }
+    expect(fixture.store.getTurn(accepted.turns[0]!.turnId)?.status).toBe("queued");
+    expect(fixture.store.listTurnAttempts(accepted.turns[0]!.turnId)).toEqual([]);
+  });
+
   it("does not advance context cursor for queued cancellation or pre-native terminal", () => {
     const fixture = createFixture();
     const queued = fixture.store.acceptMessage(messageInput("no-cursor-queued"));
@@ -1196,7 +1273,53 @@ describe.sequential("SqliteGroupXStore transactions and idempotency", () => {
   });
 });
 
-describe.sequential("SqliteGroupXStore recovery", () => {
+describe.sequential("SqliteGroupXStore summaries and recovery", () => {
+  it("atomically rolls a cumulative room summary and preserves history", () => {
+    const fixture = createFixture();
+    const first = sourceEvent(fixture.store, "summary-first");
+    const second = sourceEvent(fixture.store, "summary-second");
+
+    const initial = fixture.store.replaceActiveSummary({
+      summaryId: "summary:one",
+      roomId: "room:main",
+      fromSeq: first.seq,
+      throughSeq: first.seq,
+      content: "First checkpoint",
+      generatorActorId: "agent:codex",
+      createdAt: "2026-08-11T00:30:00.000Z"
+    });
+    expect(fixture.store.getActiveSummary("room:main")).toEqual(initial);
+
+    const next = fixture.store.replaceActiveSummary({
+      summaryId: "summary:two",
+      roomId: "room:main",
+      fromSeq: first.seq,
+      throughSeq: second.seq,
+      content: "Rolled checkpoint",
+      generatorActorId: "agent:grok",
+      expectedPreviousSummaryId: initial.summaryId,
+      createdAt: "2026-08-11T00:31:00.000Z"
+    });
+    expect(next.status).toBe("active");
+    expect(fixture.store.listSummaries({ roomId: "room:main", includeHistory: true })).toEqual([
+      next,
+      { ...initial, status: "superseded" }
+    ]);
+    expectGroupXCode(
+      () =>
+        fixture.store.replaceActiveSummary({
+          roomId: "room:main",
+          fromSeq: first.seq,
+          throughSeq: second.seq,
+          content: "stale",
+          generatorActorId: "agent:kimi",
+          expectedPreviousSummaryId: initial.summaryId
+        }),
+      "STORE_CONFLICT"
+    );
+    expect(fixture.store.countEvents()).toBe(2);
+  });
+
   it("X-001 reopens sessions, transcript, Turns, cursor, memory and identity", () => {
     const fixture = createFixture();
     const accepted = fixture.store.acceptMessage(messageInput("X-001", "persist everything"));
@@ -1228,7 +1351,7 @@ describe.sequential("SqliteGroupXStore recovery", () => {
     });
     reopen(fixture);
 
-    expect(fixture.store.getSchemaVersion()).toBe(4);
+    expect(fixture.store.getSchemaVersion()).toBe(5);
     expect(fixture.store.getJournalMode()).toBe("wal");
     expect(fixture.store.getSessionBinding("binding:codex")?.capabilities).toEqual({
       prompt: true
@@ -1420,7 +1543,7 @@ describe.sequential("SqliteGroupXStore recovery", () => {
     raw.close();
 
     fixture.store = new SqliteGroupXStore(fixture.databasePath);
-    expect(fixture.store.getSchemaVersion()).toBe(4);
+    expect(fixture.store.getSchemaVersion()).toBe(5);
     expect(fixture.store.getTurnAttempt(claim.attempt.attemptId)).toMatchObject({
       dispatchPhase: "prompt_invoked",
       deliveryCertainty: "unknown"
@@ -1441,10 +1564,10 @@ describe.sequential("SqliteGroupXStore recovery", () => {
     expectGroupXCode(() => new SqliteGroupXStore(fixture.databasePath), "STORE_UNAVAILABLE");
 
     const repair = new Database(fixture.databasePath);
-    repair.pragma("user_version = 4");
+    repair.pragma("user_version = 5");
     repair.close();
     fixture.store = new SqliteGroupXStore(fixture.databasePath);
-    expect(fixture.store.getSchemaVersion()).toBe(4);
+    expect(fixture.store.getSchemaVersion()).toBe(5);
     expect(fixture.store.integrityCheck()).toEqual({ ok: true, messages: ["ok"] });
   });
 

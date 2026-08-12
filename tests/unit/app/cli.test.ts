@@ -1,10 +1,14 @@
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { collectDoctorReport, formatDoctorReport, nodeSatisfiesEngines, type DoctorDependencies } from "../../../src/app/doctor.js";
-import { runInit, type InitDependencies } from "../../../src/app/init-config.js";
+import {
+  GroupXConfigSetupService,
+  type ConfigSetupDependencies
+} from "../../../src/app/init-config.js";
 import { openBrowser } from "../../../src/utils/open-browser.js";
 import type { CommandResolverDependencies, CommandSpec } from "../../../src/launch/index.js";
+import type { SetupSaveRequest } from "../../../src/contracts/index.js";
 
 const nodeExecutable = "C:\\Program Files\\nodejs\\node.exe";
 const codexEntrypoint = "C:\\Users\\groupx\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\bin\\codex.js";
@@ -82,56 +86,288 @@ describe("groupx doctor", () => {
   });
 });
 
-describe("groupx init", () => {
-  function initDependencies(
+describe("GroupX browser setup service", () => {
+  function setupDependencies(
     written: Map<string, string>,
-    overrides: Partial<InitDependencies> = {}
-  ): InitDependencies {
+    commandFiles: readonly string[] = [nodeExecutable, codexEntrypoint],
+    overrides: Partial<ConfigSetupDependencies> = {}
+  ): ConfigSetupDependencies {
     return {
-      commandDependencies: resolverWith([nodeExecutable, codexEntrypoint]),
+      commandDependencies: resolverWith(commandFiles),
       fileExists: (candidate) => written.has(candidate),
+      readConfigFile: (configPath) => Promise.resolve(written.get(configPath) ?? ""),
       writeConfigFile: (configPath, content) => {
         written.set(configPath, content);
         return Promise.resolve();
       },
-      stdout: () => undefined,
       ...overrides
     };
   }
 
-  it("writes a config with only detected CLIs enabled", async () => {
-    const written = new Map<string, string>();
-    const code = await runInit({ cwd: "C:\\workspace" }, initDependencies(written));
-
-    expect(code).toBe(0);
-    const target = path.resolve("C:\\workspace", "groupx.json");
-    const config = JSON.parse(written.get(target) ?? "{}") as {
-      agents: Record<string, { enabled: boolean }>;
+  function saveRequest(agents: SetupSaveRequest["config"]["agents"]): SetupSaveRequest {
+    return {
+      config: {
+        serverPort: 4_310,
+        storagePath: ".groupx/groupx.db",
+        agents
+      }
     };
-    expect(config.agents.codex?.enabled).toBe(true);
-    expect(config.agents.grok?.enabled).toBe(false);
-    expect(config.agents.kimi?.enabled).toBe(false);
+  }
+
+  it("builds a starter roster with only detected CLI families enabled", async () => {
+    const written = new Map<string, string>();
+    const target = path.resolve("C:\\workspace", "groupx.json");
+    const service = new GroupXConfigSetupService({
+      configPath: target,
+      dependencies: setupDependencies(written)
+    });
+
+    const snapshot = await service.snapshot(new AbortController().signal);
+
+    expect(snapshot.existing).toBe(false);
+    expect(snapshot.config.agents).toMatchObject([
+      { id: "codex", driver: "codex", enabled: true },
+      { id: "grok", driver: "grok", enabled: false },
+      { id: "kimi", driver: "kimi", enabled: false }
+    ]);
+    expect(snapshot.drivers).toMatchObject([
+      { driver: "codex", found: true },
+      { driver: "grok", found: false },
+      { driver: "kimi", found: false }
+    ]);
   });
 
-  it("refuses to overwrite an existing config without --force", async () => {
+  it("still returns an editable starter when no default CLI command is detected", async () => {
     const written = new Map<string, string>();
     const target = path.resolve("C:\\workspace", "groupx.json");
-    written.set(target, "{}");
+    const service = new GroupXConfigSetupService({
+      configPath: target,
+      dependencies: setupDependencies(written, [])
+    });
 
-    const code = await runInit({ cwd: "C:\\workspace" }, initDependencies(written));
-    expect(code).toBe(1);
-    expect(written.get(target)).toBe("{}");
+    const snapshot = await service.snapshot(new AbortController().signal);
 
-    const forced = await runInit({ cwd: "C:\\workspace", force: true }, initDependencies(written));
-    expect(forced).toBe(0);
-    expect(written.get(target)).not.toBe("{}");
+    expect(snapshot.config.agents).toHaveLength(3);
+    expect(snapshot.config.agents.every((agent) => agent.enabled === false)).toBe(true);
+    expect(snapshot.drivers.every((probe) => probe.found === false)).toBe(true);
+  });
+
+  it("saves multiple Codex App Server instances with independent identities", async () => {
+    const written = new Map<string, string>();
+    const target = path.resolve("C:\\workspace", "groupx.json");
+    const service = new GroupXConfigSetupService({
+      configPath: target,
+      dependencies: setupDependencies(written)
+    });
+
+    const result = await service.save(
+      saveRequest([
+        {
+          id: "codex",
+          driver: "codex",
+          name: "Builder",
+          identity: "负责实现并说明证据",
+          command: { executable: "codex", prefixArgs: [] },
+          cwd: ".",
+          enabled: true
+        },
+        {
+          id: "reviewer",
+          driver: "codex",
+          name: "Reviewer",
+          identity: "负责独立评审与回归检查",
+          command: { executable: "codex", prefixArgs: [] },
+          cwd: "review-worktree",
+          enabled: true
+        }
+      ]),
+      new AbortController().signal
+    );
+
+    expect(result).toMatchObject({ agentCount: 2, enabledAgentCount: 2, restartRequired: false });
+    const config = JSON.parse(written.get(target) ?? "{}") as {
+      transport: string;
+      agents: Record<string, { driver: string; name?: string; identity?: string; cwd: string }>;
+    };
+    expect(config.transport).toBe("structured");
+    expect(config.agents.codex).toMatchObject({
+      driver: "codex",
+      name: "Builder",
+      identity: "负责实现并说明证据",
+      cwd: "."
+    });
+    expect(config.agents.reviewer).toMatchObject({
+      driver: "codex",
+      name: "Reviewer",
+      identity: "负责独立评审与回归检查",
+      cwd: "review-worktree"
+    });
+
+    const snapshot = await service.snapshot(new AbortController().signal);
+    expect(snapshot.existing).toBe(true);
+    expect(snapshot.config.agents.map(({ id, driver }) => ({ id, driver }))).toEqual([
+      { id: "codex", driver: "codex" },
+      { id: "reviewer", driver: "codex" }
+    ]);
+    expect(snapshot.config.agents.map(({ id, identity }) => ({ id, identity }))).toEqual([
+      { id: "codex", identity: "负责实现并说明证据" },
+      { id: "reviewer", identity: "负责独立评审与回归检查" }
+    ]);
+  });
+
+  it("preserves advanced limits and timeouts when the UI edits the roster", async () => {
+    const written = new Map<string, string>();
+    const target = path.resolve("C:\\workspace", "groupx.json");
+    written.set(target, JSON.stringify({
+      agents: { codex: { command: "codex", cwd: ".", enabled: true } },
+      limits: { queuePerAgent: 7 },
+      timeouts: { askMs: 45_000 }
+    }));
+    const service = new GroupXConfigSetupService({
+      configPath: target,
+      runtimeActive: true,
+      dependencies: setupDependencies(written)
+    });
+
+    const result = await service.save(
+      saveRequest([{
+        id: "codex",
+        driver: "codex",
+        name: "",
+        command: { executable: "codex", prefixArgs: [] },
+        cwd: ".",
+        enabled: true
+      }]),
+      new AbortController().signal
+    );
+
+    const config = JSON.parse(written.get(target) ?? "{}") as {
+      limits: { queuePerAgent: number };
+      timeouts: { askMs: number };
+    };
+    expect(result.restartRequired).toBe(true);
+    expect(config.limits.queuePerAgent).toBe(7);
+    expect(config.timeouts.askMs).toBe(45_000);
+  });
+
+  it("falls back to a repairable starter snapshot when an existing command cannot be represented", async () => {
+    const written = new Map<string, string>();
+    const target = path.resolve("C:\\workspace", "groupx.json");
+    written.set(target, JSON.stringify({
+      agents: {
+        codex: {
+          command: {
+            executable: nodeExecutable,
+            prefixArgs: [codexEntrypoint, "unexpected-second-entrypoint.js"]
+          },
+          cwd: ".",
+          enabled: true
+        }
+      }
+    }));
+    const service = new GroupXConfigSetupService({
+      configPath: target,
+      dependencies: setupDependencies(written)
+    });
+
+    const snapshot = await service.snapshot(new AbortController().signal);
+
+    expect(snapshot.existing).toBe(true);
+    expect(snapshot.existingConfigError).toBeDefined();
+    expect(snapshot.config.agents.map(({ id }) => id)).toEqual(["codex", "grok", "kimi"]);
+  });
+
+  it("does not overwrite an existing config when the preservation read fails", async () => {
+    const written = new Map<string, string>();
+    const target = path.resolve("C:\\workspace", "groupx.json");
+    written.set(target, "existing");
+    const writeConfigFile = vi.fn<ConfigSetupDependencies["writeConfigFile"]>();
+    const service = new GroupXConfigSetupService({
+      configPath: target,
+      dependencies: setupDependencies(written, undefined, {
+        readConfigFile: () => Promise.reject(new Error("sharing violation")),
+        writeConfigFile
+      })
+    });
+
+    await expect(service.save(
+      saveRequest([{
+        id: "codex",
+        driver: "codex",
+        name: "",
+        command: { executable: "codex", prefixArgs: [] },
+        cwd: ".",
+        enabled: true
+      }]),
+      new AbortController().signal
+    )).rejects.toThrow("sharing violation");
+    expect(writeConfigFile).not.toHaveBeenCalled();
+  });
+
+  it("validates enabled commands but permits unavailable disabled entries", async () => {
+    const written = new Map<string, string>();
+    const target = path.resolve("C:\\workspace", "groupx.json");
+    const service = new GroupXConfigSetupService({
+      configPath: target,
+      dependencies: setupDependencies(written)
+    });
+    const unavailable = {
+      id: "offline",
+      driver: "grok" as const,
+      name: "",
+      command: { executable: "missing-grok", prefixArgs: [] },
+      cwd: "."
+    };
+
+    await expect(service.save(
+      saveRequest([{
+        id: "codex",
+        driver: "codex",
+        name: "",
+        command: { executable: "codex", prefixArgs: [] },
+        cwd: ".",
+        enabled: true
+      }, { ...unavailable, enabled: false }]),
+      new AbortController().signal
+    )).resolves.toMatchObject({ agentCount: 2, enabledAgentCount: 1 });
+
+    await expect(service.save(
+      saveRequest([{ ...unavailable, enabled: true }]),
+      new AbortController().signal
+    )).rejects.toMatchObject({ code: "INVALID_ENVELOPE" });
+  });
+
+  it("rejects duplicate identities and a roster with no enabled Agent", () => {
+    const written = new Map<string, string>();
+    const target = path.resolve("C:\\workspace", "groupx.json");
+    const service = new GroupXConfigSetupService({
+      configPath: target,
+      dependencies: setupDependencies(written)
+    });
+    const agent = {
+      id: "codex",
+      driver: "codex" as const,
+      name: "",
+      command: { executable: "codex", prefixArgs: [] },
+      cwd: ".",
+      enabled: true
+    };
+
+    expect(() => service.save(
+      saveRequest([agent, { ...agent }]),
+      new AbortController().signal
+    )).toThrowError(expect.objectContaining({ code: "INVALID_ENVELOPE" }));
+    expect(() => service.save(
+      saveRequest([{ ...agent, enabled: false }]),
+      new AbortController().signal
+    )).toThrowError(expect.objectContaining({ code: "INVALID_ENVELOPE" }));
   });
 });
 
 describe("openBrowser", () => {
-  it("only accepts loopback http URLs", () => {
-    expect(openBrowser("https://example.com")).toBe(false);
-    expect(openBrowser("http://0.0.0.0:4310/")).toBe(false);
-    expect(openBrowser("file:///etc/passwd")).toBe(false);
+  it("only accepts loopback http URLs", async () => {
+    await expect(openBrowser("https://example.com")).resolves.toBe(false);
+    await expect(openBrowser("http://0.0.0.0:4310/")).resolves.toBe(false);
+    await expect(openBrowser("file:///etc/passwd")).resolves.toBe(false);
   });
 });

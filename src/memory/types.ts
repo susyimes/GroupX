@@ -20,13 +20,15 @@ export type MemoryApplicationStore = Pick<
 export type ContextPacketStore = Pick<
   GroupXStore,
   | "getDeliveryCursor"
+  | "getActiveSummary"
   | "getEvent"
   | "listEvents"
+  | "listEventsThrough"
   | "searchMemory"
   | "readIdentity"
 >;
 
-export type IdentityPerspective = "self" | "user-authored" | "observed";
+export type IdentityPerspective = "configured" | "self" | "user-authored" | "observed";
 
 export interface CurrentContextMessage {
   authorActorId: string;
@@ -41,6 +43,8 @@ export interface CurrentContextMessage {
 interface BuildContextPacketBase {
   roomId: string;
   targetActorId: string;
+  /** Stable Agent identity read from groupx.json, never from chat or memory. */
+  configuredIdentity?: string;
   throughSeq: number;
   maxChars: number;
 }
@@ -58,7 +62,7 @@ export interface ContextSourceLabel {
 }
 
 export interface ContextEntry {
-  entryType: "message" | "memory" | "identity";
+  entryType: "message" | "memory" | "identity" | "summary";
   id: string;
   authorActorId: string;
   authorDisplayName?: string;
@@ -76,10 +80,16 @@ export interface IdentityContextEntry extends ContextEntry {
 }
 
 export interface ContextPacketSections {
+  /** At most one mandatory identity configured for the target Agent. */
+  configuredIdentity: IdentityContextEntry[];
   selfIdentity: IdentityContextEntry[];
   userAuthoredIdentity: IdentityContextEntry[];
   observedIdentity: IdentityContextEntry[];
+  /** Curated memory visible only to the target Agent. */
+  agentMemory: ContextEntry[];
   publicMemory: ContextEntry[];
+  /** At most one persisted cumulative room checkpoint. */
+  generatedSummary: ContextEntry[];
   unreadTranscript: ContextEntry[];
   replyChain: ContextEntry[];
   currentMessage: ContextEntry;
@@ -89,12 +99,14 @@ export interface ContextPacketOmissions {
   selfIdentity: number;
   userAuthoredIdentity: number;
   observedIdentity: number;
+  agentMemory: number;
   publicMemory: number;
+  generatedSummary: number;
   unreadTranscript: number;
 }
 
 export interface ContextPacket {
-  schema: "groupx.context/0.1";
+  schema: "groupx.context/0.3";
   roomId: string;
   targetActorId: string;
   afterSeq: number;

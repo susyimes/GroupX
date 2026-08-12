@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+    >
+    <meta name="color-scheme" content="light dark">
+    <title>GroupX · Agent 配置</title>
+    <link rel="stylesheet" href="/setup.css">
+    <script type="module" src="/setup.js"></script>
+  </head>
+  <body>
+    <header class="setup-header">
+      <a class="brand" href="/" aria-label="GroupX">
+        <span class="brand-mark" aria-hidden="true">GX</span>
+        <span><strong>GroupX</strong><small>Agent room setup</small></span>
+      </a>
+      <div class="header-actions">
+        <a id="back-room" class="quiet-link" href="/" hidden>返回群聊</a>
+        <button id="theme-toggle" class="theme-toggle" type="button" aria-label="切换到夜间模式">☾</button>
+      </div>
+    </header>
+
+    <main class="setup-page">
+      <aside class="intro-panel">
+        <p class="eyebrow">Structured onboarding</p>
+        <h1 id="setup-title">组建你的 Agent 房间</h1>
+        <p class="intro-copy">每一行都是一个独立 Agent 实例。你可以添加多个 Codex App Server，并为它们设置不同的名字、身份和工作目录。</p>
+
+        <ol class="steps" aria-label="配置步骤">
+          <li class="is-current"><span>1</span><div><strong>添加 Agent</strong><small>选择原生 driver 与身份</small></div></li>
+          <li><span>2</span><div><strong>确认运行位置</strong><small>填写 cwd 与 CLI 命令</small></div></li>
+          <li><span>3</span><div><strong>保存并启动</strong><small>每个实例拥有独立 session</small></div></li>
+        </ol>
+
+        <section class="driver-status" aria-labelledby="driver-status-title">
+          <h2 id="driver-status-title">本机 CLI 检测</h2>
+          <div id="driver-probes" class="probe-list" aria-live="polite"></div>
+          <p>检测只确认默认命令能否解析，不会登录 CLI、启动模型回合或修改原生配置。</p>
+        </section>
+
+        <div class="policy-note">
+          <strong>固定运行合同</strong>
+          <p>GroupX 仅提供 Structured 模式，并按项目合同以 unrestricted 启动。此页面不提供审批或沙箱档位。</p>
+        </div>
+      </aside>
+
+      <section class="editor-panel">
+        <div id="loading-state" class="loading-state" role="status">
+          <span class="spinner" aria-hidden="true"></span>
+          正在读取本机配置…
+        </div>
+
+        <form id="setup-form" hidden>
+          <div id="existing-banner" class="notice-banner" hidden></div>
+          <div id="form-error" class="error-banner" role="alert" hidden></div>
+
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Room roster</p>
+              <h2>Agent 名册</h2>
+              <p>稳定 ID 决定群内 actor；显示名可以更友好。同一个 driver 可以添加多次。</p>
+            </div>
+            <div class="quick-add" aria-label="快速添加 Agent">
+              <button type="button" data-add-driver="codex">+ Codex</button>
+              <button type="button" data-add-driver="grok">+ Grok</button>
+              <button type="button" data-add-driver="kimi">+ Kimi</button>
+            </div>
+          </div>
+
+          <div id="agent-list" class="agent-editor-list"></div>
+          <button id="add-agent" class="add-agent-button" type="button">＋ 添加一个 Agent</button>
+
+          <details class="advanced-settings">
+            <summary>本地服务与存储</summary>
+            <div class="settings-grid">
+              <label>
+                <span>Web 端口</span>
+                <input id="server-port" type="number" min="1" max="65535" required>
+                <small>只监听 127.0.0.1</small>
+              </label>
+              <label>
+                <span>SQLite 路径</span>
+                <input id="storage-path" type="text" maxlength="4096" required>
+                <small>相对于 groupx.json 所在目录</small>
+              </label>
+            </div>
+          </details>
+
+          <footer class="save-bar">
+            <div>
+              <span id="config-path" class="config-path"></span>
+              <small id="save-hint">保存前会验证所有已启用 Agent 的命令。</small>
+            </div>
+            <button id="save-button" class="primary-button" type="submit">保存配置</button>
+          </footer>
+        </form>
+
+        <section id="success-state" class="success-state" hidden aria-live="polite">
+          <span id="success-mark" class="success-mark" aria-hidden="true">✓</span>
+          <p id="success-eyebrow" class="eyebrow">Configuration saved</p>
+          <h2 id="success-title">Agent 房间已经配置好</h2>
+          <p id="success-copy"></p>
+          <code id="saved-path"></code>
+          <div class="success-actions">
+            <a id="success-room-link" class="primary-link" href="/" hidden>返回群聊</a>
+            <button id="edit-again" class="secondary-button" type="button">继续编辑</button>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <template id="agent-card-template">
+      <article class="agent-editor-card">
+        <header>
+          <div class="agent-avatar" aria-hidden="true">CO</div>
+          <div class="agent-card-title">
+            <strong>Codex Agent</strong>
+            <code class="actor-preview">agent:codex</code>
+          </div>
+          <label class="enabled-toggle">
+            <input class="agent-enabled" type="checkbox">
+            <span>启用</span>
+          </label>
+          <button class="remove-agent" type="button" aria-label="移除 Agent">移除</button>
+        </header>
+        <div class="agent-fields">
+          <label>
+            <span>Driver</span>
+            <select class="agent-driver">
+              <option value="codex">Codex App Server</option>
+              <option value="grok">Grok ACP</option>
+              <option value="kimi">Kimi ACP</option>
+            </select>
+          </label>
+          <label>
+            <span>稳定 ID</span>
+            <input class="agent-id" type="text" maxlength="64" pattern="[A-Za-z0-9](?:[A-Za-z0-9._-]{0,62}[A-Za-z0-9])?" required>
+          </label>
+          <label>
+            <span>显示名 <small>可选</small></span>
+            <input class="agent-name" type="text" maxlength="64" placeholder="例如：代码评审员">
+          </label>
+          <label class="wide-field identity-field">
+            <span>Agent 身份 <small>每轮注入，不修改 CLI 全局配置</small></span>
+            <textarea class="agent-identity" maxlength="32768" rows="4" placeholder="例如：你是这个房间的代码评审员，优先检查协议、可靠性和回归风险。"></textarea>
+          </label>
+          <label class="wide-field">
+            <span>工作目录 cwd</span>
+            <input class="agent-cwd" type="text" maxlength="4096" required placeholder="D:\\MyProject 或 .">
+          </label>
+          <label class="wide-field">
+            <span>CLI 命令或可执行文件</span>
+            <input class="agent-command" type="text" maxlength="4096" required placeholder="codex">
+          </label>
+          <label class="wide-field optional-field">
+            <span>Node CLI 入口 <small>仅高级安装方式需要</small></span>
+            <input class="agent-entrypoint" type="text" maxlength="4096" placeholder="留空；或填写一个 .js/.mjs/.cjs 入口">
+          </label>
+        </div>
+      </article>
+    </template>
+  </body>
+</html>

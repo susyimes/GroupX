@@ -53,6 +53,8 @@ export interface BrokerSessionProvider {
 export interface BrokerContextPacket {
   contextPacket?: string;
   contextThroughSeq: number;
+  /** Persisted summary boundary actually embedded in contextPacket. */
+  summaryThroughSeq?: number;
 }
 
 export interface BrokerContextProvider {

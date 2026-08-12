@@ -34,7 +34,8 @@ import {
   type IdentityPage,
   type MemoryMutationAccepted,
   type MemoryPage,
-  type McpHttpHandler
+  type McpHttpHandler,
+  type SetupApi
 } from "../../../../src/web/server/index.js";
 
 const createdAt = "2026-08-11T00:00:00.000Z";
@@ -298,7 +299,11 @@ describe("GroupXHttpServer", () => {
       writeFile(path.join(staticRoot, "app.js"), "document.body.dataset.ready = 'yes';"),
       writeFile(path.join(staticRoot, "pagination.js"), "export const paginationReady = true;"),
       writeFile(path.join(staticRoot, "rich-text.js"), "export const richTextReady = true;"),
-      writeFile(path.join(staticRoot, "styles.css"), "body { color: black; }")
+      writeFile(path.join(staticRoot, "tool-progress.js"), "export const toolProgressReady = true;"),
+      writeFile(path.join(staticRoot, "styles.css"), "body { color: black; }"),
+      writeFile(path.join(staticRoot, "setup.html"), "<!doctype html><title>Agent setup</title>"),
+      writeFile(path.join(staticRoot, "setup.js"), "document.body.dataset.setup = 'ready';"),
+      writeFile(path.join(staticRoot, "setup.css"), "body { color: blue; }")
     ]);
     broker = new FakeBroker();
     reader = new MemoryEventReader();
@@ -334,6 +339,10 @@ describe("GroupXHttpServer", () => {
     expect(richText.status).toBe(200);
     expect(await richText.text()).toContain("richTextReady");
 
+    const toolProgress = await fetch(`${origin}/tool-progress.js`);
+    expect(toolProgress.status).toBe(200);
+    expect(await toolProgress.text()).toContain("toolProgressReady");
+
     const styles = await fetch(`${origin}/styles.css`, { method: "HEAD" });
     expect(styles.status).toBe(200);
     expect(await styles.text()).toBe("");
@@ -344,6 +353,69 @@ describe("GroupXHttpServer", () => {
     expect(wrongMethod.status).toBe(405);
     expect(wrongMethod.headers.get("allow")).toBe("GET, HEAD");
     expect(SafeErrorBodySchema.safeParse(await wrongMethod.json()).success).toBe(true);
+  });
+
+  it("serves the running Agent editor and marks saved roster changes for restart", async () => {
+    await server?.close();
+    const setupApi: SetupApi = {
+      snapshot: () => ({
+        configPath: "D:\\GroupX\\groupx.json",
+        existing: true,
+        runtimeActive: true,
+        drivers: [
+          { driver: "codex", found: true },
+          { driver: "grok", found: true },
+          { driver: "kimi", found: true }
+        ],
+        config: {
+          serverPort: 4_310,
+          storagePath: ".groupx/groupx.db",
+          agents: [{
+            id: "codex",
+            driver: "codex",
+            name: "Builder",
+            command: { executable: "codex", prefixArgs: [] },
+            cwd: ".",
+            enabled: true
+          }]
+        }
+      }),
+      save: (request) => ({
+        saved: true,
+        configPath: "D:\\GroupX\\groupx.json",
+        agentCount: request.config.agents.length,
+        enabledAgentCount: request.config.agents.filter((agent) => agent.enabled).length,
+        restartRequired: true
+      })
+    };
+    server = createGroupXHttpServer({ broker, sse, staticRoot, port: 0, setupApi });
+    origin = (await server.start()).origin;
+
+    expect(await (await fetch(`${origin}/setup`)).text()).toContain("Agent setup");
+    expect(await (await fetch(`${origin}/api/setup`)).json()).toMatchObject({
+      runtimeActive: true,
+      config: { agents: [{ id: "codex", driver: "codex" }] }
+    });
+    const saved = await fetch(`${origin}/api/setup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        config: {
+          serverPort: 4_310,
+          storagePath: ".groupx/groupx.db",
+          agents: ["codex", "reviewer"].map((id) => ({
+            id,
+            driver: "codex",
+            name: "",
+            command: { executable: "codex", prefixArgs: [] },
+            cwd: ".",
+            enabled: true
+          }))
+        }
+      })
+    });
+    expect(saved.status).toBe(200);
+    expect(await saved.json()).toMatchObject({ agentCount: 2, restartRequired: true });
   });
 
   it("exposes health/bootstrap and validates message JSON before calling Broker", async () => {

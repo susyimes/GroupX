@@ -83,6 +83,35 @@ describe("segmentInline", () => {
     ]);
   });
 
+  it("parses adjacent Markdown links without merging their destinations", () => {
+    expect(
+      segmentInline(
+        "预报：[Timeanddate](https://www.timeanddate.com/weather/china/beijing/ext)、[AccuWeather](https://www.accuweather.com/zh/cn/beijing/101924/weather-forecast/1812_poi)。"
+      )
+    ).toEqual([
+      { kind: "text", text: "预报：" },
+      {
+        kind: "link",
+        text: "Timeanddate",
+        href: "https://www.timeanddate.com/weather/china/beijing/ext",
+      },
+      { kind: "text", text: "、" },
+      {
+        kind: "link",
+        text: "AccuWeather",
+        href: "https://www.accuweather.com/zh/cn/beijing/101924/weather-forecast/1812_poi",
+      },
+      { kind: "text", text: "。" },
+    ]);
+  });
+
+  it("keeps balanced parentheses inside Markdown-link URLs", () => {
+    expect(segmentInline("[docs](https://example.com/a_(b)) end")).toEqual([
+      { kind: "link", text: "docs", href: "https://example.com/a_(b)" },
+      { kind: "text", text: " end" },
+    ]);
+  });
+
   it("keeps URLs inside inline code literal", () => {
     expect(segmentInline("`https://example.com`")).toEqual([
       { kind: "code", text: "https://example.com" },

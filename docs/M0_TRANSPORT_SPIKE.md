@@ -53,15 +53,15 @@ DEPRECATED
 | --- | --- | --- |
 | Codex | 新会话：`codex --yolo --dangerously-bypass-hook-trust exec --json -`；续会话：`codex --yolo --dangerously-bypass-hook-trust exec resume --json <sessionId> -` | `codex --dangerously-bypass-hook-trust app-server --listen stdio://`；`thread/start`/`thread/resume` 固定 `approvalPolicy="never"`、`sandbox="danger-full-access"` |
 | Grok | `grok --no-auto-update --permission-mode bypassPermissions --sandbox off --no-plan [--resume <sessionId>] --output-format streaming-json --single <prompt>`；`-p` 是 `--single` 短别名 | `grok --no-auto-update --permission-mode bypassPermissions --sandbox off --no-plan agent stdio` |
-| Kimi | preflight 有效 `default_permission_mode=yolo|auto`、`default_plan_mode=false` 后使用 `kimi [--session <id>] --prompt <prompt> --output-format stream-json`；不追加与 prompt 冲突的 `--yolo/--auto/--plan` | 同一 preflight 后启动 `kimi acp`；每次 `session/new` 或 `session/load`（含 Adapter resume）后、首个 prompt 前发送 `session/set_mode {sessionId, modeId:"auto"}` |
+| Kimi | deprecated Direct 参考实现保留只读配置 preflight 后使用 `kimi [--session <id>] --prompt <prompt> --output-format stream-json` | 直接启动 `kimi acp`；不以全局默认 permission/plan 为门禁。每次 `session/new` 或 `session/load`（含 Adapter resume）后、首个 prompt 前发送 `session/set_mode {sessionId, modeId:"auto"}` |
 
 Codex 0.147 的 thread-level `sandbox` 是 kebab-case 字符串 `danger-full-access`；camel-case `dangerFullAccess` 是 `turn/start.sandboxPolicy.type` 的另一种 wire shape，不能混用。Codex child 使用 Agent 配置的 OS cwd，thread params 省略 cwd。Structured 启动前发送 `configRequirements/read {}`：requirements 为 null/缺失表示无约束；显式 allowlist 不含 `never` 或 `danger-full-access` 时以 `NATIVE_POLICY_BLOCKED` 失败。证据只保存有界结论。
 
 Grok 的全局 flags 必须位于 `agent stdio` 或 `--single` 之前。企业策略可禁用 bypass permissions；旧 session 的 sandbox profile 与当前 `off` 不一致时应失败，不得 fallback。
 
-Kimi 0.34 的官方命令合同和安装源码都规定 `--prompt` 不能与 `--yolo`、`--auto` 或 `--plan` 组合；help 只列出 flags 并不能推翻运行时互斥校验。GroupX 因此不拼接冲突 flags，而是在启动/恢复前只读 `$KIMI_CODE_HOME/config.toml`（fallback `~/.kimi-code/config.toml`），只投影 `default_permission_mode` 与 `default_plan_mode`，要求有效值分别为 `yolo|auto` 与 `false`。Direct 在每次 one-shot spawn 前重做该 preflight；失败是 `ADAPTER_START_FAILED`，不是 `NATIVE_POLICY_BLOCKED`。ACP mode 不持久化，所以每次 `session/new` 或 `session/load`（含 Adapter resume）后仍必须重设；auto 仍受 static deny。
+Kimi Direct 已 deprecated；其历史 one-shot 代码仍因 `--prompt` 与权限 flags 的互斥关系保留只读配置 preflight。Active Structured 不使用这条 preflight：官方 ACP 提供 `session/set_mode`，所以默认 global `manual` 允许启动，GroupX 在每次 `session/new` 或 `session/load`（含 Adapter resume）后设置当前 session 为 auto。mode 不持久化，必须逐 session 重设；auto 仍受 static deny。
 
-固定 argv/mode 只作用于 GroupX 启动的 process/thread/session。GroupX 不写三套 CLI 的全局配置，也不允许通用 `extraArgs` 改写这些常量；Kimi preflight 只返回两项 allowlisted 结论，不保存或输出其他配置字段。
+固定 argv/mode 只作用于 GroupX 启动的 process/thread/session。GroupX 不写三套 CLI 的全局配置，也不允许通用 `extraArgs` 改写这些常量。Structured Kimi 不读取全局配置来决定是否启动。
 
 ## 4. Wire 合同
 
@@ -89,7 +89,7 @@ Kimi 0.34 的官方命令合同和安装源码都规定 `--prompt` 不能与 `--
 
 1. 启动固定 argv，发送 ACP `initialize`；ACP client-agent 生命周期不发送 App Server 的 `initialized` notification；
 2. `session/new`，或 capability verified 后 `session/load`；
-3. Kimi 在进程 spawn 前先通过 config preflight，并在每次 new/load 后、首 prompt 前完成 `session/set_mode(auto)`；
+3. Kimi 不要求 global-config preflight；在每次 new/load 后、首 prompt 前完成 `session/set_mode(auto)`；
 4. `session/prompt` 与 `session/update` 归一化，matching response/`stopReason` 是 terminal；
 5. `session/cancel` 是 notification；
 6. 原生支持时 `session/close`，随后有界关闭进程。
