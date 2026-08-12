@@ -583,10 +583,10 @@ input:disabled {
 }
 
 .actor-avatar {
-  width: 26px;
-  height: 26px;
-  border-radius: 8px;
-  font-size: 0.58rem;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  font-size: 0.6rem;
 }
 
 .actor-codex {
@@ -755,7 +755,7 @@ input:disabled {
 .timeline {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 3px;
   padding: 8px max(24px, 5vw) 26px;
   overflow-x: hidden;
   overflow-y: auto;
@@ -864,39 +864,34 @@ input:disabled {
   --tone: var(--tone-system);
 }
 
-.event-card,
-.turn-card,
-.generic-card,
-.activity-card {
+.event-card {
   position: relative;
-  max-width: 780px;
-  padding: 12px 15px 12px 17px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  background: var(--card-bg);
-  box-shadow: var(--shadow-card);
+  display: flex;
+  gap: 10px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  box-shadow: none;
 }
 
-.event-card::before {
-  position: absolute;
-  top: 12px;
-  bottom: 12px;
-  left: 0;
-  width: 3px;
-  border-radius: 3px;
-  background: var(--tone, var(--line-strong));
-  opacity: 0.75;
-  content: "";
+.event-card:hover {
+  background: var(--quote-bg);
 }
 
 .event-card.actor-user-card {
-  margin-left: auto;
-  border-color: var(--line);
-  background: var(--user-card-bg);
+  flex-direction: row-reverse;
 }
 
-.event-card.is-streaming {
-  border-color: var(--accent-border);
+.event-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.actor-user-card .event-body {
+  align-items: flex-end;
 }
 
 .event-card.is-streaming .event-content::after {
@@ -923,39 +918,39 @@ input:disabled {
 
 @keyframes highlight-pulse {
   0% {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 3px var(--accent-wash);
+    background: var(--accent-wash);
   }
   100% {
-    border-color: var(--line);
-    box-shadow: var(--shadow-card);
+    background: transparent;
   }
 }
 
 .event-meta {
   gap: 8px;
   min-width: 0;
-  color: var(--muted);
+  color: var(--subtle);
   font-size: 0.66rem;
+}
+
+.actor-user-card .event-meta {
+  flex-direction: row-reverse;
 }
 
 .actor-name {
   overflow: hidden;
-  color: var(--text);
+  color: var(--tone, var(--text));
+  font-size: 0.72rem;
   font-weight: 650;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .actor-id {
-  overflow: hidden;
-  color: var(--subtle);
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  display: none;
 }
 
 .event-time {
-  margin-left: auto;
+  color: var(--subtle);
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
@@ -971,17 +966,38 @@ input:disabled {
 }
 
 .event-content {
-  margin: 10px 0 0;
+  margin: 3px 0 0;
   color: var(--content-text);
   font-size: 0.85rem;
   line-height: 1.68;
 }
 
+.actor-user-card .event-content {
+  text-align: right;
+}
+
+.actor-user-card .reply-reference {
+  text-align: left;
+}
+
 .event-actions {
-  gap: 14px;
-  margin-top: 8px;
+  position: absolute;
+  top: 2px;
+  right: 8px;
+  gap: 2px;
+  padding: 2px;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-2);
+  box-shadow: var(--shadow-card);
   opacity: 0;
   transition: opacity 140ms ease;
+}
+
+.actor-user-card .event-actions {
+  right: auto;
+  left: 8px;
 }
 
 .event-card:hover .event-actions,
@@ -994,6 +1010,16 @@ input:disabled {
   color: var(--subtle);
   font-size: 0.66rem;
   transition: color 120ms ease;
+}
+
+.event-actions .text-button {
+  padding: 3px 8px;
+  border-radius: 6px;
+}
+
+.event-actions .text-button:hover {
+  background: var(--quote-bg-hover);
+  color: var(--text);
 }
 
 .text-button.danger-text:hover,
@@ -1102,7 +1128,12 @@ input:disabled {
 .turn-card,
 .generic-card,
 .activity-card {
-  padding: 9px 13px;
+  position: relative;
+  padding: 8px 13px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  box-shadow: none;
   color: var(--muted);
   font-size: 0.7rem;
 }
@@ -1110,9 +1141,12 @@ input:disabled {
 .turn-card {
   max-width: 620px;
   margin: 0 auto;
-  border-style: dashed;
-  border-radius: var(--radius-lg);
-  background: var(--card-bg);
+  text-align: center;
+}
+
+.turn-card .turn-card-header {
+  justify-content: center;
+  gap: 10px;
 }
 
 .turn-state {
@@ -1164,8 +1198,6 @@ input:disabled {
 .activity-card {
   max-width: 620px;
   margin: 0 auto;
-  border-color: var(--activity-border);
-  border-radius: var(--radius-md);
   background: var(--activity-bg);
 }
 
@@ -1185,7 +1217,7 @@ input:disabled {
 
 .generic-card {
   max-width: 680px;
-  border-color: var(--line);
+  background: var(--quote-bg);
 }
 
 .generic-type {

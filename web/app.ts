@@ -668,14 +668,18 @@ async function requestJson<T>(path: string, options: RequestInit = {}): Promise<
   return decoded as T;
 }
 
+function createActorAvatar(actor: ActorRef): HTMLSpanElement {
+  const avatar = document.createElement("span");
+  avatar.className = `actor-avatar ${actorToneClass(actor.actorId)}`;
+  avatar.textContent = actorInitial(actor);
+  avatar.setAttribute("aria-hidden", "true");
+  return avatar;
+}
+
 function createActorMeta(envelope: GroupXEnvelope): HTMLDivElement {
   const wrapper = document.createElement("div");
   wrapper.className = "event-meta";
-
-  const avatar = document.createElement("span");
-  avatar.className = `actor-avatar ${actorToneClass(envelope.actor.actorId)}`;
-  avatar.textContent = actorInitial(envelope.actor);
-  avatar.setAttribute("aria-hidden", "true");
+  wrapper.title = envelope.actor.actorId;
 
   const name = document.createElement("span");
   name.className = "actor-name";
@@ -691,7 +695,7 @@ function createActorMeta(envelope: GroupXEnvelope): HTMLDivElement {
   time.textContent = formatTime(envelope.occurredAt);
   time.title = formatFullTime(envelope.occurredAt);
 
-  wrapper.append(avatar, name, actorId, time);
+  wrapper.append(name, actorId, time);
   return wrapper;
 }
 
@@ -885,7 +889,10 @@ function renderMessage(envelope: GroupXEnvelope): void {
     article.classList.add("actor-user-card");
   }
   article.dataset.eventId = envelope.eventId;
-  article.append(createActorMeta(envelope));
+
+  const body = document.createElement("div");
+  body.className = "event-body";
+  body.append(createActorMeta(envelope));
 
   if (envelope.replyToEventId) {
     const sourceId = envelope.replyToEventId;
@@ -910,13 +917,13 @@ function renderMessage(envelope: GroupXEnvelope): void {
         scrollToSource();
       }
     });
-    article.append(reply);
+    body.append(reply);
   }
 
   const content = document.createElement("p");
   content.className = "event-content";
   renderRichContent(content, messageContent(envelope.body));
-  article.append(content);
+  body.append(content);
 
   const actions = document.createElement("div");
   actions.className = "event-actions";
@@ -935,7 +942,8 @@ function renderMessage(envelope: GroupXEnvelope): void {
     });
   });
   actions.append(replyButton, copyButton);
-  article.append(actions);
+  body.append(actions);
+  article.append(createActorAvatar(envelope.actor), body);
 
   state.messages.set(envelope.eventId, envelope);
   eventNodes.set(envelope.eventId, article);
@@ -953,18 +961,22 @@ function updateStreamingNode(bucket: DeltaBucket, text: string): void {
     article = document.createElement("article");
     article.className = `event-card is-streaming ${cardToneClass(bucket.envelope.actor.actorId)}`;
     article.dataset.streamKey = bucket.key;
-    article.append(createActorMeta(bucket.envelope));
+
+    const body = document.createElement("div");
+    body.className = "event-body";
+    body.append(createActorMeta(bucket.envelope));
 
     if (bucket.mode === "reasoning") {
       const label = document.createElement("div");
       label.className = "reply-reference";
       label.textContent = "推理流";
-      article.append(label);
+      body.append(label);
     }
 
     const content = document.createElement("p");
     content.className = "event-content";
-    article.append(content);
+    body.append(content);
+    article.append(createActorAvatar(bucket.envelope.actor), body);
     item.append(article);
     streamNodes.set(bucket.key, article);
     maybeInsertDateDivider(bucket.envelope.occurredAt);
