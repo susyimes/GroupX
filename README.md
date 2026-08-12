@@ -6,7 +6,7 @@
 
 一句话 @all 齐发,三种思路同屏飙车 —— 全在你自己机器上。
 
-![Version](https://img.shields.io/badge/version-0.1.0-3370ff)
+![npm](https://img.shields.io/npm/v/@susyimes/groupx?color=3370ff&label=npm)
 ![Node](https://img.shields.io/badge/node-24.14.x-3c873a)
 ![Tests](https://img.shields.io/badge/tests-409%20passing-0d9f6e)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%C2%B7%20macOS%20%C2%B7%20Linux-0078d6)
