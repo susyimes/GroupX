@@ -232,6 +232,68 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 input::placeholder, textarea::placeholder { color: var(--subtle); }
 .identity-field textarea { background: color-mix(in srgb, var(--surface) 88%, var(--accent-soft)); }
 
+.agent-memory-settings { border-top: 1px solid var(--line); background: var(--surface); }
+.agent-memory-settings > summary {
+  display: flex;
+  min-height: 54px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 14px;
+  cursor: pointer;
+  list-style: none;
+}
+.agent-memory-settings > summary::-webkit-details-marker { display: none; }
+.agent-memory-settings > summary > span:first-child { display: grid; gap: 3px; }
+.agent-memory-settings > summary strong { font-size: .74rem; }
+.agent-memory-settings > summary small { color: var(--subtle); font-size: .64rem; font-weight: 400; }
+.agent-memory-settings > summary::after { color: var(--subtle); content: "›"; transform: rotate(90deg); transition: transform 140ms ease; }
+.agent-memory-settings[open] > summary::after { transform: rotate(270deg); }
+.agent-memory-count {
+  min-width: 24px;
+  padding: 3px 7px;
+  margin-left: auto;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-size: .62rem;
+  text-align: center;
+}
+.agent-memory-body { padding: 0 14px 14px; border-top: 1px solid var(--line); }
+.agent-memory-status { margin: 11px 0; color: var(--subtle); font-size: .68rem; line-height: 1.55; }
+.agent-memory-groups { display: grid; gap: 13px; }
+.agent-memory-date-group { display: grid; gap: 6px; }
+.agent-memory-date-group h4 { display: flex; align-items: center; gap: 8px; margin: 0; color: var(--subtle); font-size: .63rem; }
+.agent-memory-date-group h4::after { height: 1px; background: var(--line); content: ""; flex: 1; }
+.agent-memory-date-group ul { display: grid; gap: 7px; padding: 0; margin: 0; list-style: none; }
+.agent-memory-date-group li { padding: 9px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-soft); }
+.agent-memory-record-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.agent-memory-record-meta > span:first-child { padding: 2px 7px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: .6rem; }
+.agent-memory-record-meta > span:last-child { display: flex; gap: 8px; }
+.agent-memory-record-meta button,
+.agent-memory-replace-banner button { padding: 0; border: 0; background: transparent; color: var(--subtle); font-size: .63rem; }
+.agent-memory-record-meta button:hover { color: var(--danger); }
+.agent-memory-date-group p { margin: 7px 0 0; color: var(--text); font-size: .71rem; line-height: 1.55; overflow-wrap: anywhere; }
+.agent-memory-editor { padding-top: 12px; margin-top: 12px; border-top: 1px solid var(--line); }
+.agent-memory-inputs { display: grid; grid-template-columns: 130px minmax(0, 1fr) auto; gap: 10px; align-items: end; }
+.agent-memory-inputs label { display: grid; gap: 6px; color: var(--muted); font-size: .66rem; }
+.agent-memory-inputs select { width: 100%; }
+.agent-memory-input { min-height: 68px; }
+.agent-memory-submit {
+  min-height: 38px;
+  padding: 0 13px;
+  border: 0;
+  border-radius: 9px;
+  background: var(--accent);
+  color: white;
+  font-size: .7rem;
+  font-weight: 700;
+}
+.agent-memory-submit:disabled { cursor: wait; opacity: .6; }
+.agent-memory-replace-banner { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; margin-bottom: 10px; border: 1px solid rgba(149,100,24,.25); border-radius: 9px; background: var(--warning-soft); color: var(--warning); font-size: .66rem; }
+.agent-memory-replace-banner[hidden] { display: none; }
+
 .add-agent-button { width: 100%; margin-top: 13px; padding: 11px; border-style: dashed; background: transparent; font-size: 0.75rem; }
 .advanced-settings { margin-top: 20px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-soft); }
 .advanced-settings summary { padding: 12px 14px; color: var(--muted); cursor: pointer; font-size: 0.75rem; font-weight: 650; }
@@ -299,6 +361,7 @@ input::placeholder, textarea::placeholder { color: var(--subtle); }
   .wide-field { grid-column: auto; }
   .settings-grid { grid-template-columns: 1fr; }
   .agent-editor-card > header { flex-wrap: wrap; }
+  .agent-memory-inputs { grid-template-columns: 1fr; }
   .agent-card-title { min-width: 0; flex: 1 1 130px; }
   .primary-button { width: 100%; }
 }

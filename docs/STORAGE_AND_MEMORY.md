@@ -464,7 +464,7 @@ IdentityRecord 没有以下专用字段：
 
 Agent 设置中的稳定身份、滚动摘要、当前消息和完整 reply chain 是强制区段。滚动摘要是已省略旧 transcript 的覆盖证明，因此不能先推进 cursor 再丢掉摘要。其余可选区段在预算内优先保留近期 room delta，再保留目标 Agent 独立记忆、公共记忆和兼容身份记录。
 
-`memory_records.scope_type=agent` 且 `scope_id=agent:<id>` 的记录只进入该目标 Agent 的 Context Packet。Web 以 `created_at` 的本地日期分组展示；公共记忆仍使用 `scope_type=room`，两者不会相互提升或复制。Agent 稳定身份不在右侧记忆面板编辑，而在 Agent 设置中写入配置。
+`memory_records.scope_type=agent` 且 `scope_id=agent:<id>` 的记录只进入该目标 Agent 的 Context Packet。Web 在 Agent 设置的对应卡片中按 `created_at` 的本地日期分组展示；公共记忆仍使用 `scope_type=room` 并位于群聊左栏，两者不会相互提升或复制。Agent 稳定身份同样在 Agent 设置中写入配置，主界面不保留右侧记忆栏。
 
 默认硬上限为 `256,000` 字符，可配置；该值不是 token 数。Room Context Engine 在约 `75%` 的软目标（默认 `192,000` 字符）将省略 unread transcript 时触发，并以“旧检查点 + 有界旧消息块”滚动生成下一检查点，为原生 instructions、工具和回复保留余量。不可压缩的强制区段可以使用到硬上限。生成者是配置顺序中第一个健康 Agent；不可用或返回无效摘要时尝试下一个健康 Agent。
 

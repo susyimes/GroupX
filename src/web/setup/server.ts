@@ -21,6 +21,7 @@ const STATIC_FILES = new Map<string, readonly [fileName: string, contentType: st
   ["/setup", ["setup.html", "text/html; charset=utf-8"]],
   ["/setup.html", ["setup.html", "text/html; charset=utf-8"]],
   ["/setup.js", ["setup.js", "application/javascript; charset=utf-8"]],
+  ["/pagination.js", ["pagination.js", "application/javascript; charset=utf-8"]],
   ["/setup.css", ["setup.css", "text/css; charset=utf-8"]]
 ]);
 

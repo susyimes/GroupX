@@ -10,11 +10,11 @@
     <meta name="color-scheme" content="light dark">
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%233370ff'/%3E%3Ctext x='16' y='21.5' font-family='system-ui,sans-serif' font-size='12' font-weight='800' text-anchor='middle' fill='white' letter-spacing='1'%3EGX%3C/text%3E%3C/svg%3E">
     <title>GroupX</title>
-    <link rel="stylesheet" href="/styles.css?v=0.1.4-layout4">
-    <script type="module" src="/app.js?v=0.1.4-layout4"></script>
+    <link rel="stylesheet" href="/styles.css?v=0.1.4-memory-layout1">
+    <script type="module" src="/app.js?v=0.1.4-memory-layout1"></script>
   </head>
   <body>
-    <div id="app" class="app-shell context-is-collapsed">
+    <div id="app" class="app-shell">
       <header class="app-header">
         <div class="brand-lockup">
           <span class="brand-mark" aria-hidden="true">GX</span>
@@ -47,6 +47,37 @@
           <span id="agent-count" class="count-pill">0 / 3</span>
         </div>
         <ul id="agent-list" class="agent-list"></ul>
+        <details id="public-memory-section" class="sidebar-memory">
+          <summary>
+            <span>
+              <span class="sidebar-memory-icon" aria-hidden="true">◆</span>
+              公共记忆
+            </span>
+            <span id="public-memory-count" class="count-pill">0</span>
+          </summary>
+          <div class="sidebar-memory-body">
+            <p class="section-description">显式固定给整个房间的长期信息；普通聊天不会自动写入。</p>
+            <ul id="memory-list" class="record-list"></ul>
+            <form id="memory-form" class="record-form">
+              <div id="memory-replace-banner" class="replace-banner" hidden>
+                <span>正在替换一条公共记忆</span>
+                <button id="memory-replace-cancel" class="text-button" type="button">取消</button>
+              </div>
+              <label for="memory-kind">类型</label>
+              <select id="memory-kind">
+                <option value="fact">事实</option>
+                <option value="decision">决定</option>
+                <option value="preference">偏好</option>
+                <option value="instruction">指令</option>
+                <option value="constraint">约束</option>
+                <option value="note">备注</option>
+              </select>
+              <label for="memory-input">固定一条公共记忆</label>
+              <textarea id="memory-input" maxlength="32768" rows="3" placeholder="写下需要长期保留的群组信息"></textarea>
+              <button id="memory-submit" class="secondary-button" type="submit">固定到房间</button>
+            </form>
+          </div>
+        </details>
         <div class="local-note">
           <span class="local-note-icon" aria-hidden="true">⌂</span>
           <p>仅连接本机 GroupX Broker。GroupX 固定以 unrestricted 启动 CLI；UAC、ACL 与企业策略仍由原生环境约束。</p>
@@ -128,88 +159,6 @@
         </form>
       </main>
 
-      <button
-        id="context-drawer-toggle"
-        class="context-drawer-toggle"
-        type="button"
-        aria-controls="context-panel"
-        aria-expanded="false"
-        aria-label="展开记忆面板"
-        title="展开记忆面板"
-      >
-        <span aria-hidden="true">‹</span>
-        <span>记忆</span>
-      </button>
-
-      <aside id="context-panel" class="side-panel context-panel" aria-label="房间记忆">
-        <div class="context-tabs" role="tablist" aria-label="记忆面板">
-          <button id="public-memory-tab" class="context-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="public-memory-panel">公共记忆</button>
-          <button id="agent-memory-tab" class="context-tab" type="button" role="tab" aria-selected="false" aria-controls="agent-memory-panel">Agent 记忆</button>
-        </div>
-
-        <section id="public-memory-panel" class="context-section" role="tabpanel" aria-labelledby="public-memory-tab">
-          <div class="panel-heading compact">
-            <div>
-              <p class="eyebrow">Public memory</p>
-              <h2>公共记忆</h2>
-            </div>
-          </div>
-          <p class="section-description">只有显式固定的内容会进入公共记忆，普通聊天不会自动提升为事实。</p>
-          <ul id="memory-list" class="record-list"></ul>
-          <form id="memory-form" class="record-form">
-            <div id="memory-replace-banner" class="replace-banner" hidden>
-              <span>正在替换一条公共记忆</span>
-              <button id="memory-replace-cancel" class="text-button" type="button">取消</button>
-            </div>
-            <label for="memory-kind">类型</label>
-            <select id="memory-kind">
-              <option value="fact">事实</option>
-              <option value="decision">决定</option>
-              <option value="preference">偏好</option>
-              <option value="instruction">指令</option>
-              <option value="constraint">约束</option>
-              <option value="note">备注</option>
-            </select>
-            <label for="memory-input">固定一条公共记忆</label>
-            <textarea id="memory-input" maxlength="32768" rows="3" placeholder="写下需要长期保留的群组信息"></textarea>
-            <button id="memory-submit" class="secondary-button" type="submit">固定到房间</button>
-          </form>
-        </section>
-
-        <section id="agent-memory-panel" class="context-section" role="tabpanel" aria-labelledby="agent-memory-tab" hidden>
-          <div class="panel-heading compact">
-            <div>
-              <p class="eyebrow">Agent memory</p>
-              <h2>Agent 独立记忆</h2>
-            </div>
-          </div>
-          <p class="section-description">每个 Agent 单独保存，按日期分组；不会进入其他 Agent 的记忆，也不同于公共记忆。</p>
-          <label class="memory-agent-picker" for="agent-memory-actor">
-            <span>选择 Agent</span>
-            <select id="agent-memory-actor"></select>
-          </label>
-          <div id="agent-memory-groups" class="memory-date-groups"></div>
-          <form id="agent-memory-form" class="record-form">
-            <div id="agent-memory-replace-banner" class="replace-banner" hidden>
-              <span>正在替换一条 Agent 记忆</span>
-              <button id="agent-memory-replace-cancel" class="text-button" type="button">取消</button>
-            </div>
-            <label for="agent-memory-kind">类型</label>
-            <select id="agent-memory-kind">
-              <option value="fact">事实</option>
-              <option value="decision">决定</option>
-              <option value="preference">偏好</option>
-              <option value="instruction">指令</option>
-              <option value="constraint">约束</option>
-              <option value="note">备注</option>
-            </select>
-            <label for="agent-memory-input">记录一条 Agent 记忆</label>
-            <textarea id="agent-memory-input" maxlength="32768" rows="3" placeholder="写下只供这个 Agent 后续回合使用的信息"></textarea>
-            <button id="agent-memory-submit" class="secondary-button" type="submit">保存到 Agent</button>
-          </form>
-        </section>
-
-      </aside>
     </div>
 
     <template id="agent-template">

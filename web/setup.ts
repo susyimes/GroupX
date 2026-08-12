@@ -1,3 +1,5 @@
+import { collectCursorPages } from "./pagination.js";
+
 type AgentDriver = "codex" | "grok" | "kimi";
 
 interface AgentDraft {
@@ -52,6 +54,15 @@ interface DriverMeta {
   tone: string;
 }
 
+interface AgentMemoryRecord {
+  memoryId: string;
+  actorId: string;
+  kind: string;
+  content: string;
+  createdAt: string;
+  status: string;
+}
+
 const DRIVER_META: Readonly<Record<AgentDriver, DriverMeta>> = {
   codex: { label: "Codex App Server", short: "CO", tone: "#3370ff" },
   grok: { label: "Grok ACP", short: "GR", tone: "#a348c5" },
@@ -84,6 +95,13 @@ const themeToggle = requiredElement<HTMLButtonElement>("theme-toggle");
 let snapshot: SetupSnapshot | undefined;
 let agents: AgentDraft[] = [];
 let saving = false;
+let agentMemoriesLoading = false;
+let agentMemoriesLoaded = false;
+let agentMemoriesError = "";
+const runtimeAgentIds = new Set<string>();
+const agentMemories = new Map<string, AgentMemoryRecord>();
+const replacingMemoryIds = new Map<string, string>();
+const memoryRetryIds = new Map<string, string>();
 
 interface SetupLaunchState {
   status: "waiting" | "ready" | "failed";
@@ -101,6 +119,34 @@ function requiredElement<T extends HTMLElement>(id: string): T {
 
 function isDriver(value: string): value is AgentDriver {
   return value === "codex" || value === "grok" || value === "kimi";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readStringField(value: Record<string, unknown>, ...keys: string[]): string {
+  for (const key of keys) {
+    const candidate = value[key];
+    if (typeof candidate === "string") return candidate;
+  }
+  return "";
+}
+
+function actorIdForAgent(agent: AgentDraft): string {
+  return `agent:${agent.id}`;
+}
+
+function makeClientCommandId(prefix: string): string {
+  return `${prefix}-${globalThis.crypto.randomUUID()}`;
+}
+
+function retryableMemoryCommandId(key: string, prefix: string): string {
+  const existing = memoryRetryIds.get(key);
+  if (existing) return existing;
+  const created = makeClientCommandId(prefix);
+  memoryRetryIds.set(key, created);
+  return created;
 }
 
 function cloneAgent(agent: AgentDraft): AgentDraft {
@@ -161,6 +207,264 @@ function validateDuplicateIds(): boolean {
   return valid;
 }
 
+function normalizeAgentMemory(value: unknown): AgentMemoryRecord | null {
+  if (!isRecord(value) || !isRecord(value.scope)) return null;
+  const memoryId = readStringField(value, "memoryId");
+  const actorId = readStringField(value.scope, "id");
+  const content = readStringField(value, "content");
+  if (!memoryId || !actorId.startsWith("agent:") || !content) return null;
+  return {
+    memoryId,
+    actorId,
+    kind: readStringField(value, "kind") || "note",
+    content,
+    createdAt: readStringField(value, "createdAt"),
+    status: readStringField(value, "status") || "active"
+  };
+}
+
+function extractMemoryItems(value: unknown): unknown[] {
+  if (!isRecord(value)) return [];
+  return Array.isArray(value.items) ? value.items : [];
+}
+
+function nextMemoryCursor(value: unknown): number | undefined {
+  if (!isRecord(value) || value.nextCursor === undefined) return undefined;
+  return typeof value.nextCursor === "number" && Number.isSafeInteger(value.nextCursor) && value.nextCursor >= 0
+    ? value.nextCursor
+    : undefined;
+}
+
+async function requestJson(path: string, options: RequestInit = {}): Promise<unknown> {
+  const headers = new Headers(options.headers);
+  headers.set("Accept", "application/json");
+  if (options.body !== undefined) headers.set("Content-Type", "application/json");
+  const response = await fetch(path, { ...options, headers });
+  if (!response.ok) throw new Error(await readError(response));
+  return response.json() as Promise<unknown>;
+}
+
+function localDateHeading(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "日期未知";
+  const now = new Date();
+  const day = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  if (day === today) return "今天";
+  if (day === today - 86_400_000) return "昨天";
+  return new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", day: "numeric" }).format(date);
+}
+
+function memoriesForActor(actorId: string): AgentMemoryRecord[] {
+  return Array.from(agentMemories.values())
+    .filter((record) => record.status === "active" && record.actorId === actorId)
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+}
+
+function renderAgentMemoryCard(card: HTMLElement, agent: AgentDraft): void {
+  const actorId = actorIdForAgent(agent);
+  const status = card.querySelector<HTMLElement>(".agent-memory-status");
+  const count = card.querySelector<HTMLElement>(".agent-memory-count");
+  const groups = card.querySelector<HTMLElement>(".agent-memory-groups");
+  const editor = card.querySelector<HTMLElement>(".agent-memory-editor");
+  const kind = card.querySelector<HTMLSelectElement>(".agent-memory-kind");
+  const input = card.querySelector<HTMLTextAreaElement>(".agent-memory-input");
+  const submit = card.querySelector<HTMLButtonElement>(".agent-memory-submit");
+  const banner = card.querySelector<HTMLElement>(".agent-memory-replace-banner");
+  const cancel = card.querySelector<HTMLButtonElement>(".agent-memory-replace-cancel");
+  if (!status || !count || !groups || !editor || !kind || !input || !submit || !banner || !cancel) {
+    throw new Error("Incomplete Agent memory template");
+  }
+  const records = memoriesForActor(actorId);
+  count.textContent = String(records.length);
+  groups.replaceChildren();
+  const available = snapshot?.runtimeActive === true && runtimeAgentIds.has(agent.id);
+  editor.hidden = !available;
+  if (!snapshot?.runtimeActive) {
+    status.textContent = "首次启动后可在这里管理这个 Agent 的独立记忆。";
+  } else if (!runtimeAgentIds.has(agent.id)) {
+    status.textContent = "这是新增或改名的 Agent；保存并重启后即可记录独立记忆。";
+  } else if (agentMemoriesLoading) {
+    status.textContent = "正在读取独立记忆…";
+  } else if (agentMemoriesError) {
+    status.textContent = agentMemoriesError;
+  } else if (records.length === 0) {
+    status.textContent = "还没有独立记忆。";
+  } else {
+    status.textContent = "只进入这个 Agent 的后续上下文，不会写入公共记忆。";
+  }
+
+  const byDate = new Map<string, AgentMemoryRecord[]>();
+  for (const record of records) {
+    const heading = localDateHeading(record.createdAt);
+    const group = byDate.get(heading) ?? [];
+    group.push(record);
+    byDate.set(heading, group);
+  }
+  for (const [heading, recordsForDate] of byDate) {
+    const section = document.createElement("section");
+    section.className = "agent-memory-date-group";
+    const title = document.createElement("h4");
+    title.textContent = heading;
+    const list = document.createElement("ul");
+    for (const record of recordsForDate) {
+      const item = document.createElement("li");
+      const meta = document.createElement("div");
+      meta.className = "agent-memory-record-meta";
+      const badge = document.createElement("span");
+      badge.textContent = record.kind;
+      const actions = document.createElement("span");
+      const replace = document.createElement("button");
+      replace.type = "button";
+      replace.textContent = "替换";
+      replace.addEventListener("click", () => {
+        replacingMemoryIds.set(actorId, record.memoryId);
+        kind.value = record.kind;
+        input.value = record.content;
+        banner.hidden = false;
+        submit.textContent = "保存替换";
+        input.focus();
+      });
+      const retract = document.createElement("button");
+      retract.type = "button";
+      retract.textContent = "移除";
+      let retractArmed = false;
+      let retractTimer: number | undefined;
+      retract.addEventListener("click", () => {
+        if (!retractArmed) {
+          retractArmed = true;
+          retract.textContent = "确认移除";
+          retractTimer = window.setTimeout(() => {
+            retractArmed = false;
+            retract.textContent = "移除";
+          }, 3_000);
+          return;
+        }
+        if (retractTimer !== undefined) window.clearTimeout(retractTimer);
+        void retractAgentMemory(record);
+      });
+      actions.append(replace, retract);
+      meta.append(badge, actions);
+      const content = document.createElement("p");
+      content.textContent = record.content;
+      item.append(meta, content);
+      list.append(item);
+    }
+    section.append(title, list);
+    groups.append(section);
+  }
+
+  cancel.onclick = () => {
+    replacingMemoryIds.delete(actorId);
+    banner.hidden = true;
+    submit.textContent = "保存记忆";
+    input.value = "";
+  };
+  submit.onclick = () => void saveAgentMemory(agent, { kind, input, submit, banner });
+}
+
+function refreshRenderedAgentMemoryCards(): void {
+  const cards = Array.from(agentList.querySelectorAll<HTMLElement>(".agent-editor-card"));
+  cards.forEach((card, index) => {
+    const agent = agents[index];
+    if (agent) renderAgentMemoryCard(card, agent);
+  });
+}
+
+async function loadAgentMemories(): Promise<void> {
+  if (agentMemoriesLoaded || agentMemoriesLoading || snapshot?.runtimeActive !== true) return;
+  agentMemoriesLoading = true;
+  refreshRenderedAgentMemoryCards();
+  try {
+    const values = await collectCursorPages(async (cursor) => {
+      const query = new URLSearchParams({ scopeType: "agent" });
+      if (cursor !== undefined) query.set("cursor", String(cursor));
+      const page = await requestJson(`/api/memory?${query.toString()}`);
+      const nextCursor = nextMemoryCursor(page);
+      return nextCursor === undefined
+        ? { items: extractMemoryItems(page) }
+        : { items: extractMemoryItems(page), nextCursor };
+    });
+    agentMemories.clear();
+    for (const value of values) {
+      const record = normalizeAgentMemory(value);
+      if (record) agentMemories.set(record.memoryId, record);
+    }
+    agentMemoriesLoaded = true;
+    agentMemoriesError = "";
+  } catch (error) {
+    agentMemoriesError = error instanceof Error ? `独立记忆读取失败：${error.message}` : "独立记忆读取失败";
+  } finally {
+    agentMemoriesLoading = false;
+    refreshRenderedAgentMemoryCards();
+  }
+}
+
+async function saveAgentMemory(
+  agent: AgentDraft,
+  controls: { kind: HTMLSelectElement; input: HTMLTextAreaElement; submit: HTMLButtonElement; banner: HTMLElement }
+): Promise<void> {
+  const actorId = actorIdForAgent(agent);
+  const content = controls.input.value.trim();
+  if (!content || !runtimeAgentIds.has(agent.id)) {
+    controls.input.focus();
+    return;
+  }
+  const replacingId = replacingMemoryIds.get(actorId);
+  const retryKey = replacingId
+    ? `setup-supersede:${replacingId}:${controls.kind.value}:${content}`
+    : `setup-memory:${actorId}:${controls.kind.value}:${content}`;
+  controls.submit.disabled = true;
+  try {
+    const response = await requestJson(
+      replacingId ? `/api/memory/${encodeURIComponent(replacingId)}/supersede` : "/api/memory",
+      {
+        method: "POST",
+        body: JSON.stringify(replacingId
+          ? { clientCommandId: retryableMemoryCommandId(retryKey, "setup-memory-replace"), kind: controls.kind.value, content }
+          : {
+              clientCommandId: retryableMemoryCommandId(retryKey, "setup-agent-memory"),
+              scope: { type: "agent", id: actorId },
+              subjectActorId: actorId,
+              kind: controls.kind.value,
+              content
+            })
+      }
+    );
+    const memory = isRecord(response) ? normalizeAgentMemory(response.memory) : null;
+    if (memory) {
+      if (replacingId) agentMemories.delete(replacingId);
+      agentMemories.set(memory.memoryId, memory);
+    }
+    memoryRetryIds.delete(retryKey);
+    replacingMemoryIds.delete(actorId);
+    controls.input.value = "";
+    controls.banner.hidden = true;
+    controls.submit.textContent = "保存记忆";
+    refreshRenderedAgentMemoryCards();
+  } catch (error) {
+    showError(error instanceof Error ? error.message : "保存 Agent 记忆失败");
+  } finally {
+    controls.submit.disabled = false;
+  }
+}
+
+async function retractAgentMemory(record: AgentMemoryRecord): Promise<void> {
+  const retryKey = `setup-retract:${record.memoryId}`;
+  try {
+    await requestJson(`/api/memory/${encodeURIComponent(record.memoryId)}/retract`, {
+      method: "POST",
+      body: JSON.stringify({ clientCommandId: retryableMemoryCommandId(retryKey, "setup-memory-retract") })
+    });
+    memoryRetryIds.delete(retryKey);
+    agentMemories.delete(record.memoryId);
+    replacingMemoryIds.delete(record.actorId);
+    refreshRenderedAgentMemoryCards();
+  } catch (error) {
+    showError(error instanceof Error ? error.message : "移除 Agent 记忆失败");
+  }
+}
+
 function renderAgents(): void {
   agentList.replaceChildren();
   agents.forEach((agent, index) => {
@@ -207,6 +511,7 @@ function renderAgents(): void {
       agent.id = idInput.value;
       validateDuplicateIds();
       updateCardHeading(card, agent);
+      renderAgentMemoryCard(card, agent);
     });
     nameInput.addEventListener("input", () => {
       agent.name = nameInput.value;
@@ -234,6 +539,7 @@ function renderAgents(): void {
       renderAgents();
     });
     card.classList.toggle("is-disabled", !agent.enabled);
+    renderAgentMemoryCard(card, agent);
     agentList.append(fragment);
   });
   validateDuplicateIds();
@@ -346,6 +652,8 @@ async function loadSetup(): Promise<void> {
     if (!response.ok) throw new Error(await readError(response));
     snapshot = await response.json() as SetupSnapshot;
     agents = snapshot.config.agents.map(cloneAgent);
+    runtimeAgentIds.clear();
+    for (const agent of snapshot.config.agents) runtimeAgentIds.add(agent.id);
     serverPort.value = String(snapshot.config.serverPort);
     storagePath.value = snapshot.config.storagePath;
     configPath.textContent = snapshot.configPath;
@@ -368,6 +676,7 @@ async function loadSetup(): Promise<void> {
     }
     loadingState.hidden = true;
     form.hidden = false;
+    void loadAgentMemories();
   } catch (error) {
     loadingState.hidden = true;
     form.hidden = false;

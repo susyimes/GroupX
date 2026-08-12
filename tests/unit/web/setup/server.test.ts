@@ -56,6 +56,7 @@ describe("standalone setup server", () => {
     await Promise.all([
       writeFile(path.join(directory, "setup.html"), "<!doctype html><title>Agent setup</title>"),
       writeFile(path.join(directory, "setup.js"), "document.body.dataset.setup = 'ready';"),
+      writeFile(path.join(directory, "pagination.js"), "export const marker = 'pagination';"),
       writeFile(path.join(directory, "setup.css"), "body { color: black; }")
     ]);
     const api = setupApi();
@@ -99,6 +100,7 @@ describe("standalone setup server", () => {
     });
     await expect(server.launchObserved).resolves.toBeUndefined();
     expect(await (await fetch(`${origin}/setup.js`)).text()).toContain("dataset.setup");
+    expect(await (await fetch(`${origin}/pagination.js`)).text()).toContain("pagination");
   });
 
   it("reports a bounded launch failure and rejects non-loopback redirect origins", async () => {

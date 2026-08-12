@@ -277,9 +277,9 @@ M1 UI 使用原生 HTML/CSS/TypeScript，避免在首版引入大型框架。
 
 布局：
 
-- 左侧：Codex/Grok/Kimi 状态、cwd、会话状态、能力与重启按钮；
+- 左侧：Agent 状态、cwd、会话状态、能力、重启按钮和可折叠的公共记忆；
 - 中间：群聊、发送者徽标、reply/forward、目标选择和取消；
-- 右侧：公共记忆、身份记忆；首版没有审批面板或批准/拒绝按钮；
+- Agent 设置：每个 Agent 的稳定身份与按日期分组的独立记忆；不保留右侧记忆栏；
 - 底部：composer，明确选择 `@codex/@grok/@kimi/@all`。
 
 UI 只根据 Envelope actor 渲染发送者，不解析正文决定头像或身份。

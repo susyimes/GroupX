@@ -99,7 +99,7 @@ interface AppState {
   transientText: Map<string, DeltaState>;
   replyToEventId: string | null;
   pendingSubmission: PendingSubmission | null;
-  replacing: { surface: "public" | "agent"; id: string } | null;
+  replacing: { id: string } | null;
   submitting: boolean;
 }
 
@@ -130,13 +130,10 @@ const TERMINAL_TURN_STATUSES = new Set(["completed", "failed", "cancelled", "int
 const COMPOSER_HINT = "Enter 发送 · Shift+Enter 换行";
 const DRAFT_STORAGE_KEY = "groupx:draft";
 const THEME_STORAGE_KEY = "groupx:theme";
-const CONTEXT_PANEL_STORAGE_KEY = "groupx:context-panel";
 const TIMELINE_MAX_ITEMS = 500;
 const TIMELINE_TRIM_BATCH = 100;
 const HEALTH_POLL_MS = 60_000;
 const BASE_TITLE = document.title;
-const CONTEXT_DRAWER_MEDIA = "(min-width: 761px) and (max-width: 1100px)";
-const CONTEXT_DESKTOP_MEDIA = "(min-width: 1101px)";
 
 const DOCUMENTED_EVENT_TYPES = [
   "groupx.event",
@@ -221,20 +218,12 @@ const memoryList = byId<HTMLUListElement>("memory-list");
 const memoryForm = byId<HTMLFormElement>("memory-form");
 const memoryKind = byId<HTMLSelectElement>("memory-kind");
 const memoryInput = byId<HTMLTextAreaElement>("memory-input");
-const agentMemoryGroups = byId<HTMLDivElement>("agent-memory-groups");
-const agentMemoryForm = byId<HTMLFormElement>("agent-memory-form");
-const agentMemoryActor = byId<HTMLSelectElement>("agent-memory-actor");
-const agentMemoryKind = byId<HTMLSelectElement>("agent-memory-kind");
-const agentMemoryInput = byId<HTMLTextAreaElement>("agent-memory-input");
 const memoryReplaceBanner = byId<HTMLDivElement>("memory-replace-banner");
-const agentMemoryReplaceBanner = byId<HTMLDivElement>("agent-memory-replace-banner");
 const memorySubmit = byId<HTMLButtonElement>("memory-submit");
-const agentMemorySubmit = byId<HTMLButtonElement>("agent-memory-submit");
+const publicMemoryCount = byId<HTMLSpanElement>("public-memory-count");
+const publicMemorySection = byId<HTMLDetailsElement>("public-memory-section");
 const themeToggle = byId<HTMLButtonElement>("theme-toggle");
 const targetPicker = byId<HTMLFieldSetElement>("target-picker");
-const appShell = byId<HTMLDivElement>("app");
-const contextPanel = byId<HTMLElement>("context-panel");
-const contextDrawerToggle = byId<HTMLButtonElement>("context-drawer-toggle");
 const runtimeProgress = byId<HTMLElement>("runtime-progress");
 const runtimeProgressTitle = byId<HTMLElement>("runtime-progress-title");
 const runtimeProgressDetail = byId<HTMLElement>("runtime-progress-detail");
@@ -263,8 +252,6 @@ let newWhileScrolledUp = 0;
 let lastTimelineDate = "";
 let trimmedItemCount = 0;
 let trimNoticeNode: HTMLLIElement | null = null;
-let desktopContextExpanded = readContextPanelPreference();
-let compactContextDrawerOpen = false;
 let runtimeProgressHideTimer: number | null = null;
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -1438,8 +1425,8 @@ function addRecordFromEnvelope(envelope: GroupXEnvelope, identity: boolean): voi
     return;
   }
   // Identity records remain a supported compatibility/API data class, but are
-  // deliberately no longer exposed in the right-hand editor. Stable identity
-  // is configured per Agent in /setup.
+  // deliberately no longer exposed in the room UI. Stable identity and
+  // per-Agent memory are configured together in /setup.
   if (identity) {
     renderRecordActivity(envelope, record, true);
     return;
@@ -1459,7 +1446,7 @@ function addRecordFromEnvelope(envelope: GroupXEnvelope, identity: boolean): voi
     }
     target.set(record.id, record);
   }
-  renderMemorySurfaces();
+  renderPublicMemoryRecords();
   renderRecordActivity(envelope, record, false);
 }
 
@@ -1575,22 +1562,6 @@ function renderTargetPicker(): void {
   }
 }
 
-/** Keep the per-Agent memory scope select in sync with the configured roster. */
-function renderAgentMemoryActorOptions(): void {
-  const previous = agentMemoryActor.value;
-  agentMemoryActor.replaceChildren();
-  for (const agent of orderedAgents()) {
-    const option = document.createElement("option");
-    option.value = agent.actorId;
-    option.textContent = agent.displayName;
-    agentMemoryActor.append(option);
-  }
-  if (previous && selectHasOption(agentMemoryActor, previous)) {
-    agentMemoryActor.value = previous;
-  }
-  renderAgentMemoryRecords();
-}
-
 function renderAgents(): void {
   agentList.replaceChildren();
   const ordered = orderedAgents();
@@ -1650,7 +1621,6 @@ function renderAgents(): void {
   }
   agentCount.textContent = `${available} / ${ordered.length}`;
   renderTargetPicker();
-  renderAgentMemoryActorOptions();
   syncTargetAvailability();
 }
 
@@ -1702,38 +1672,18 @@ function selectHasOption(select: HTMLSelectElement, value: string): boolean {
   return Array.from(select.options).some((option) => option.value === value);
 }
 
-type MemorySurface = "public" | "agent";
-
-function enterReplaceMode(surface: MemorySurface, record: RecordView): void {
-  state.replacing = { surface, id: record.id };
-  if (surface === "agent") {
-    if (selectHasOption(agentMemoryActor, record.scopeId)) agentMemoryActor.value = record.scopeId;
-    if (selectHasOption(agentMemoryKind, record.kind)) agentMemoryKind.value = record.kind;
-    agentMemoryActor.disabled = true;
-    agentMemoryInput.value = record.content;
-    activateContextTab("agent-memory");
-    agentMemoryReplaceBanner.hidden = false;
-    agentMemorySubmit.textContent = "保存替换";
-    agentMemoryInput.focus();
-    return;
-  }
+function enterReplaceMode(record: RecordView): void {
+  state.replacing = { id: record.id };
   if (selectHasOption(memoryKind, record.kind)) memoryKind.value = record.kind;
   memoryInput.value = record.content;
-  activateContextTab("public-memory");
+  publicMemorySection.open = true;
   memoryReplaceBanner.hidden = false;
   memorySubmit.textContent = "保存替换";
   memoryInput.focus();
 }
 
-function exitReplaceMode(surface: MemorySurface): void {
-  if (state.replacing?.surface === surface) state.replacing = null;
-  if (surface === "agent") {
-    agentMemoryReplaceBanner.hidden = true;
-    agentMemorySubmit.textContent = "保存到 Agent";
-    agentMemoryActor.disabled = false;
-    agentMemoryInput.value = "";
-    return;
-  }
+function exitReplaceMode(): void {
+  state.replacing = null;
   memoryReplaceBanner.hidden = true;
   memorySubmit.textContent = "固定到房间";
   memoryInput.value = "";
@@ -1749,8 +1699,8 @@ async function retractRecord(recordId: string): Promise<void> {
     });
     retryCommandIds.delete(retryKey);
     state.memories.delete(recordId);
-    if (state.replacing?.id === recordId) exitReplaceMode(state.replacing.surface);
-    renderMemorySurfaces();
+    if (state.replacing?.id === recordId) exitReplaceMode();
+    renderPublicMemoryRecords();
   } catch (error) {
     showGlobalError(errorMessage(error));
   }
@@ -1781,19 +1731,13 @@ function wireRetractButton(button: HTMLButtonElement, recordId: string): void {
   });
 }
 
-function activeMemories(surface: MemorySurface): RecordView[] {
-  const actorId = agentMemoryActor.value;
+function activePublicMemories(): RecordView[] {
   return Array.from(state.memories.values())
-    .filter((record) =>
-      record.status === "active" &&
-      (surface === "public"
-        ? record.scopeType === "room" && record.scopeId === state.roomId
-        : record.scopeType === "agent" && record.scopeId === actorId)
-    )
+    .filter((record) => record.status === "active" && record.scopeType === "room" && record.scopeId === state.roomId)
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
 }
 
-function createRecordCard(record: RecordView, surface: MemorySurface): HTMLLIElement {
+function createRecordCard(record: RecordView): HTMLLIElement {
     const item = document.createElement("li");
     item.className = "record-card";
     item.dataset.recordId = record.id;
@@ -1819,7 +1763,7 @@ function createRecordCard(record: RecordView, surface: MemorySurface): HTMLLIEle
     replace.type = "button";
     replace.className = "text-button";
     replace.textContent = "替换";
-    replace.addEventListener("click", () => enterReplaceMode(surface, record));
+    replace.addEventListener("click", () => enterReplaceMode(record));
     const retract = document.createElement("button");
     retract.type = "button";
     retract.className = "text-button danger-text";
@@ -1832,51 +1776,9 @@ function createRecordCard(record: RecordView, surface: MemorySurface): HTMLLIEle
 }
 
 function renderPublicMemoryRecords(): void {
-  memoryList.replaceChildren(...activeMemories("public").map((record) => createRecordCard(record, "public")));
-}
-
-function recordDateHeading(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "日期未知";
-  const relative = dateDividerLabel(date);
-  if (relative === "今天" || relative === "昨天") return relative;
-  return new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", day: "numeric" }).format(date);
-}
-
-function renderAgentMemoryRecords(): void {
-  agentMemoryGroups.replaceChildren();
-  const records = activeMemories("agent");
-  if (records.length === 0) {
-    const empty = document.createElement("p");
-    empty.className = "memory-empty";
-    empty.textContent = agentMemoryActor.value ? "这个 Agent 还没有独立记忆" : "请先配置一个 Agent";
-    agentMemoryGroups.append(empty);
-    return;
-  }
-  const groups = new Map<string, RecordView[]>();
-  for (const record of records) {
-    const key = recordDateHeading(record.createdAt);
-    const group = groups.get(key) ?? [];
-    group.push(record);
-    groups.set(key, group);
-  }
-  for (const [heading, group] of groups) {
-    const section = document.createElement("section");
-    section.className = "memory-date-group";
-    const title = document.createElement("h3");
-    title.className = "memory-date-heading";
-    title.textContent = heading;
-    const list = document.createElement("ul");
-    list.className = "record-list";
-    list.append(...group.map((record) => createRecordCard(record, "agent")));
-    section.append(title, list);
-    agentMemoryGroups.append(section);
-  }
-}
-
-function renderMemorySurfaces(): void {
-  renderPublicMemoryRecords();
-  renderAgentMemoryRecords();
+  const records = activePublicMemories();
+  memoryList.replaceChildren(...records.map(createRecordCard));
+  publicMemoryCount.textContent = String(records.length);
 }
 
 function extractCollection(value: unknown, keys: string[]): unknown[] {
@@ -1909,18 +1811,18 @@ function nextCursorFromPage(value: unknown): number | undefined {
   return value.nextCursor;
 }
 
-function recordPagePath(path: "/api/memory" | "/api/identity", cursor: number | undefined): string {
-  if (cursor === undefined) {
-    return path;
+function publicMemoryPagePath(cursor: number | undefined): string {
+  const query = new URLSearchParams({ scopeType: "room", scopeId: state.roomId });
+  if (cursor !== undefined) {
+    query.set("cursor", String(cursor));
   }
-  const query = new URLSearchParams({ cursor: String(cursor) });
-  return `${path}?${query.toString()}`;
+  return `/api/memory?${query.toString()}`;
 }
 
 async function loadMemoryRecords(): Promise<void> {
   try {
     const records = await collectCursorPages(async (cursor) => {
-      const response = await requestJson<unknown>(recordPagePath("/api/memory", cursor));
+      const response = await requestJson<unknown>(publicMemoryPagePath(cursor));
       const items = extractCollection(response, ["memory", "memories", "records", "items"]);
       const nextCursor = nextCursorFromPage(response);
       return nextCursor === undefined ? { items } : { items, nextCursor };
@@ -1931,7 +1833,7 @@ async function loadMemoryRecords(): Promise<void> {
         state.memories.set(record.id, record);
       }
     }
-    renderMemorySurfaces();
+    renderPublicMemoryRecords();
   } catch (error) {
     if (!(error instanceof ApiFailure) || error.status !== 404) {
       showGlobalError(errorMessage(error));
@@ -2022,7 +1924,7 @@ async function submitMemory(): Promise<void> {
     memoryInput.focus();
     return;
   }
-  const replacing = state.replacing?.surface === "public" ? state.replacing : null;
+  const replacing = state.replacing;
   memorySubmit.disabled = true;
   const retryKey = replacing
     ? `supersede-memory:${replacing.id}:${memoryKind.value}:${content}`
@@ -2056,12 +1958,12 @@ async function submitMemory(): Promise<void> {
         state.memories.delete(replacing.id);
       }
       state.memories.set(memory.id, memory);
-      renderMemorySurfaces();
+      renderPublicMemoryRecords();
     }
     retryCommandIds.delete(retryKey);
     memoryInput.value = "";
     if (replacing) {
-      exitReplaceMode("public");
+      exitReplaceMode();
     }
   } catch (error) {
     showGlobalError(errorMessage(error));
@@ -2070,125 +1972,11 @@ async function submitMemory(): Promise<void> {
   }
 }
 
-async function submitAgentMemory(): Promise<void> {
-  const content = agentMemoryInput.value.trim();
-  if (!content) {
-    agentMemoryInput.focus();
-    return;
-  }
-  const actorId = agentMemoryActor.value;
-  if (!actorId) {
-    agentMemoryActor.focus();
-    return;
-  }
-  const replacing = state.replacing?.surface === "agent" ? state.replacing : null;
-  agentMemorySubmit.disabled = true;
-  const retryKey = replacing
-    ? `supersede-memory:${replacing.id}:${agentMemoryKind.value}:${content}`
-    : `memory:${actorId}:${agentMemoryKind.value}:${content}`;
-  try {
-    const response = await requestJson<unknown>(
-      replacing
-        ? `/api/memory/${encodeURIComponent(replacing.id)}/supersede`
-        : "/api/memory",
-      {
-        method: "POST",
-        body: JSON.stringify(
-          replacing
-            ? {
-                clientCommandId: retryableCommandId(retryKey, "web-supersede"),
-                kind: agentMemoryKind.value,
-                content,
-              }
-            : {
-                clientCommandId: retryableCommandId(retryKey, "web-memory"),
-                scope: { type: "agent", id: actorId },
-                subjectActorId: actorId,
-                kind: agentMemoryKind.value,
-                content,
-              }
-        ),
-      }
-    );
-    const memory = isRecord(response) ? normalizeRecord(response.memory, false) : null;
-    if (memory) {
-      if (replacing) {
-        state.memories.delete(replacing.id);
-      }
-      state.memories.set(memory.id, memory);
-      renderMemorySurfaces();
-    }
-    retryCommandIds.delete(retryKey);
-    agentMemoryInput.value = "";
-    if (replacing) {
-      exitReplaceMode("agent");
-    }
-  } catch (error) {
-    showGlobalError(errorMessage(error));
-  } finally {
-    agentMemorySubmit.disabled = false;
-  }
-}
-
 function syncTargetAll(): void {
   const selectableTargets = targetInputs().filter((input) => state.agents.get(input.value)?.enabled !== false);
   targetAll.checked = selectableTargets.length > 0 && selectableTargets.every((input) => input.checked);
   targetAll.indeterminate = selectableTargets.some((input) => input.checked) && !targetAll.checked;
   targetAll.disabled = state.submitting || selectableTargets.length === 0;
-}
-
-function activateContextTab(tabId: "public-memory" | "agent-memory"): void {
-  const tabs = ["public-memory", "agent-memory"] as const;
-  for (const name of tabs) {
-    const tab = byId<HTMLButtonElement>(`${name}-tab`);
-    const panel = byId<HTMLElement>(`${name}-panel`);
-    const active = name === tabId;
-    tab.classList.toggle("is-active", active);
-    tab.setAttribute("aria-selected", String(active));
-    panel.hidden = !active;
-  }
-}
-
-function readContextPanelPreference(): boolean {
-  try {
-    return localStorage.getItem(CONTEXT_PANEL_STORAGE_KEY) === "expanded";
-  } catch {
-    return false;
-  }
-}
-
-function persistContextPanelPreference(): void {
-  try {
-    localStorage.setItem(CONTEXT_PANEL_STORAGE_KEY, desktopContextExpanded ? "expanded" : "collapsed");
-  } catch {
-    // localStorage may be unavailable; the current layout still works for this page load
-  }
-}
-
-function applyContextPanelState(): void {
-  const desktop = window.matchMedia(CONTEXT_DESKTOP_MEDIA).matches;
-  const drawer = window.matchMedia(CONTEXT_DRAWER_MEDIA).matches;
-  const open = desktop ? desktopContextExpanded : drawer ? compactContextDrawerOpen : true;
-
-  appShell.classList.toggle("context-is-collapsed", desktop && !open);
-  contextPanel.classList.toggle("is-open", (desktop || drawer) && open);
-  contextPanel.inert = !open;
-  contextPanel.setAttribute("aria-hidden", String(!open));
-  contextDrawerToggle.classList.toggle("is-open", open);
-  contextDrawerToggle.setAttribute("aria-expanded", String(open));
-  const label = open ? "收起记忆面板" : "展开记忆面板";
-  contextDrawerToggle.setAttribute("aria-label", label);
-  contextDrawerToggle.title = label;
-}
-
-function setContextDrawerOpen(open: boolean): void {
-  if (window.matchMedia(CONTEXT_DESKTOP_MEDIA).matches) {
-    desktopContextExpanded = open;
-    persistContextPanelPreference();
-  } else if (window.matchMedia(CONTEXT_DRAWER_MEDIA).matches) {
-    compactContextDrawerOpen = open;
-  }
-  applyContextPanelState();
 }
 
 function supportedEventTypesFromBootstrap(bootstrap: JsonRecord): string[] {
@@ -2319,7 +2107,7 @@ function connectEventSource(extraTypes: string[] = []): void {
 async function bootstrap(): Promise<void> {
   setConnection("bootstrapping");
   renderAgents();
-  renderMemorySurfaces();
+  renderPublicMemoryRecords();
   try {
     const decoded = await requestJson<unknown>("/api/bootstrap");
     if (!isRecord(decoded)) {
@@ -2359,7 +2147,7 @@ async function bootstrap(): Promise<void> {
         state.memories.set(record.id, record);
       }
     }
-    renderMemorySurfaces();
+    renderPublicMemoryRecords();
 
     const throughSeq = readNumberField(room, "throughSeq") ?? readNumberField(decoded, "throughSeq") ?? 0;
     if (Number.isSafeInteger(throughSeq) && throughSeq >= 0) {
@@ -2445,55 +2233,8 @@ memoryForm.addEventListener("submit", (event) => {
   void submitMemory();
 });
 
-agentMemoryForm.addEventListener("submit", (event) => {
-  event.preventDefault();
-  void submitAgentMemory();
-});
-
-for (const tabId of ["public-memory", "agent-memory"] as const) {
-  byId<HTMLButtonElement>(`${tabId}-tab`).addEventListener("click", () => activateContextTab(tabId));
-}
-agentMemoryActor.addEventListener("change", () => {
-  if (state.replacing?.surface === "agent") exitReplaceMode("agent");
-  renderAgentMemoryRecords();
-});
-
-contextDrawerToggle.addEventListener("click", () => {
-  setContextDrawerOpen(contextDrawerToggle.getAttribute("aria-expanded") !== "true");
-});
-
-document.addEventListener("pointerdown", (event) => {
-  if (
-    !window.matchMedia(CONTEXT_DRAWER_MEDIA).matches ||
-    !contextPanel.classList.contains("is-open") ||
-    !(event.target instanceof Node) ||
-    contextPanel.contains(event.target) ||
-    contextDrawerToggle.contains(event.target)
-  ) {
-    return;
-  }
-  setContextDrawerOpen(false);
-});
-
-document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && contextPanel.classList.contains("is-open")) {
-    setContextDrawerOpen(false);
-    contextDrawerToggle.focus();
-  }
-});
-
-window.addEventListener("resize", () => {
-  if (!window.matchMedia(CONTEXT_DRAWER_MEDIA).matches) {
-    compactContextDrawerOpen = false;
-  }
-  applyContextPanelState();
-});
-
 byId<HTMLButtonElement>("memory-replace-cancel").addEventListener("click", () => {
-  exitReplaceMode("public");
-});
-byId<HTMLButtonElement>("agent-memory-replace-cancel").addEventListener("click", () => {
-  exitReplaceMode("agent");
+  exitReplaceMode();
 });
 
 document.addEventListener("visibilitychange", () => {
@@ -2535,7 +2276,6 @@ themeToggle.addEventListener("click", () => {
 });
 
 initTheme();
-applyContextPanelState();
 restoreDraft();
 updateCharacterCount();
 autoresizeComposer();
