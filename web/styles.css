@@ -191,6 +191,7 @@
 html,
 body {
   min-width: 320px;
+  height: 100%;
   min-height: 100%;
   margin: 0;
   background:
@@ -202,7 +203,10 @@ body {
 }
 
 body {
+  height: 100vh;
+  height: 100dvh;
   min-height: 100vh;
+  min-height: 100dvh;
   overflow: hidden;
 }
 
@@ -283,8 +287,11 @@ input:disabled {
   display: grid;
   grid-template-columns: var(--agents-column-width) minmax(0, 1fr) var(--context-column-width);
   grid-template-rows: 60px minmax(0, 1fr);
-  min-height: 100vh;
-  max-height: 100vh;
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  max-height: none;
+  overflow: hidden;
 }
 
 .app-header {
@@ -475,6 +482,10 @@ input:disabled {
 .conversation-panel {
   min-width: 0;
   min-height: 0;
+}
+
+.conversation-panel {
+  overflow: hidden;
 }
 
 .side-panel {
@@ -762,17 +773,19 @@ input:disabled {
 /* ------------------------------------------------------------- timeline */
 
 .conversation-panel {
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  display: flex;
+  flex-direction: column;
   background: var(--conversation-bg);
 }
 
 .conversation-heading {
+  flex: 0 0 auto;
   padding: 14px var(--conversation-gutter) 8px;
 }
 
 .runtime-progress {
   display: grid;
+  flex: 0 0 auto;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
@@ -876,6 +889,8 @@ input:disabled {
 
 .timeline {
   display: flex;
+  flex: 1 1 0;
+  min-height: 0;
   flex-direction: column;
   gap: 3px;
   padding: 8px var(--conversation-gutter) 26px;
@@ -1518,6 +1533,8 @@ input:disabled {
 
 .composer {
   z-index: 3;
+  flex: 0 0 auto;
+  min-width: 0;
   padding: 10px var(--conversation-gutter) 12px;
   border-top: 1px solid var(--line);
   background: var(--glass-bg);
@@ -1526,15 +1543,21 @@ input:disabled {
 
 .target-picker {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 7px;
-  padding: 0;
+  max-width: 100%;
+  padding: 0 0 3px;
   margin: 0 0 9px;
+  overflow-x: auto;
+  overflow-y: hidden;
   border: 0;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
 }
 
 .target-picker legend {
   float: left;
+  flex: 0 0 auto;
   padding: 7px 8px 0 0;
   color: var(--subtle);
   font-size: 0.66rem;
@@ -1543,6 +1566,7 @@ input:disabled {
 .target-chip {
   position: relative;
   display: inline-flex;
+  flex: 0 0 auto;
 }
 
 .target-chip input {
@@ -2120,19 +2144,23 @@ input:disabled {
 
 @media (max-width: 760px) {
   body {
-    overflow: auto;
+    overflow: hidden;
   }
 
   .app-shell {
-    display: flex;
-    min-height: 100vh;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 56px auto minmax(0, 1fr);
+    height: 100vh;
+    height: 100dvh;
+    min-height: 0;
     max-height: none;
-    flex-direction: column;
   }
 
   .app-header {
-    position: sticky;
-    top: 0;
+    position: relative;
+    grid-column: 1;
+    grid-row: 1;
     min-height: 56px;
     padding: 0 14px;
   }
@@ -2153,7 +2181,10 @@ input:disabled {
   }
 
   .agents-panel {
+    grid-column: 1;
+    grid-row: 2;
     padding: 12px 14px;
+    overflow: hidden;
     border-right: 0;
     border-bottom: 1px solid var(--line);
   }
@@ -2175,8 +2206,9 @@ input:disabled {
   }
 
   .conversation-panel {
-    flex: 1 1 auto;
-    min-height: 640px;
+    grid-column: 1;
+    grid-row: 3;
+    min-height: 0;
   }
 
   .conversation-heading {
@@ -2184,7 +2216,7 @@ input:disabled {
   }
 
   .timeline {
-    min-height: 360px;
+    min-height: 0;
     padding-right: 14px;
     padding-left: 14px;
   }
@@ -2197,24 +2229,19 @@ input:disabled {
   }
 
   .composer {
-    position: sticky;
-    bottom: 0;
+    position: relative;
     padding: 10px 12px;
   }
 
   .context-panel {
-    position: static;
-    width: auto;
-    min-height: 420px;
+    top: 56px;
+    width: min(360px, calc(100vw - 32px));
+    min-height: 0;
     padding: 16px 14px;
-    border-top: 1px solid var(--line);
-    border-left: 0;
-    box-shadow: none;
-    transform: none;
   }
 
-  .context-drawer-toggle {
-    display: none;
+  .context-drawer-toggle.is-open {
+    right: min(360px, calc(100vw - 32px));
   }
 
   .context-tabs {
