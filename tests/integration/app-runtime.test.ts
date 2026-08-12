@@ -93,6 +93,7 @@ class RuntimeAdapter implements CliAdapter {
 
 function config(transport: "direct" | "structured"): GroupXConfig {
   const agent = (name: string, enabled: boolean) => ({
+    driver: name as "codex" | "grok" | "kimi",
     command: {
       executable: process.execPath,
       prefixArgs: [path.resolve(`fixture-${name}.mjs`)]

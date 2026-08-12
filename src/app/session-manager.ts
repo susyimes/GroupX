@@ -6,7 +6,7 @@ import { GroupXError, toGroupXError } from "../core/errors.js";
 import { McpBindingRegistry } from "../mcp/binding-registry.js";
 import type { GroupXStore, RuntimeRecoveryResult } from "../storage/types.js";
 
-export type ManagedAgentId = "codex" | "grok" | "kimi";
+export type ManagedAgentId = string;
 
 export type SessionManagerState = "idle" | "starting" | "ready" | "closing" | "closed";
 
@@ -49,22 +49,11 @@ interface ManagedSession {
   mcpRegistered: boolean;
 }
 
-const AGENT_IDS = ["codex", "grok", "kimi"] as const satisfies readonly ManagedAgentId[];
-
-function defaultProtocol(agentId: ManagedAgentId, transport: TransportMode): string {
-  if (transport === "direct") return "direct-jsonl";
-  return agentId === "codex" ? "codex-app-server-stdio-jsonrpc-v2" : "acp";
-}
-
 function defaultIdFactory(kind: "instance" | "binding", agentId: ManagedAgentId): string {
   return createId(`${kind}_${agentId}`);
 }
 
-function isManagedAgentId(value: AdapterId): value is ManagedAgentId {
-  return value === "codex" || value === "grok" || value === "kimi";
-}
-
-/** Owns one selected-transport runtime session for each enabled built-in Agent. */
+/** Owns one selected-transport runtime session for each enabled configured Agent. */
 export class AgentSessionManager {
   readonly #config: SessionManagerOptions["config"];
   readonly #store: GroupXStore;
@@ -85,7 +74,14 @@ export class AgentSessionManager {
     this.#adapters = options.adapters;
     this.#mcpBindings = options.mcpBindings;
     this.#idFactory = options.idFactory ?? defaultIdFactory;
-    this.#protocolFor = options.protocolFor ?? defaultProtocol;
+    this.#protocolFor =
+      options.protocolFor ??
+      ((agentId, transport) => {
+        if (transport === "direct") return "direct-jsonl";
+        return this.#config.agents[agentId]?.driver === "codex"
+          ? "codex-app-server-stdio-jsonrpc-v2"
+          : "acp";
+      });
     this.#closeTimeoutMs = options.closeTimeoutMs ?? options.config.timeouts.closeMs;
     if (!Number.isSafeInteger(this.#closeTimeoutMs) || this.#closeTimeoutMs < 1) {
       throw new RangeError("closeTimeoutMs must be a positive integer");
@@ -134,13 +130,14 @@ export class AgentSessionManager {
       const adapter = binding
         ? this.#adapters.list().find((candidate) => candidate.actorId === binding.actorId)
         : undefined;
+      const configured = adapter ? this.#config.agents[adapter.adapterId] : undefined;
       if (
         !binding?.nativeSessionId ||
         binding.transport !== this.#config.transport ||
         !adapter ||
-        !isManagedAgentId(adapter.adapterId) ||
+        configured === undefined ||
         nativeSessionIds[adapter.adapterId] !== undefined ||
-        binding.capabilities.cwd !== this.#config.agents[adapter.adapterId].cwd
+        binding.capabilities.cwd !== configured.cwd
       ) {
         continue;
       }
@@ -159,8 +156,8 @@ export class AgentSessionManager {
     this.#state = "starting";
     const started: ManagedSession[] = [];
     try {
-      for (const agentId of AGENT_IDS) {
-        if (!this.#config.agents[agentId].enabled) continue;
+      for (const [agentId, agent] of Object.entries(this.#config.agents)) {
+        if (!agent.enabled) continue;
         const managed = await this.#startAgent(agentId, input.nativeSessionIds?.[agentId]);
         started.push(managed);
       }
@@ -269,6 +266,9 @@ export class AgentSessionManager {
   ): Promise<ManagedSession> {
     const adapter = this.#adapters.get(agentId);
     const configured = this.#config.agents[agentId];
+    if (configured === undefined) {
+      throw new GroupXError("ADAPTER_NOT_FOUND", `No configured agent: ${agentId}`);
+    }
     const instanceId = this.#idFactory("instance", agentId);
     const bindingId = this.#idFactory("binding", agentId);
     const protocol = this.#protocolFor(agentId, this.#config.transport);
@@ -395,6 +395,9 @@ export class AgentSessionManager {
     bindingId: string
   ): LaunchProfile {
     const configured = this.#config.agents[agentId];
+    if (configured === undefined) {
+      throw new GroupXError("ADAPTER_NOT_FOUND", `No configured agent: ${agentId}`);
+    }
     return {
       command: configured.command.executable,
       prefixArgs: configured.command.prefixArgs,

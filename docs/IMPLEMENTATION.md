@@ -416,7 +416,7 @@ CONTEXT_BUDGET_EXCEEDED
 
 ## 10. 配置合同
 
-首版 GroupX 配置只描述 transport、本地运行位置、存储、资源边界和三个 CLI 的可执行文件位置：
+首版 GroupX 配置只描述 transport、本地运行位置、存储、资源边界和房间 Agent 名册：
 
 ```json
 {
@@ -431,14 +431,17 @@ CONTEXT_BUDGET_EXCEEDED
   "agents": {
     "codex": { "command": "codex", "cwd": "D:\\GroupX" },
     "grok": { "command": "grok", "cwd": "D:\\GroupX" },
-    "kimi": { "enabled": true, "command": "kimi", "cwd": "D:\\GroupX" }
+    "kimi": { "enabled": true, "command": "kimi", "cwd": "D:\\GroupX", "name": "小K" },
+    "rex": { "driver": "kimi", "command": "kimi", "cwd": "D:\\GroupX", "name": "小R" }
   }
 }
 ```
 
-公开 `transport` 配置只接受 `structured`；`direct` 会在解析和 runtime construction 阶段明确失败。message/Turn API 不允许覆盖。运行态公开 Structured、版本、健康状态和 capability snapshot。
+`agents` map 是显式房间名册：键即 agent id(actor 为 `agent:<id>`),写了哪些就启动哪些，缺省整个 `agents` 字段时等价于 codex/grok/kimi 三个内置 Agent。内置 id 的 `driver` 默认同名；自定义 id 必须显式声明 `driver: codex | grok | kimi`,driver 决定 native CLI 家族、固定 argv/session 合同与命令解析方式。同一 driver 允许挂多个 agent 实例(各自独立长驻 session)。`name` 是可选显示名:runtime 启动时把它 upsert 进 actors 表，Web UI 的目标 chips、Agent 卡片与身份记忆下拉都按名册动态渲染;内置 id 未配 `name` 时沿用内置种子名。agent id 只允许字母数字开头结尾的 `A-Za-z0-9._-`(≤64 字符),名册至少一个 agent。
 
-Agent `enabled` 默认 true。Kimi enabled 时，在 ACP process spawn 前读取 `$KIMI_CODE_HOME/config.toml`（fallback `~/.kimi-code/config.toml`）并只投影 `default_permission_mode` 与 `default_plan_mode`；前者必须为 `yolo|auto`，后者有效值必须为 `false`。失败返回 `ADAPTER_START_FAILED`；不自动禁用 Kimi、不切 transport、不写配置。
+公开 `transport` 配置只接受 `structured`;`direct` 会在解析和 runtime construction 阶段明确失败。message/Turn API 不允许覆盖。运行态公开 Structured、版本、健康状态和 capability snapshot。
+
+Agent `enabled` 默认 true;`enabled: false` 的 agent 不建 Adapter、不进名册 UI。Kimi driver enabled 时,在 ACP process spawn 前读取 `$KIMI_CODE_HOME/config.toml`(fallback `~/.kimi-code/config.toml`)并只投影 `default_permission_mode` 与 `default_plan_mode`;前者必须为 `yolo|auto`,后者有效值必须为 `false`。失败返回 `ADAPTER_START_FAILED`;不自动禁用 Kimi、不切 transport、不写配置。
 
 公开配置没有 `access` 字段。`access` 在 v0.1 内部恒为 unrestricted；Adapter 根据 Agent + transport 生成固定 argv/session mode。用户不能通过 `extraArgs` 改写、删除或替换这些访问参数。
 
@@ -453,7 +456,7 @@ type CommandSpec = {
 
 Windows 上 npm shim 不能假设可由 `shell:false` 直接启动。启动阶段必须把 `codex`/`kimi` 等逻辑名称解析为实际 executable（必要时为 `node.exe`）和 JS entrypoint prefix；Grok 可解析为原生 exe。公开 object 只允许 `{executable,prefixArgs}`：`prefixArgs` 必须为空，或在 executable 是 Node 时只含一个现存的 `.js/.mjs/.cjs` CLI entrypoint，禁止 `--*` native flags、多参数和 shell wrapper。`wrapperPrefixArgs`、`extraArgs`、任意 env/policy 参数仍必须拒绝，不能成为改写 fixed profile 的入口。
 
-为保持首版接口简单，M0 不开放通用 `extraArgs` 或 env dump。三个 Adapter 只生成固定 transport argv、固定 native unrestricted 参数，以及 Structured 下已验证的 GroupX MCP 连接配置。除这些产品常量外，不追加 model、workspace、account 或任意 tool policy 覆盖。
+为保持首版接口简单，M0 不开放通用 `extraArgs` 或 env dump。每个 driver 的 Adapter 只生成固定 transport argv、固定 native unrestricted 参数，以及 Structured 下已验证的 GroupX MCP 连接配置。除这些产品常量外，不追加 model、workspace、account 或任意 tool policy 覆盖。
 
 子进程：
 
@@ -469,45 +472,29 @@ Windows 上 npm shim 不能假设可由 `shell:false` 直接启动。启动阶�
 D:\GroupX
 ├─ README.md
 ├─ AGENTS.md
-├─ package.json
+├─ package.json                  # @susyimes/groupx;bin: groupx → dist/src/cli.js
 ├─ src
-│  ├─ main.ts
-│  ├─ core
-│  │  ├─ broker.ts
-│  │  ├─ dispatcher.ts
-│  │  ├─ envelope.ts
-│  │  ├─ identity-binding.ts
-│  │  └─ errors.ts
-│  ├─ supervisor
-│  │  └─ process-supervisor.ts
-│  ├─ adapters
-│  │  ├─ types.ts
-│  │  ├─ direct
-│  │  │  ├─ codex-cli.ts
-│  │  │  ├─ grok-cli.ts
-│  │  │  └─ kimi-cli.ts
-│  │  ├─ structured
-│  │  │  ├─ codex-app-server.ts
-│  │  │  ├─ grok-acp.ts
-│  │  │  └─ kimi-acp.ts
-│  ├─ storage
-│  │  ├─ store.ts
-│  │  ├─ sqlite-store.ts
-│  │  └─ migrations
-│  ├─ memory
-│  │  ├─ service.ts
-│  │  └─ context-packet.ts
-│  ├─ mcp                         # Structured 当前回合主动互调
-│  │  └─ server.ts
+│  ├─ cli.ts                     # groupx start/doctor/init 命令入口
+│  ├─ main.ts                    # Broker 启动(被 cli.ts 复用)
+│  ├─ config.ts                  # transport/server/storage/agents 名册 schema
+│  ├─ core                       # envelope / dispatcher / identity-binding / errors
+│  ├─ launch                     # command-spec:跨平台 shell-free 命令解析
+│  ├─ app                        # runtime / session-manager / adapter-factory / doctor / init-config
+│  ├─ adapters                   # codex app-server、acp(grok/kimi)、direct(deprecated)
+│  ├─ broker
+│  ├─ storage                    # sqlite-store(WAL)
+│  ├─ memory                     # 公共/身份记忆与 context packet
+│  ├─ mcp                        # Structured 当前回合主动互调
+│  ├─ m0                         # release Gate 探针与矩阵
+│  ├─ supervisor                 # jsonline-process
+│  ├─ utils                      # async-queue / open-browser
 │  ├─ observability
-│  │  ├─ diagnostic-summary.ts
-│  │  └─ metrics.ts
-│  └─ web
-│     ├─ api.ts
-│     └─ sse.ts
-├─ web
+│  └─ web                        # server(REST + 静态资源)与 sse
+├─ web                           # 零依赖原生 ESM 前端
 │  ├─ index.html
 │  ├─ app.ts
+│  ├─ rich-text.ts
+│  ├─ pagination.ts
 │  └─ styles.css
 ├─ tests
 │  ├─ fixtures

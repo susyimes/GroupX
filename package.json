@@ -1,12 +1,39 @@
 {
-  "name": "groupx",
+  "name": "@susyimes/groupx",
   "version": "0.1.0",
-  "private": true,
   "description": "Local transparent group-chat broker for Codex, Grok, and Kimi CLIs",
   "type": "module",
+  "main": "dist/src/main.js",
+  "bin": {
+    "groupx": "dist/src/cli.js"
+  },
+  "files": [
+    "dist/src",
+    "dist/web"
+  ],
   "engines": {
     "node": ">=24.14.1 <25"
   },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/susyimes/GroupX.git"
+  },
+  "homepage": "https://github.com/susyimes/GroupX#readme",
+  "bugs": "https://github.com/susyimes/GroupX/issues",
+  "keywords": [
+    "groupx",
+    "codex",
+    "grok",
+    "kimi",
+    "cli",
+    "multi-agent",
+    "group-chat",
+    "broker",
+    "acp"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/copy-web.mjs",
     "dev": "npm run build && node --enable-source-maps dist/src/main.js",
@@ -20,7 +47,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",

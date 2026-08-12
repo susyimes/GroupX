@@ -26,6 +26,7 @@
 | D-014 | 完整 A2A Server、多房间、多用户 | Deferred |
 | D-015 | GroupX 不构成安全边界，也不实现审批子系统 | Accepted |
 | D-016 | 所选 transport 派发不确定时绝不自动重放或切换 | Accepted |
+| D-017 | 配置驱动的 Agent 名册(driver/name/自定义 id)与 npm CLI 分发 | Accepted |
 
 ## D-001：透明 Broker
 
@@ -199,6 +200,22 @@ GroupX 只按合同字段记录数据，不主动采集完整环境、CLI 配置
 一旦 prompt 已提交或可能已到达原生 session，连接丢失、超时、Broker 重启或终态不明时，GroupX 必须先通过已持久化的 native session/turn 引用进行有界恢复与对账，不得创建新 native turn 或自动重放 prompt。仍无法确认时，将交付确定性单独记录为 `unknown`，并以现有证据收敛到 terminal `interrupted` 或明确失败；保留 attempt、dispatch phase 与恢复证据，避免重复执行、重复工具调用或重复计费。
 
 Structured resume/load 不能自动重放不确定 Turn。历史 Direct attempt 保留原交付确定性和 terminal 记录用于审计，但不会由当前 runtime 恢复或重新派发。
+
+## D-017：配置驱动的 Agent 名册与 npm CLI 分发
+
+决定：`agents` 配置从固定的 codex/grok/kimi 三键改为显式房间名册。键即 agent id(actor `agent:<id>`)，每个条目声明 `driver`(codex/grok/kimi 原生 CLI 家族)、可选显示名 `name`、`command`、`cwd`、`enabled`。内置 id 省略 `driver` 时默认同名；自定义 id 必须显式给出 driver。名册写谁启动谁；缺省整个 `agents` 字段仍等价于内置三 Agent。同一 driver 可挂多个实例，各自持有独立长驻 session。
+
+runtime 启动时把名册中的自定义/改名 agent upsert 进 actors 表，显示名由此流入 durable 事件与 Web UI;Web UI 的目标 chips、Agent 卡片、身份记忆下拉全部按 bootstrap 名册动态渲染，非内置 id 按 actor id 哈希分配固定调色板色调。
+
+分发形态为 npm 公共 scoped 包 `@susyimes/groupx`,`bin.groupx` 指向 `dist/src/cli.js`，提供 `start`(默认，自动打开浏览器，可 `--no-open`)、`doctor`(系统/Node/CLI 检测)、`init`(按检测生成配置)子命令。静态资源根从进程 cwd 改为按模块位置解析(`dist/web`)，使全局安装后可在任意目录启动。进程管理与命令解析的跨平台分支(win32 taskkill / posix 负 pid 进程树、PATH 查找)已内置于 supervisor 与 launch 层,macOS/Linux 行为通过依赖注入测试覆盖。
+
+原因：
+
+- 用户需要给 Agent 起群内显示名，也需要同一 CLI 的多个分身实例；
+- 固定三键 schema 把房间成员硬编码进了解析层，扩展必须改协议代码；
+- 全局 CLI 是"安装后任意目录启动"的最小分发闭环；npm 裸名 `groupx` 已被占用，故用 owner scope。
+
+变更条件：新增 driver 家族(非 codex/grok/kimi 的 CLI)需要新 Adapter 并走 release Gate;多房间/远程分发仍属 Deferred。
 
 ## 决策变更规则
 

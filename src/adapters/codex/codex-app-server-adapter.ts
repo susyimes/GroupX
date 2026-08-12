@@ -39,6 +39,8 @@ export interface CodexAppServerAdapterOptions {
   now?: () => Date;
   createInstanceId?: () => string;
   createBindingId?: () => string;
+  /** Room-local agent key; defaults to the builtin `codex`. */
+  agentId?: string;
 }
 
 export interface CodexMcpServerConfig {
@@ -198,8 +200,8 @@ export function buildCodexPromptText(input: Pick<PromptInput, "content" | "conte
 }
 
 export class CodexAppServerAdapter implements CliAdapter {
-  readonly adapterId = "codex" as const;
-  readonly actorId = "agent:codex";
+  readonly adapterId: string;
+  readonly actorId: string;
 
   readonly #timeouts: CodexAdapterTimeouts;
   readonly #clientVersion: string;
@@ -215,13 +217,16 @@ export class CodexAppServerAdapter implements CliAdapter {
   #updatedAt: string;
 
   constructor(options: CodexAppServerAdapterOptions = {}) {
+    const agentId = options.agentId ?? "codex";
+    this.adapterId = agentId;
+    this.actorId = `agent:${agentId}`;
     this.#timeouts = { ...DEFAULT_TIMEOUTS, ...options.timeouts };
     validateTimeouts(this.#timeouts);
     this.#clientVersion = options.clientVersion ?? "0.1.0";
     this.#targetCliVersion = options.targetCliVersion ?? "0.147.0";
     this.#now = options.now ?? (() => new Date());
-    this.#createInstanceId = options.createInstanceId ?? (() => `codex/main@${randomUUID()}`);
-    this.#createBindingId = options.createBindingId ?? (() => `binding:codex:${randomUUID()}`);
+    this.#createInstanceId = options.createInstanceId ?? (() => `${agentId}/main@${randomUUID()}`);
+    this.#createBindingId = options.createBindingId ?? (() => `binding:${agentId}:${randomUUID()}`);
     this.#updatedAt = this.#nowIso();
   }
 

@@ -44,6 +44,7 @@ function nativeSession(instanceId = "instance:codex:new"): NativeSession {
 
 function appConfig(): GroupXWebBrokerApiOptions["config"] {
   const agent = (name: string) => ({
+    driver: name as "codex" | "grok" | "kimi",
     command: { executable: process.execPath, prefixArgs: [path.resolve(`${name}.mjs`)] },
     cwd: path.resolve(`workspace-${name}`),
     enabled: true

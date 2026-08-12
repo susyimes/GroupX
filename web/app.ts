@@ -165,38 +165,11 @@ const DOCUMENTED_EVENT_TYPES = [
   "adapter.heartbeat",
 ] as const;
 
-const DEFAULT_AGENTS: AgentView[] = [
-  {
-    actorId: "agent:codex",
-    displayName: "Codex",
-    status: "unknown",
-    cwd: "",
-    enabled: true,
-    capabilities: [],
-  },
-  {
-    actorId: "agent:grok",
-    displayName: "Grok",
-    status: "unknown",
-    cwd: "",
-    enabled: true,
-    capabilities: [],
-  },
-  {
-    actorId: "agent:kimi",
-    displayName: "Kimi",
-    status: "unknown",
-    cwd: "",
-    enabled: true,
-    capabilities: [],
-  },
-];
-
 const state: AppState = {
   connection: "bootstrapping",
   roomId: DEFAULT_ROOM_ID,
   lastDurableSeq: 0,
-  agents: new Map(DEFAULT_AGENTS.map((agent) => [agent.actorId, agent])),
+  agents: new Map(),
   messages: new Map(),
   turns: new Map(),
   memories: new Map(),
@@ -249,8 +222,11 @@ const identityReplaceBanner = byId<HTMLDivElement>("identity-replace-banner");
 const memorySubmit = byId<HTMLButtonElement>("memory-submit");
 const identitySubmit = byId<HTMLButtonElement>("identity-submit");
 const themeToggle = byId<HTMLButtonElement>("theme-toggle");
+const targetPicker = byId<HTMLFieldSetElement>("target-picker");
 
-const targetInputs = Array.from(document.querySelectorAll<HTMLInputElement>('input[name="target"]'));
+function targetInputs(): HTMLInputElement[] {
+  return Array.from(targetPicker.querySelectorAll<HTMLInputElement>('input[name="target"]'));
+}
 const eventNodes = new Map<string, HTMLElement>();
 const turnNodes = new Map<string, HTMLElement>();
 const streamNodes = new Map<string, HTMLElement>();
@@ -469,6 +445,8 @@ function normalizeRecord(value: unknown, identity: boolean): RecordView | null {
   };
 }
 
+const DYNAMIC_TONE_COUNT = 6;
+
 function actorToneClass(actorId: string): string {
   if (actorId.startsWith("agent:codex")) {
     return "actor-codex";
@@ -481,6 +459,13 @@ function actorToneClass(actorId: string): string {
   }
   if (actorId.startsWith("user:")) {
     return "actor-user";
+  }
+  if (actorId.startsWith("agent:")) {
+    let hash = 0;
+    for (const char of actorId) {
+      hash = (hash * 31 + (char.codePointAt(0) ?? 0)) % 997;
+    }
+    return `actor-dynamic-${hash % DYNAMIC_TONE_COUNT}`;
   }
   return "actor-system";
 }
@@ -1335,9 +1320,56 @@ function acceptEnvelope(envelope: GroupXEnvelope, source: "bootstrap" | "live"):
   return true;
 }
 
+function orderedAgents(): AgentView[] {
+  return Array.from(state.agents.values()).sort((left, right) => left.actorId.localeCompare(right.actorId));
+}
+
+/** Rebuild the composer target chips from the configured agents, preserving the user's current selection. */
+function renderTargetPicker(): void {
+  const existing = targetInputs();
+  const initialized = existing.length > 0;
+  const previouslyChecked = new Set(existing.filter((input) => input.checked).map((input) => input.value));
+  for (const chip of Array.from(targetPicker.querySelectorAll(".target-chip[data-agent]"))) {
+    chip.remove();
+  }
+  for (const agent of orderedAgents()) {
+    const label = document.createElement("label");
+    label.className = `target-chip ${cardToneClass(agent.actorId)}`;
+    label.dataset.agent = agent.actorId;
+    const input = document.createElement("input");
+    input.name = "target";
+    input.type = "checkbox";
+    input.value = agent.actorId;
+    input.checked = initialized ? previouslyChecked.has(agent.actorId) : agent.enabled;
+    input.addEventListener("change", () => {
+      syncTargetAll();
+      invalidatePendingSubmission();
+    });
+    const text = document.createElement("span");
+    text.textContent = `@${agent.displayName}`;
+    label.append(input, text);
+    targetPicker.append(label);
+  }
+}
+
+/** Keep the identity-memory subject select in sync with the configured agents. */
+function renderIdentityActorOptions(): void {
+  const previous = identityActor.value;
+  identityActor.replaceChildren();
+  for (const agent of orderedAgents()) {
+    const option = document.createElement("option");
+    option.value = agent.actorId;
+    option.textContent = agent.displayName;
+    identityActor.append(option);
+  }
+  if (previous && selectHasOption(identityActor, previous)) {
+    identityActor.value = previous;
+  }
+}
+
 function renderAgents(): void {
   agentList.replaceChildren();
-  const ordered = Array.from(state.agents.values()).sort((left, right) => left.actorId.localeCompare(right.actorId));
+  const ordered = orderedAgents();
   let available = 0;
   for (const agent of ordered) {
     const item = document.createElement("li");
@@ -1391,7 +1423,7 @@ function renderAgents(): void {
       if (event.target instanceof HTMLButtonElement || agent.enabled === false) {
         return;
       }
-      for (const input of targetInputs) {
+      for (const input of targetInputs()) {
         input.checked = input.value === agent.actorId && !input.disabled;
       }
       syncTargetAll();
@@ -1404,11 +1436,13 @@ function renderAgents(): void {
     }
   }
   agentCount.textContent = `${available} / ${ordered.length}`;
+  renderTargetPicker();
+  renderIdentityActorOptions();
   syncTargetAvailability();
 }
 
 function syncTargetAvailability(): void {
-  for (const input of targetInputs) {
+  for (const input of targetInputs()) {
     const agent = state.agents.get(input.value);
     const unavailable = agent?.enabled === false;
     input.disabled = state.submitting || unavailable;
@@ -1662,7 +1696,7 @@ function errorMessage(error: unknown): string {
 }
 
 function selectedTargets(): string[] {
-  return targetInputs.filter((input) => input.checked && !input.disabled).map((input) => input.value);
+  return targetInputs().filter((input) => input.checked && !input.disabled).map((input) => input.value);
 }
 
 function draftSignature(content: string, to: string[], replyToEventId: string | null): string {
@@ -1837,7 +1871,7 @@ async function submitIdentity(): Promise<void> {
 }
 
 function syncTargetAll(): void {
-  const selectableTargets = targetInputs.filter((input) => state.agents.get(input.value)?.enabled !== false);
+  const selectableTargets = targetInputs().filter((input) => state.agents.get(input.value)?.enabled !== false);
   targetAll.checked = selectableTargets.length > 0 && selectableTargets.every((input) => input.checked);
   targetAll.indeterminate = selectableTargets.some((input) => input.checked) && !targetAll.checked;
   targetAll.disabled = state.submitting || selectableTargets.length === 0;
@@ -1994,6 +2028,7 @@ async function bootstrap(): Promise<void> {
     state.roomId = readStringField(room, "roomId") || readStringField(decoded, "roomId") || DEFAULT_ROOM_ID;
     roomLabel.textContent = state.roomId;
 
+    state.agents.clear();
     for (const value of extractCollection(decoded, ["agents"])) {
       const agent = normalizeAgent(value);
       if (agent) {
@@ -2089,7 +2124,7 @@ messageInput.addEventListener("keydown", (event) => {
 });
 
 targetAll.addEventListener("change", () => {
-  for (const input of targetInputs) {
+  for (const input of targetInputs()) {
     if (!input.disabled) {
       input.checked = targetAll.checked;
     }
@@ -2097,13 +2132,6 @@ targetAll.addEventListener("change", () => {
   targetAll.indeterminate = false;
   invalidatePendingSubmission();
 });
-
-for (const input of targetInputs) {
-  input.addEventListener("change", () => {
-    syncTargetAll();
-    invalidatePendingSubmission();
-  });
-}
 
 clearReplyButton.addEventListener("click", clearReply);
 

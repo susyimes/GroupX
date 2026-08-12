@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import {
   createServer,
   type IncomingMessage,
@@ -383,7 +384,7 @@ export class GroupXHttpServer {
       sse: options.sse,
       host,
       port: listenPort(options.port ?? DEFAULT_PORT),
-      staticRoot: path.resolve(options.staticRoot ?? path.join(process.cwd(), "dist", "web")),
+      staticRoot: path.resolve(options.staticRoot ?? fileURLToPath(new URL("../../../web/", import.meta.url))),
       maxRequestBodyBytes: positiveSafeInteger(
         options.maxRequestBodyBytes ?? DEFAULT_BODY_LIMIT,
         "maxRequestBodyBytes"

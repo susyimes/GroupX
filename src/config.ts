@@ -3,8 +3,10 @@ import path from "node:path";
 import { z } from "zod";
 import { GroupXError } from "./core/errors.js";
 import {
+  BUILTIN_AGENT_IDS,
   resolveAgentCommand,
   systemCommandResolverDependencies,
+  type AgentDriver,
   type BuiltinAgentId,
   type CommandResolverDependencies,
   type CommandSpec
@@ -51,13 +53,49 @@ const commandInputSchema = z
     typeof command === "string" ? { executable: command, prefixArgs: [] } : command
   );
 
+const agentIdKeySchema = z
+  .string()
+  .regex(/^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,62}[A-Za-z0-9])?$/u, "invalid agent id");
+
 const agentConfigSchema = z
   .object({
+    // Omit for the builtin ids (codex/grok/kimi); required for custom ids.
+    driver: z.enum(BUILTIN_AGENT_IDS).optional(),
+    name: z.string().min(1).max(64).optional(),
     command: commandInputSchema,
     cwd: z.string().min(1),
     enabled: z.boolean().default(true)
   })
   .strict();
+
+const agentsConfigSchema = z
+  .record(agentIdKeySchema, agentConfigSchema)
+  .superRefine((agents, context) => {
+    if (Object.keys(agents).length === 0) {
+      context.addIssue({ code: "custom", message: "At least one agent is required" });
+    }
+    for (const [agentId, agent] of Object.entries(agents)) {
+      if (agent.driver === undefined && !isBuiltinAgentId(agentId)) {
+        context.addIssue({
+          code: "custom",
+          path: [agentId, "driver"],
+          message: `Custom agent "${agentId}" requires a driver: codex | grok | kimi`
+        });
+      }
+    }
+  })
+  .transform((agents) =>
+    Object.fromEntries(
+      Object.entries(agents).map(([agentId, agent]) => [
+        agentId,
+        { ...agent, driver: agent.driver ?? (agentId as AgentDriver) }
+      ])
+    )
+  );
+
+export function isBuiltinAgentId(agentId: string): agentId is BuiltinAgentId {
+  return (BUILTIN_AGENT_IDS as readonly string[]).includes(agentId);
+}
 
 const groupXConfigSchema = z
   .object({
@@ -75,18 +113,11 @@ const groupXConfigSchema = z
       })
       .strict()
       .default({ path: ".groupx/groupx.db" }),
-    agents: z
-      .object({
-        codex: agentConfigSchema.default({ command: { executable: "codex", prefixArgs: [] }, cwd: ".", enabled: true }),
-        grok: agentConfigSchema.default({ command: { executable: "grok", prefixArgs: [] }, cwd: ".", enabled: true }),
-        kimi: agentConfigSchema.default({ command: { executable: "kimi", prefixArgs: [] }, cwd: ".", enabled: true })
-      })
-      .strict()
-      .default({
-        codex: { command: { executable: "codex", prefixArgs: [] }, cwd: ".", enabled: true },
-        grok: { command: { executable: "grok", prefixArgs: [] }, cwd: ".", enabled: true },
-        kimi: { command: { executable: "kimi", prefixArgs: [] }, cwd: ".", enabled: true }
-      }),
+    agents: agentsConfigSchema.default({
+      codex: { driver: "codex", command: { executable: "codex", prefixArgs: [] }, cwd: ".", enabled: true },
+      grok: { driver: "grok", command: { executable: "grok", prefixArgs: [] }, cwd: ".", enabled: true },
+      kimi: { driver: "kimi", command: { executable: "kimi", prefixArgs: [] }, cwd: ".", enabled: true }
+    }),
     limits: z
       .object({
         // REST/MCP request schemas use the same fixed wire bound. Keep this
@@ -186,11 +217,11 @@ function resolveConfigPaths(
   return {
     ...config,
     storage: { path: path.resolve(resolvedBaseDirectory, config.storage.path) },
-    agents: {
-      codex: resolveAgentConfig("codex", config.agents.codex, resolvedBaseDirectory, commandDependencies),
-      grok: resolveAgentConfig("grok", config.agents.grok, resolvedBaseDirectory, commandDependencies),
-      kimi: resolveAgentConfig("kimi", config.agents.kimi, resolvedBaseDirectory, commandDependencies)
-    }
+    agents: mapAgentConfigs(config.agents, (agentId, agent) => ({
+      ...agent,
+      command: resolveAgentCommand(agentId, agent.driver, agent.command, resolvedBaseDirectory, commandDependencies),
+      cwd: path.resolve(resolvedBaseDirectory, agent.cwd)
+    }))
   };
 }
 
@@ -201,34 +232,18 @@ function resolveAgentCommands(
 ): GroupXConfig {
   return {
     ...config,
-    agents: {
-      codex: {
-        ...config.agents.codex,
-        command: resolveAgentCommand("codex", config.agents.codex.command, baseDirectory, commandDependencies)
-      },
-      grok: {
-        ...config.agents.grok,
-        command: resolveAgentCommand("grok", config.agents.grok.command, baseDirectory, commandDependencies)
-      },
-      kimi: {
-        ...config.agents.kimi,
-        command: resolveAgentCommand("kimi", config.agents.kimi.command, baseDirectory, commandDependencies)
-      }
-    }
+    agents: mapAgentConfigs(config.agents, (agentId, agent) => ({
+      ...agent,
+      command: resolveAgentCommand(agentId, agent.driver, agent.command, baseDirectory, commandDependencies)
+    }))
   };
 }
 
-function resolveAgentConfig(
-  agentId: BuiltinAgentId,
-  config: GroupXConfig["agents"][BuiltinAgentId],
-  baseDirectory: string,
-  commandDependencies: CommandResolverDependencies
-): GroupXConfig["agents"][BuiltinAgentId] {
-  return {
-    ...config,
-    command: resolveAgentCommand(agentId, config.command, baseDirectory, commandDependencies),
-    cwd: path.resolve(baseDirectory, config.cwd)
-  };
+function mapAgentConfigs(
+  agents: GroupXConfig["agents"],
+  map: (agentId: string, agent: GroupXConfig["agents"][string]) => GroupXConfig["agents"][string]
+): GroupXConfig["agents"] {
+  return Object.fromEntries(Object.entries(agents).map(([agentId, agent]) => [agentId, map(agentId, agent)]));
 }
 
 export function parseConfigPath(argv: readonly string[]): string | undefined {

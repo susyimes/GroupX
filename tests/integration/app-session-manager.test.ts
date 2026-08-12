@@ -140,6 +140,7 @@ function fixture(transport: "direct" | "structured") {
 
 function agentConfig(agentId: ManagedAgentId) {
   return {
+    driver: agentId as "codex" | "grok" | "kimi",
     command: {
       executable: process.execPath,
       prefixArgs: [path.resolve(`fixture-${agentId}.mjs`)]

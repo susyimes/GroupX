@@ -1,11 +1,17 @@
 import { AcpV1Adapter, type AcpV1AdapterOptions } from "./acp-v1-adapter.js";
 
+export interface GrokAcpAdapterOptions extends AcpV1AdapterOptions {
+  /** Room-local agent key; defaults to the builtin `grok`. */
+  agentId?: string;
+}
+
 /** ACP v1 adapter for the fixed `grok agent stdio` entrypoint. */
 export class GrokAcpAdapter extends AcpV1Adapter {
-  constructor(options: AcpV1AdapterOptions = {}) {
+  constructor(options: GrokAcpAdapterOptions = {}) {
+    const { agentId = "grok", ...acpOptions } = options;
     super(
-      "grok",
-      "agent:grok",
+      agentId,
+      `agent:${agentId}`,
       [
         "--no-auto-update",
         "--permission-mode",
@@ -16,7 +22,7 @@ export class GrokAcpAdapter extends AcpV1Adapter {
         "agent",
         "stdio"
       ],
-      options
+      acpOptions
     );
   }
 

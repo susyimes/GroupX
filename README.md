@@ -8,8 +8,8 @@
 
 ![Version](https://img.shields.io/badge/version-0.1.0-3370ff)
 ![Node](https://img.shields.io/badge/node-24.14.x-3c873a)
-![Tests](https://img.shields.io/badge/tests-397%20passing-0d9f6e)
-![Platform](https://img.shields.io/badge/platform-Windows-0078d6)
+![Tests](https://img.shields.io/badge/tests-409%20passing-0d9f6e)
+![Platform](https://img.shields.io/badge/platform-Windows%20%C2%B7%20macOS%20%C2%B7%20Linux-0078d6)
 ![Transport](https://img.shields.io/badge/transport-structured-9440c9)
 
 <img src="docs/assets/ui-light.png" width="49.4%" alt="GroupX · 浅色主题"> <img src="docs/assets/ui-dark.png" width="49.4%" alt="GroupX · 夜间模式">
@@ -26,15 +26,22 @@ Structured 模式下,它们还能通过 GroupX MCP 在当前回合**显式互调
 
 ## 🚀 六十秒起飞
 
-前置条件:Node.js `24.14.1` 系列 + `codex`、`grok`、`kimi` 三个 CLI 均已完成各自的登录配置。
+前置条件:Node.js `24.14.1` 系列,以及 `codex`、`grok`、`kimi` 中至少一个已完成各自的登录配置。Windows / macOS / Linux 均可运行(Windows 已实机验证,macOS/Linux 跨平台逻辑内置并通过注入测试覆盖)。
 
-```powershell
-npm ci
-npm run build
-npm start -- --config .\groupx.json
+```bash
+npm i -g @susyimes/groupx   # 或克隆仓库后:npm ci && npm run build && npm link
+groupx doctor               # 检测系统、Node 与三个 CLI 的安装/版本
+groupx init                 # 按检测结果生成 groupx.json(已检测到的 CLI 自动启用)
+groupx start                # 启动 Broker + Web UI,并自动打开浏览器(--no-open 关闭)
 ```
 
-最小配置(不写也行,默认值等价):
+也可以直接从源码跑:`npm ci && npm run build && npm start`。
+
+启动后打开 **http://127.0.0.1:4310/**,开聊。`Ctrl+C` 有界停机,SQLite 数据原样保留。
+
+## 🧩 自定义 Agent(改名 / 多实例)
+
+`agents` 是显式房间名册:内置 id(`codex`/`grok`/`kimi`)可省略 `driver`,自定义 id 必须声明 driver;`name` 是群内显示名。同一 driver 可以挂多个分身,各自持有独立长驻 session:
 
 ```json
 {
@@ -43,13 +50,14 @@ npm start -- --config .\groupx.json
   "storage": { "path": ".groupx/groupx.db" },
   "agents": {
     "codex": { "command": "codex", "cwd": ".", "enabled": true },
-    "grok": { "command": "grok", "cwd": ".", "enabled": true },
-    "kimi": { "command": "kimi", "cwd": ".", "enabled": true }
+    "kimi": { "command": "kimi", "cwd": ".", "enabled": true, "name": "小K" },
+    "rex": { "driver": "kimi", "name": "小R", "command": "kimi", "cwd": ".", "enabled": true },
+    "grok": { "command": "grok", "cwd": ".", "enabled": false }
   }
 }
 ```
 
-启动后打开 **http://127.0.0.1:4310/**,开聊。`Ctrl+C` 有界停机,SQLite 数据原样保留。
+目标 chips、Agent 卡片、身份记忆下拉都按名册动态渲染;自定义 Agent 按 id 分配固定色调。
 
 ## 🎯 能玩出什么花
 
@@ -93,7 +101,7 @@ npm start -- --config .\groupx.json
 
 ```powershell
 npm run typecheck   # TS strict 全量检查
-npm test            # vitest,397 用例
+npm test            # vitest,409 用例
 npm run build       # tsc + 拷贝 web 静态资源到 dist
 ```
 

@@ -1,9 +1,9 @@
-import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { AdapterRegistry } from "../adapters/registry.js";
 import { GroupXBroker } from "../broker/broker.js";
 import type { BrokerContextProvider, BrokerErrorContext } from "../broker/types.js";
-import { assertActiveTransport, type GroupXConfig } from "../config.js";
+import { assertActiveTransport, isBuiltinAgentId, type GroupXConfig } from "../config.js";
 import { DEFAULT_ROOM_ID } from "../core/envelope.js";
 import { GroupXError } from "../core/errors.js";
 import { ContextPacketBuilder } from "../memory/context-packet.js";
@@ -128,6 +128,24 @@ export class GroupXRuntime {
       mcpBindings: this.bindings,
       closeTimeoutMs: config.timeouts.closeMs
     });
+    this.#registerConfiguredActors();
+  }
+
+  /**
+   * Give every configured agent an actors row so durable events can reference
+   * it and the UI can show the configured display name. Builtin agents are
+   * already seeded by the store; they are only upserted when renamed.
+   */
+  #registerConfiguredActors(): void {
+    for (const [agentId, agent] of Object.entries(this.config.agents)) {
+      if (isBuiltinAgentId(agentId) && agent.name === undefined) continue;
+      this.store.upsertActor({
+        actorId: `agent:${agentId}`,
+        kind: "agent",
+        displayName: agent.name ?? agentId,
+        enabled: agent.enabled
+      });
+    }
   }
 
   get address(): GroupXHttpServerAddress | undefined {
@@ -242,7 +260,7 @@ export class GroupXRuntime {
         port: this.#port,
         gracefulCloseTimeoutMs: this.config.timeouts.closeMs,
         ...(this.#staticRoot === undefined
-          ? { staticRoot: path.resolve(process.cwd(), "dist", "web") }
+          ? { staticRoot: fileURLToPath(new URL("../../web/", import.meta.url)) }
           : { staticRoot: this.#staticRoot }),
         ...(mcpHandler === undefined ? {} : { mcpHandler })
       });

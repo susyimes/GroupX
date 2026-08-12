@@ -101,7 +101,11 @@ export async function runStructuredNativeProbe(
 
   try {
     const versions = await Promise.all(
-      M0_AGENTS.map(async (agent) => [agent, await readCliVersion(config.agents[agent])] as const)
+      M0_AGENTS.map(async (agent) => {
+        const agentConfig = config.agents[agent];
+        if (!agentConfig) throw new Error(`M0 probe requires configured agent: ${agent}`);
+        return [agent, await readCliVersion(agentConfig)] as const;
+      })
     );
     for (const [agent, version] of versions) observations[agent].installedVersion = version;
 
@@ -189,11 +193,15 @@ function probeConfig(
   runRoot: string,
   workspaceRoot: string
 ): GroupXConfig {
-  const agent = (id: M0AgentId): GroupXConfig["agents"][M0AgentId] => ({
-    ...loaded.agents[id],
-    enabled: true,
-    cwd: path.join(workspaceRoot, id)
-  });
+  const agent = (id: M0AgentId): GroupXConfig["agents"][string] => {
+    const configured = loaded.agents[id];
+    if (!configured) throw new Error(`M0 probe requires configured agent: ${id}`);
+    return {
+      ...configured,
+      enabled: true,
+      cwd: path.join(workspaceRoot, id)
+    };
+  };
   return {
     ...loaded,
     transport: "structured",
@@ -234,7 +242,9 @@ function exactLaunchProfile(
   agent: M0AgentId,
   report: CapabilityReport
 ): boolean {
-  const command = config.agents[agent].command;
+  const agentConfig = config.agents[agent];
+  if (!agentConfig) return false;
+  const command = agentConfig.command;
   const expected =
     agent === "codex"
       ? [...buildCodexLaunchArgv(command.executable, command.prefixArgs)]

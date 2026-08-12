@@ -1,9 +1,10 @@
 import { GrokAcpAdapter, KimiAcpAdapter } from "../adapters/acp/index.js";
 import { CodexAppServerAdapter } from "../adapters/codex/index.js";
 import { AdapterRegistry } from "../adapters/registry.js";
+import type { CliAdapter } from "../adapters/types.js";
 import { assertActiveTransport, type GroupXConfig } from "../config.js";
 
-/** Build only the adapters enabled in the single globally selected transport. */
+/** Build one adapter per enabled configured agent in the single globally selected transport. */
 export function createAdapterRegistry(
   config: Pick<GroupXConfig, "transport" | "agents" | "timeouts">
 ): AdapterRegistry {
@@ -11,15 +12,26 @@ export function createAdapterRegistry(
   // for historical compatibility tests; do not restore a runtime entry.
   assertActiveTransport(config.transport);
   const registry = new AdapterRegistry();
-  if (config.agents.codex.enabled) {
-    registry.register(new CodexAppServerAdapter({ timeouts: config.timeouts }));
-  }
   const acpOptions = {
     handshakeTimeoutMs: config.timeouts.handshakeMs,
     closeGraceMs: config.timeouts.closeMs,
     killGraceMs: config.timeouts.closeMs
   };
-  if (config.agents.grok.enabled) registry.register(new GrokAcpAdapter(acpOptions));
-  if (config.agents.kimi.enabled) registry.register(new KimiAcpAdapter(acpOptions));
+  for (const [agentId, agent] of Object.entries(config.agents)) {
+    if (!agent.enabled) continue;
+    let adapter: CliAdapter;
+    switch (agent.driver) {
+      case "codex":
+        adapter = new CodexAppServerAdapter({ timeouts: config.timeouts, agentId });
+        break;
+      case "grok":
+        adapter = new GrokAcpAdapter({ ...acpOptions, agentId });
+        break;
+      case "kimi":
+        adapter = new KimiAcpAdapter({ ...acpOptions, agentId });
+        break;
+    }
+    registry.register(adapter);
+  }
   return registry;
 }

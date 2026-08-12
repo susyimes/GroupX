@@ -88,12 +88,12 @@ describe("GroupX configuration", () => {
     expect(defaults.transport).toBe("structured");
     expect(defaults.server).toEqual({ host: "127.0.0.1", port: 4_310 });
     expect(defaults.storage.path).toBe(".groupx/groupx.db");
-    expect(defaults.agents.codex.command).toEqual({
+    expect(defaults.agents.codex!.command).toEqual({
       executable: nodeExecutable,
       prefixArgs: [codexEntrypoint]
     });
-    expect(defaults.agents.grok.command).toEqual({ executable: grokExecutable, prefixArgs: [] });
-    expect(defaults.agents.kimi.command).toEqual({
+    expect(defaults.agents.grok!.command).toEqual({ executable: grokExecutable, prefixArgs: [] });
+    expect(defaults.agents.kimi!.command).toEqual({
       executable: nodeExecutable,
       prefixArgs: [kimiEntrypoint]
     });
@@ -110,12 +110,12 @@ describe("GroupX configuration", () => {
     expect(config.transport).toBe("structured");
     expect(config.server.host).toBe("127.0.0.1");
     expect(config.storage.path).toBe(path.join(directory, ".groupx", "groupx.db"));
-    expect(config.agents.codex.cwd).toBe(directory);
-    expect(config.agents.grok.cwd).toBe(directory);
-    expect(config.agents.kimi.cwd).toBe(directory);
+    expect(config.agents.codex!.cwd).toBe(directory);
+    expect(config.agents.grok!.cwd).toBe(directory);
+    expect(config.agents.kimi!.cwd).toBe(directory);
   });
 
-  it("anchors omitted Agent cwd defaults to the config file instead of the process directory", async () => {
+  it("treats the agents map as the explicit room roster", async () => {
     const omitted = await writeConfig({});
     const omittedConfig = await loadConfig(omitted.configPath, process.cwd(), commandDependencies());
 
@@ -132,9 +132,8 @@ describe("GroupX configuration", () => {
     });
     const partialConfig = await loadConfig(partial.configPath, process.cwd(), commandDependencies());
 
-    expect(partialConfig.agents.codex.cwd).toBe(path.join(partial.directory, "codex-work"));
-    expect(partialConfig.agents.grok.cwd).toBe(partial.directory);
-    expect(partialConfig.agents.kimi.cwd).toBe(partial.directory);
+    expect(Object.keys(partialConfig.agents)).toEqual(["codex"]);
+    expect(partialConfig.agents.codex!.cwd).toBe(path.join(partial.directory, "codex-work"));
   });
 
   it("rejects non-loopback hosts", async () => {
@@ -250,8 +249,58 @@ describe("GroupX configuration", () => {
 
     const config = await loadConfig(configPath, process.cwd(), commandDependencies());
 
-    expect(config.agents.codex.command).toEqual({ executable: nodeExecutable, prefixArgs: [codexEntrypoint] });
-    expect(config.agents.grok.command).toEqual({ executable: grokExecutable, prefixArgs: [] });
+    expect(config.agents.codex!.command).toEqual({ executable: nodeExecutable, prefixArgs: [codexEntrypoint] });
+    expect(config.agents.grok!.command).toEqual({ executable: grokExecutable, prefixArgs: [] });
+  });
+
+  it("loads custom agents with an explicit driver and display name", async () => {
+    const input = validConfig();
+    const agents = input.agents as Record<string, Record<string, unknown>>;
+    agents.rex = { driver: "codex", name: "小R", command: "codex", cwd: ".", enabled: true };
+    agents["grok-2"] = { driver: "grok", command: "grok", cwd: ".", enabled: false };
+    const { configPath } = await writeConfig(input);
+
+    const config = await loadConfig(configPath, process.cwd(), commandDependencies());
+
+    expect(config.agents.rex).toMatchObject({ driver: "codex", name: "小R", enabled: true });
+    expect(config.agents.rex!.command).toEqual({ executable: nodeExecutable, prefixArgs: [codexEntrypoint] });
+    expect(config.agents["grok-2"]).toMatchObject({ driver: "grok", enabled: false });
+    expect(config.agents.codex).toMatchObject({ driver: "codex" });
+  });
+
+  it("rejects a custom agent without a driver", async () => {
+    const input = validConfig();
+    const agents = input.agents as Record<string, Record<string, unknown>>;
+    agents.rex = { command: "codex", cwd: ".", enabled: true };
+    const { configPath } = await writeConfig(input);
+
+    await expect(loadConfig(configPath, process.cwd(), commandDependencies())).rejects.toMatchObject({
+      code: "INVALID_ENVELOPE",
+      details: {
+        issues: expect.arrayContaining([
+          expect.objectContaining({ path: "agents.rex.driver" })
+        ])
+      }
+    });
+  });
+
+  it("rejects invalid agent ids and an empty roster", async () => {
+    const invalidId = validConfig();
+    (invalidId.agents as Record<string, unknown>)["bad id"] = { driver: "kimi", command: "kimi", cwd: "." };
+    const invalidFixture = await writeConfig(invalidId);
+    await expect(loadConfig(invalidFixture.configPath, process.cwd(), commandDependencies())).rejects.toMatchObject({
+      code: "INVALID_ENVELOPE"
+    });
+
+    const empty = await writeConfig({ agents: {} });
+    await expect(loadConfig(empty.configPath, process.cwd(), commandDependencies())).rejects.toMatchObject({
+      code: "INVALID_ENVELOPE",
+      details: {
+        issues: expect.arrayContaining([
+          expect.objectContaining({ message: "At least one agent is required" })
+        ])
+      }
+    });
   });
 
   it("parses both supported --config forms and rejects a missing path", () => {

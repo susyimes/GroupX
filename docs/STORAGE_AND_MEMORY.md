@@ -58,6 +58,8 @@ agent:kimi
 system:groupx
 ```
 
+此外，runtime 启动时按配置名册 upsert 自定义或被改名的 agent actor(`agent:<id>`,kind=agent,display_name 取配置 `name`,缺省为 id 本身），使 durable 事件的 `actor_display_name` 与 Web UI 显示名始终来自配置；未改名的内置 agent 仍以上述种子为准。
+
 ### 3.2 agent_instances
 
 ```sql

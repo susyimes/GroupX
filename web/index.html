@@ -80,18 +80,6 @@
               <input id="target-all" type="checkbox" checked>
               <span>@all</span>
             </label>
-            <label class="target-chip agent-codex-chip">
-              <input id="target-codex" name="target" type="checkbox" value="agent:codex" checked>
-              <span>@codex</span>
-            </label>
-            <label class="target-chip agent-grok-chip">
-              <input id="target-grok" name="target" type="checkbox" value="agent:grok" checked>
-              <span>@grok</span>
-            </label>
-            <label class="target-chip agent-kimi-chip">
-              <input id="target-kimi" name="target" type="checkbox" value="agent:kimi" checked>
-              <span>@kimi</span>
-            </label>
           </fieldset>
 
           <div id="reply-context" class="reply-context" hidden>
@@ -177,11 +165,7 @@
               <button id="identity-replace-cancel" class="text-button" type="button">取消</button>
             </div>
             <label for="identity-actor">对象</label>
-            <select id="identity-actor">
-              <option value="agent:codex">Codex</option>
-              <option value="agent:grok">Grok</option>
-              <option value="agent:kimi">Kimi</option>
-            </select>
+            <select id="identity-actor"></select>
             <label for="identity-kind">类型</label>
             <select id="identity-kind">
               <option value="preference">偏好</option>

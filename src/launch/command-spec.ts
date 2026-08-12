@@ -15,6 +15,9 @@ export interface CommandSpec {
   prefixArgs: string[];
 }
 
+/** Native CLI families GroupX knows how to drive. */
+export type AgentDriver = BuiltinAgentId;
+
 export interface CommandResolverDependencies {
   platform: NodeJS.Platform;
   env: Readonly<Record<string, string | undefined>>;
@@ -42,9 +45,13 @@ const JAVASCRIPT_EXTENSIONS = new Set([".cjs", ".js", ".mjs"]);
  * Resolve config input into an argv head that Node can spawn with
  * `shell: false`. No model, permission, sandbox, or other native policy
  * arguments are accepted or added here.
+ *
+ * `agentId` is the room-local agent key (used in errors); `driver` selects
+ * which native CLI family supplies the default command resolution.
  */
 export function resolveAgentCommand(
-  agentId: BuiltinAgentId,
+  agentId: string,
+  driver: AgentDriver,
   input: Readonly<CommandSpec>,
   baseDirectory: string,
   dependencies: CommandResolverDependencies = systemCommandResolverDependencies
@@ -57,8 +64,8 @@ export function resolveAgentCommand(
     throw resolutionError(agentId, "empty_prefix_arg");
   }
 
-  if (prefixArgs.length === 0 && executableInput === agentId) {
-    return resolveDefaultAgentCommand(agentId, dependencies, pathApi);
+  if (prefixArgs.length === 0 && executableInput === driver) {
+    return resolveDefaultAgentCommand(driver, dependencies, pathApi);
   }
 
   const executable = resolveExecutable(agentId, executableInput, baseDirectory, dependencies, pathApi);
@@ -138,7 +145,7 @@ function resolveDefaultAgentCommand(
 }
 
 function resolveExecutable(
-  agentId: BuiltinAgentId,
+  agentId: string,
   input: string,
   baseDirectory: string,
   dependencies: CommandResolverDependencies,
@@ -266,14 +273,14 @@ function safeIsFile(dependencies: CommandResolverDependencies, candidate: string
   }
 }
 
-function requireNonEmpty(input: string, agentId: BuiltinAgentId, reason: string): string {
+function requireNonEmpty(input: string, agentId: string, reason: string): string {
   if (input.length === 0) {
     throw resolutionError(agentId, reason);
   }
   return input;
 }
 
-function resolutionError(agentId: BuiltinAgentId, reason: string): GroupXError {
+function resolutionError(agentId: string, reason: string): GroupXError {
   return new GroupXError("INVALID_ENVELOPE", `Unable to resolve the ${agentId} command without a shell`, {
     agentId,
     reason

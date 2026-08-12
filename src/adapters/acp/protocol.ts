@@ -179,7 +179,7 @@ export function buildPromptBlocks(input: {
 }
 
 export function normalizeSessionUpdate(
-  adapterId: "grok" | "kimi",
+  adapterId: string,
   instanceId: string,
   nativeSessionId: string,
   nativeTurnId: string,

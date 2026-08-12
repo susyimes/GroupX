@@ -57,11 +57,11 @@ describe("shell-free Agent command resolution", () => {
   it("resolves npm-global Codex and Kimi through absolute node plus their known entrypoints", () => {
     const resolver = dependencies([nodeExecutable, codexEntrypoint, kimiEntrypoint]);
 
-    expect(resolveAgentCommand("codex", legacy("codex"), baseDirectory, resolver)).toEqual({
+    expect(resolveAgentCommand("codex", "codex", legacy("codex"), baseDirectory, resolver)).toEqual({
       executable: nodeExecutable,
       prefixArgs: [codexEntrypoint]
     });
-    expect(resolveAgentCommand("kimi", legacy("kimi"), baseDirectory, resolver)).toEqual({
+    expect(resolveAgentCommand("kimi", "kimi", legacy("kimi"), baseDirectory, resolver)).toEqual({
       executable: nodeExecutable,
       prefixArgs: [kimiEntrypoint]
     });
@@ -70,7 +70,7 @@ describe("shell-free Agent command resolution", () => {
   it("resolves the native Grok executable under the user profile", () => {
     const resolver = dependencies([grokExecutable]);
 
-    expect(resolveAgentCommand("grok", legacy("grok"), baseDirectory, resolver)).toEqual({
+    expect(resolveAgentCommand("grok", "grok", legacy("grok"), baseDirectory, resolver)).toEqual({
       executable: grokExecutable,
       prefixArgs: []
     });
@@ -80,7 +80,7 @@ describe("shell-free Agent command resolution", () => {
     const npmShim = paths.resolve(appData, "npm", "codex.cmd");
     const resolver = dependencies([nodeExecutable, npmShim], { PATH: paths.dirname(npmShim) });
 
-    expect(() => resolveAgentCommand("codex", legacy("codex"), baseDirectory, resolver)).toThrowError(
+    expect(() => resolveAgentCommand("codex", "codex", legacy("codex"), baseDirectory, resolver)).toThrowError(
       expect.objectContaining({
         code: "INVALID_ENVELOPE",
         details: { agentId: "codex", reason: "npm_entrypoint_not_found" }
@@ -92,7 +92,7 @@ describe("shell-free Agent command resolution", () => {
     const executable = "C:\\Tools\\custom-agent.exe";
     const resolver = dependencies([executable]);
 
-    expect(resolveAgentCommand("codex", legacy("custom-agent"), baseDirectory, resolver)).toEqual({
+    expect(resolveAgentCommand("codex", "codex", legacy("custom-agent"), baseDirectory, resolver)).toEqual({
       executable,
       prefixArgs: []
     });
@@ -105,14 +105,14 @@ describe("shell-free Agent command resolution", () => {
       "C:\\Tools\\custom-agent.ps1"
     ]);
 
-    expect(() => resolveAgentCommand("codex", legacy("custom-agent"), baseDirectory, resolver)).toThrowError(
+    expect(() => resolveAgentCommand("codex", "codex", legacy("custom-agent"), baseDirectory, resolver)).toThrowError(
       expect.objectContaining({
         code: "INVALID_ENVELOPE",
         details: { agentId: "codex", reason: "executable_not_found" }
       })
     );
     expect(() =>
-      resolveAgentCommand("codex", legacy("C:\\Tools\\custom-agent.cmd"), baseDirectory, resolver)
+      resolveAgentCommand("codex", "codex", legacy("C:\\Tools\\custom-agent.cmd"), baseDirectory, resolver)
     ).toThrowError(
       expect.objectContaining({
         code: "INVALID_ENVELOPE",
@@ -126,8 +126,7 @@ describe("shell-free Agent command resolution", () => {
     const resolver = dependencies([nodeExecutable, entrypoint]);
 
     expect(
-      resolveAgentCommand(
-        "kimi",
+      resolveAgentCommand("kimi", "kimi",
         { executable: nodeExecutable, prefixArgs: ["tools\\cli.mjs"] },
         baseDirectory,
         resolver
@@ -140,8 +139,7 @@ describe("shell-free Agent command resolution", () => {
     const resolver = dependencies([nodeExecutable, entrypoint]);
 
     expect(() =>
-      resolveAgentCommand(
-        "codex",
+      resolveAgentCommand("codex", "codex",
         { executable: nodeExecutable, prefixArgs: ["--yolo"] },
         baseDirectory,
         resolver
@@ -152,8 +150,7 @@ describe("shell-free Agent command resolution", () => {
       })
     );
     expect(() =>
-      resolveAgentCommand(
-        "codex",
+      resolveAgentCommand("codex", "codex",
         { executable: nodeExecutable, prefixArgs: [entrypoint, "--yolo"] },
         baseDirectory,
         resolver
@@ -166,7 +163,7 @@ describe("shell-free Agent command resolution", () => {
   it("requires a JavaScript entrypoint whenever node itself is configured", () => {
     const resolver = dependencies([nodeExecutable]);
 
-    expect(() => resolveAgentCommand("kimi", legacy(nodeExecutable), baseDirectory, resolver)).toThrowError(
+    expect(() => resolveAgentCommand("kimi", "kimi", legacy(nodeExecutable), baseDirectory, resolver)).toThrowError(
       expect.objectContaining({ details: { agentId: "kimi", reason: "node_entrypoint_required" } })
     );
   });
@@ -181,11 +178,44 @@ describe("shell-free Agent command resolution", () => {
       }
     };
 
-    expect(() => resolveAgentCommand("codex", legacy("codex"), baseDirectory, resolver)).toThrowError(
+    expect(() => resolveAgentCommand("codex", "codex", legacy("codex"), baseDirectory, resolver)).toThrowError(
       expect.objectContaining({
         code: "INVALID_ENVELOPE",
         details: { agentId: "codex", reason: "node_runtime_not_found" }
       })
     );
+  });
+
+  it("resolves the default command by driver for a custom agent id", () => {
+    const resolver = dependencies([nodeExecutable, codexEntrypoint]);
+
+    expect(resolveAgentCommand("rex", "codex", legacy("codex"), baseDirectory, resolver)).toEqual({
+      executable: nodeExecutable,
+      prefixArgs: [codexEntrypoint]
+    });
+  });
+
+  it("resolves default commands from PATH on posix platforms", () => {
+    const resolver: CommandResolverDependencies = {
+      platform: "darwin",
+      env: { HOME: "/Users/groupx", PATH: "/usr/local/bin" },
+      execPath: "/usr/local/bin/node",
+      isFile: (candidate) => candidate === "/usr/local/bin/codex"
+    };
+
+    expect(resolveAgentCommand("rex", "codex", legacy("codex"), "/Users/groupx/work", resolver)).toEqual({
+      executable: "/usr/local/bin/codex",
+      prefixArgs: []
+    });
+  });
+
+  it("resolves a custom executable path for a custom agent id", () => {
+    const executable = "C:\\Tools\\rex-agent.exe";
+    const resolver = dependencies([executable]);
+
+    expect(resolveAgentCommand("rex", "grok", legacy("rex-agent"), baseDirectory, resolver)).toEqual({
+      executable,
+      prefixArgs: []
+    });
   });
 });

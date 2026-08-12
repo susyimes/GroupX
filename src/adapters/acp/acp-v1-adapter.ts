@@ -45,7 +45,7 @@ export interface AcpV1AdapterOptions {
   idFactory?: (kind: "instance" | "binding") => string;
 }
 
-type AcpAdapterId = "grok" | "kimi";
+type AcpAdapterId = string;
 
 type FatalNativeErrorCode = Extract<
   GroupXErrorCode,

@@ -864,6 +864,55 @@ input:disabled {
   --tone: var(--tone-system);
 }
 
+/* Palette for custom (non-builtin) agents, assigned by actor id hash. */
+.tone-dynamic-0 {
+  --tone: #c2457e;
+}
+
+.tone-dynamic-1 {
+  --tone: #3f9e4d;
+}
+
+.tone-dynamic-2 {
+  --tone: #0284c7;
+}
+
+.tone-dynamic-3 {
+  --tone: #be5008;
+}
+
+.tone-dynamic-4 {
+  --tone: #0e7490;
+}
+
+.tone-dynamic-5 {
+  --tone: #65a30d;
+}
+
+.actor-dynamic-0 {
+  color: #c2457e;
+}
+
+.actor-dynamic-1 {
+  color: #3f9e4d;
+}
+
+.actor-dynamic-2 {
+  color: #0284c7;
+}
+
+.actor-dynamic-3 {
+  color: #be5008;
+}
+
+.actor-dynamic-4 {
+  color: #0e7490;
+}
+
+.actor-dynamic-5 {
+  color: #65a30d;
+}
+
 .event-card {
   position: relative;
   display: flex;
@@ -1302,24 +1351,10 @@ input:disabled {
   outline-offset: 2px;
 }
 
-.target-chip.agent-codex-chip input:checked + span {
-  border-color: var(--tone-codex);
-  background: color-mix(in srgb, var(--tone-codex) 10%, transparent);
-  color: var(--tone-codex);
-  box-shadow: none;
-}
-
-.target-chip.agent-grok-chip input:checked + span {
-  border-color: var(--tone-grok);
-  background: color-mix(in srgb, var(--tone-grok) 10%, transparent);
-  color: var(--tone-grok);
-  box-shadow: none;
-}
-
-.target-chip.agent-kimi-chip input:checked + span {
-  border-color: var(--tone-kimi);
-  background: color-mix(in srgb, var(--tone-kimi) 10%, transparent);
-  color: var(--tone-kimi);
+.target-chip[class*="tone-"] input:checked + span {
+  border-color: var(--tone);
+  background: color-mix(in srgb, var(--tone) 10%, transparent);
+  color: var(--tone);
   box-shadow: none;
 }
 

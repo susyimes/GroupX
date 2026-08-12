@@ -10,6 +10,8 @@ import { isRecord } from "./protocol.js";
 
 export interface KimiAcpAdapterOptions extends AcpV1AdapterOptions {
   configPreflight?: KimiUnrestrictedConfigPreflight;
+  /** Room-local agent key; defaults to the builtin `kimi`. */
+  agentId?: string;
 }
 
 /** ACP v1 adapter for the fixed `kimi acp` entrypoint. */
@@ -17,8 +19,8 @@ export class KimiAcpAdapter extends AcpV1Adapter {
   readonly #configPreflight: KimiUnrestrictedConfigPreflight;
 
   constructor(options: KimiAcpAdapterOptions = {}) {
-    const { configPreflight = preflightKimiUnrestrictedConfig, ...acpOptions } = options;
-    super("kimi", "agent:kimi", ["acp"], acpOptions);
+    const { configPreflight = preflightKimiUnrestrictedConfig, agentId = "kimi", ...acpOptions } = options;
+    super(agentId, `agent:${agentId}`, ["acp"], acpOptions);
     this.#configPreflight = configPreflight;
   }
 
