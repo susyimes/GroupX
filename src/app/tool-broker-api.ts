@@ -1,6 +1,8 @@
 import type {
   McpAskInput,
   McpAskResult,
+  McpCoreMemoryRememberInput,
+  McpCoreMemoryRememberResult,
   McpIdentityReadInput,
   McpIdentityReadResult,
   McpIdentityRememberInput,
@@ -218,6 +220,9 @@ export class GroupXToolBrokerApi implements ToolBrokerApi {
       ...(input.scope === undefined
         ? {}
         : { scopeType: input.scope.type, scopeId: input.scope.id }),
+      ...(input.agentMemoryType === undefined
+        ? {}
+        : { agentMemoryType: input.agentMemoryType }),
       ...(input.kind === undefined ? {} : { kind: input.kind }),
       ...(input.subjectActorId === undefined
         ? {}
@@ -248,6 +253,28 @@ export class GroupXToolBrokerApi implements ToolBrokerApi {
       ...(input.subjectActorId === undefined
         ? {}
         : { subjectActorId: input.subjectActorId }),
+      ...(input.sourceEventId === undefined ? {} : { sourceEventId: input.sourceEventId }),
+      roomId: this.#roomId,
+      correlationId: active.rootCorrelationId
+    });
+    return { memory: toMemoryRecordContract(memory) };
+  }
+
+  async coreMemoryRemember(
+    caller: ToolCallerContext,
+    input: McpCoreMemoryRememberInput
+  ): Promise<McpCoreMemoryRememberResult> {
+    throwIfAborted(caller.signal);
+    const active = this.#turns.requireForCaller(caller);
+    const memory = await this.#broker.rememberMemory({
+      bindingId: caller.bindingId,
+      clientCommandId: input.clientCommandId,
+      scopeType: "agent",
+      scopeId: caller.actorId,
+      agentMemoryType: "core",
+      subjectActorId: caller.actorId,
+      kind: input.kind,
+      content: input.content,
       ...(input.sourceEventId === undefined ? {} : { sourceEventId: input.sourceEventId }),
       roomId: this.#roomId,
       correlationId: active.rootCorrelationId

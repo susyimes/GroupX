@@ -1,6 +1,8 @@
 import type {
   McpAskInput,
   McpAskResult,
+  McpCoreMemoryRememberInput,
+  McpCoreMemoryRememberResult,
   McpIdentityReadInput,
   McpIdentityReadResult,
   McpIdentityRememberInput,
@@ -74,6 +76,10 @@ export interface ToolBrokerApi {
     caller: ToolCallerContext,
     input: McpMemoryRememberInput
   ): Promise<McpMemoryRememberResult>;
+  coreMemoryRemember(
+    caller: ToolCallerContext,
+    input: McpCoreMemoryRememberInput
+  ): Promise<McpCoreMemoryRememberResult>;
   identityRead(
     caller: ToolCallerContext,
     input: McpIdentityReadInput

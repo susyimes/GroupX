@@ -39,6 +39,7 @@ import type {
   BrokerHealth,
   CancelTurnFromBindingInput,
   CancelTurnOutcome,
+  CompactContextFromBindingInput,
   CorrelationWaitResult,
   CorrelationReadResult,
   DispatchPreparation,
@@ -155,6 +156,7 @@ export class GroupXBroker {
   readonly #publisher: BrokerDependencies["publisher"];
   readonly #agentController: BrokerDependencies["agentController"];
   readonly #contextProvider: BrokerDependencies["contextProvider"];
+  readonly #contextController: BrokerDependencies["contextController"];
   readonly #turnLifecycle: BrokerDependencies["turnLifecycle"];
   readonly #acceptMessageLimits: BrokerDependencies["acceptMessageLimits"];
   readonly #selectedTransport: BrokerDependencies["selectedTransport"];
@@ -170,6 +172,10 @@ export class GroupXBroker {
   readonly #active = new Map<string, ActiveDispatch>();
   readonly #cancelFlights = new Map<string, Promise<CancelTurnOutcome>>();
   readonly #cancelCommandFlights = new Map<string, Promise<CancelTurnOutcome>>();
+  readonly #contextCommandFlights = new Map<
+    string,
+    Promise<import("../memory/types.js").RoomContextCompactionResult>
+  >();
   readonly #turnWaiters = new Map<string, Set<() => void>>();
   readonly #closingController = new AbortController();
   #closePromise?: Promise<void>;
@@ -183,6 +189,7 @@ export class GroupXBroker {
     this.#publisher = dependencies.publisher;
     this.#agentController = dependencies.agentController;
     this.#contextProvider = dependencies.contextProvider;
+    this.#contextController = dependencies.contextController;
     this.#turnLifecycle = dependencies.turnLifecycle;
     this.#acceptMessageLimits = dependencies.acceptMessageLimits;
     this.#selectedTransport = dependencies.selectedTransport;
@@ -262,6 +269,69 @@ export class GroupXBroker {
       }
     }
     return outcome.result;
+  }
+
+  contextUsage(roomId = this.#defaultRoomId): import("../memory/types.js").RoomContextUsage {
+    this.#assertOpen();
+    if (!this.#contextController) {
+      throw new GroupXError("SESSION_NOT_AVAILABLE", "Room context controller is unavailable");
+    }
+    return this.#contextController.inspectUsage(roomId);
+  }
+
+  async compactContextFromBinding(
+    input: CompactContextFromBindingInput
+  ): Promise<import("../memory/types.js").RoomContextCompactionResult> {
+    this.#assertOpen();
+    if (!this.#contextController) {
+      throw new GroupXError("SESSION_NOT_AVAILABLE", "Room context controller is unavailable");
+    }
+    const roomId = input.roomId ?? this.#defaultRoomId;
+    const command = this.#store.beginClientCommand<
+      import("../memory/types.js").RoomContextCompactionResult
+    >({
+      sourceBindingId: input.bindingId,
+      clientCommandId: input.clientCommandId,
+      commandType: "context.compact",
+      canonicalPayload: { roomId },
+      acceptedAt: this.#clock.now()
+    });
+    if (command.disposition === "replayed") return command.result;
+
+    const commandKey = JSON.stringify([input.bindingId, input.clientCommandId]);
+    const existingFlight = this.#contextCommandFlights.get(commandKey);
+    if (existingFlight) return existingFlight;
+    const flight = this.#completeContextCommand({ ...input, roomId });
+    this.#contextCommandFlights.set(commandKey, flight);
+    try {
+      return await flight;
+    } finally {
+      if (this.#contextCommandFlights.get(commandKey) === flight) {
+        this.#contextCommandFlights.delete(commandKey);
+      }
+    }
+  }
+
+  async #completeContextCommand(
+    input: CompactContextFromBindingInput & { roomId: string }
+  ): Promise<import("../memory/types.js").RoomContextCompactionResult> {
+    try {
+      const result = await this.#contextController!.compactNow(input.roomId);
+      if (this.#storeWritesFenced) {
+        throw new GroupXError(
+          "SESSION_NOT_AVAILABLE",
+          "Broker closed before the context command receipt was persisted"
+        );
+      }
+      return this.#store.completeClientCommand({
+        sourceBindingId: input.bindingId,
+        clientCommandId: input.clientCommandId,
+        result
+      });
+    } catch (error) {
+      this.#report(error, { operation: "context" });
+      throw error;
+    }
   }
 
   async cancelTurn(turnId: string): Promise<CancelTurnOutcome> {
@@ -687,6 +757,9 @@ export class GroupXBroker {
         kind: "remember",
         record: {
           ...record,
+          ...(record.scopeType === "agent"
+            ? { agentMemoryType: record.agentMemoryType ?? "core" }
+            : {}),
           authorActorId: binding.actorId,
           sourceKind: this.#sourceKindForBinding(binding)
         }
@@ -725,6 +798,9 @@ export class GroupXBroker {
         replacement: {
           scopeType: previous.scopeType,
           scopeId: previous.scopeId,
+          ...(previous.agentMemoryType === undefined
+            ? {}
+            : { agentMemoryType: previous.agentMemoryType }),
           kind: kind ?? previous.kind,
           content,
           ...(previous.subjectActorId === undefined
@@ -875,7 +951,8 @@ export class GroupXBroker {
     const settled = Promise.allSettled([
       ...this.#pumps.values(),
       ...this.#cancelFlights.values(),
-      ...this.#cancelCommandFlights.values()
+      ...this.#cancelCommandFlights.values(),
+      ...this.#contextCommandFlights.values()
     ]).then(() => true);
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timedOut = new Promise<boolean>((resolve) => {
@@ -1554,6 +1631,7 @@ export class GroupXBroker {
       }
       if (terminal.responseEvent) await this.#publishStored(terminal.responseEvent);
       await this.#publishStored(terminal.terminalEvent);
+      if (terminal.datedMemoryEvent) await this.#publishStored(terminal.datedMemoryEvent);
     } catch (error) {
       const after = this.#store.getTurn(active.preparation.claim.turn.turnId);
       if (after && TERMINAL_TURN_STATUSES.has(after.status)) {

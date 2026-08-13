@@ -8,6 +8,8 @@ import type {
   BootstrapResponse,
   CancelTurnRequest,
   CancelTurnResult,
+  CompactContextRequest,
+  CompactContextResult,
   CreateMessageAccepted,
   CreateMessageRequest,
   IdentityQuery,
@@ -16,6 +18,7 @@ import type {
   RememberMemoryRequest,
   RestartAgentAccepted,
   RestartAgentRequest,
+  RoomContextUsage,
   RetractIdentityRequest,
   RetractMemoryRequest,
   SupersedeIdentityRequest,
@@ -57,6 +60,42 @@ class FakeBroker implements BrokerApi {
       agents: [],
       recentEvents: [],
       activeTurns: []
+    };
+  }
+
+  contextUsage(_signal: AbortSignal): Awaitable<RoomContextUsage> {
+    this.calls.push({ method: "contextUsage" });
+    return {
+      roomId: this.roomId,
+      throughSeq: 20,
+      estimatedCharacters: 128_000,
+      maxCharacters: 256_000,
+      compactionTriggerCharacters: 192_000,
+      utilizationPercent: 50,
+      uncompactedMessageCount: 18,
+      summaryThroughSeq: 8,
+      compactable: true
+    };
+  }
+
+  compactContext(
+    request: CompactContextRequest,
+    _signal: AbortSignal
+  ): Awaitable<CompactContextResult> {
+    this.calls.push({ method: "compactContext", value: request });
+    return {
+      compacted: true,
+      usage: {
+        roomId: this.roomId,
+        throughSeq: 20,
+        estimatedCharacters: 32_000,
+        maxCharacters: 256_000,
+        compactionTriggerCharacters: 192_000,
+        utilizationPercent: 13,
+        uncompactedMessageCount: 12,
+        summaryThroughSeq: 8,
+        compactable: false
+      }
     };
   }
 
@@ -482,6 +521,42 @@ describe("GroupXHttpServer", () => {
       body: "hello"
     });
     expect(wrongMedia.status).toBe(415);
+  });
+
+  it("exposes room context usage and validates the explicit compaction command", async () => {
+    const usage = await fetch(`${origin}/api/context`);
+    expect(usage.status).toBe(200);
+    expect(await usage.json()).toMatchObject({
+      roomId: "room:main",
+      estimatedCharacters: 128_000,
+      maxCharacters: 256_000,
+      utilizationPercent: 50,
+      compactable: true
+    });
+
+    const compacted = await fetch(`${origin}/api/context/compact`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ clientCommandId: "web-context-compact-1" })
+    });
+    expect(compacted.status).toBe(200);
+    expect(await compacted.json()).toMatchObject({
+      compacted: true,
+      usage: { uncompactedMessageCount: 12, compactable: false }
+    });
+    expect(broker.calls.at(-1)).toEqual({
+      method: "compactContext",
+      value: { clientCommandId: "web-context-compact-1" }
+    });
+
+    const callsBeforeInvalid = broker.calls.length;
+    const invalid = await fetch(`${origin}/api/context/compact`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ clientCommandId: "web-context-compact-2", from: "agent:codex" })
+    });
+    expect(invalid.status).toBe(400);
+    expect(broker.calls).toHaveLength(callsBeforeInvalid);
   });
 
   it("accepts bootstrap agents that omit optional runtime details", async () => {

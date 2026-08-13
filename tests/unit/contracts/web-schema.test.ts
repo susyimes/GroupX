@@ -6,11 +6,13 @@ import {
   BootstrapResponseSchema,
   CancelTurnResultSchema,
   CancelTurnRequestSchema,
+  CompactContextRequestSchema,
   CreateMessageRequestSchema,
   EventsQuerySchema,
   GroupXEnvelopeSchema,
   IdentityQuerySchema,
   McpAskInputSchema,
+  McpCoreMemoryRememberInputSchema,
   McpIdentityReadInputSchema,
   McpIdentityRememberInputSchema,
   McpMemorySearchInputSchema,
@@ -18,6 +20,7 @@ import {
   McpReadInputSchema,
   McpSendInputSchema,
   MemoryQuerySchema,
+  MemoryRecordSchema,
   RememberIdentityRequestSchema,
   RememberMemoryRequestSchema,
   RestartAgentRequestSchema,
@@ -35,6 +38,7 @@ describe("Web/MCP JSON schema safety", () => {
     const schemas = [
       CreateMessageRequestSchema,
       CancelTurnRequestSchema,
+      CompactContextRequestSchema,
       RestartAgentRequestSchema,
       RememberMemoryRequestSchema,
       SupersedeMemoryRequestSchema,
@@ -44,6 +48,7 @@ describe("Web/MCP JSON schema safety", () => {
       RetractIdentityRequestSchema,
       McpSendInputSchema,
       McpAskInputSchema,
+      McpCoreMemoryRememberInputSchema,
       McpReadInputSchema,
       McpMemorySearchInputSchema,
       McpMemoryRememberInputSchema,
@@ -73,6 +78,38 @@ describe("Web/MCP JSON schema safety", () => {
     for (const schema of [EventsQuerySchema, MemoryQuerySchema, IdentityQuerySchema]) {
       expect(z.toJSONSchema(schema, { io: "input" }).additionalProperties).toBe(false);
     }
+  });
+
+  it("requires core or dated classification only for Agent-scoped memory", () => {
+    const base = {
+      memoryId: "memory-1",
+      kind: "note",
+      authorActorId: "agent:codex",
+      content: "remember this",
+      sourceKind: "mcp",
+      status: "active",
+      createdAt: "2026-08-13T00:00:00.000Z"
+    };
+    expect(
+      MemoryRecordSchema.safeParse({
+        ...base,
+        scope: { type: "agent", id: "agent:codex" },
+        agentMemoryType: "core"
+      }).success
+    ).toBe(true);
+    expect(
+      MemoryRecordSchema.safeParse({
+        ...base,
+        scope: { type: "agent", id: "agent:codex" }
+      }).success
+    ).toBe(false);
+    expect(
+      MemoryRecordSchema.safeParse({
+        ...base,
+        scope: { type: "room", id: "room:main" },
+        agentMemoryType: "dated"
+      }).success
+    ).toBe(false);
   });
 
   it("makes the unified error body strict at both levels", () => {

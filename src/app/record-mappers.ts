@@ -59,13 +59,17 @@ export function toMemoryRecordContract(record: MemoryRecord): MemoryRecordContra
   if (
     record.sourceKind !== "web" &&
     record.sourceKind !== "mcp" &&
-    record.sourceKind !== "generated_summary"
+    record.sourceKind !== "generated_summary" &&
+    record.sourceKind !== "automatic_turn"
   ) {
     throw new GroupXError("STORE_UNAVAILABLE", "Memory record has an invalid source kind");
   }
   return {
     memoryId: record.memoryId,
     scope: { type: record.scopeType, id: record.scopeId },
+    ...(record.agentMemoryType === undefined
+      ? {}
+      : { agentMemoryType: record.agentMemoryType }),
     kind: record.kind,
     authorActorId: record.authorActorId,
     ...(record.subjectActorId === undefined

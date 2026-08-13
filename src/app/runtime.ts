@@ -308,6 +308,7 @@ export class GroupXRuntime {
           }
         },
         contextProvider: contextProvider(this.contextEngine, this.config),
+        contextController: this.contextEngine,
         turnLifecycle: turns,
         acceptMessageLimits: {
           rootTurns: this.config.limits.rootTurns,

@@ -8,6 +8,8 @@ import {
   MAX_TARGETS_PER_MESSAGE,
   McpAskInputSchema,
   McpAskResultSchema,
+  McpCoreMemoryRememberInputSchema,
+  McpCoreMemoryRememberResultSchema,
   McpIdentityReadInputSchema,
   McpIdentityReadResultSchema,
   McpIdentityRememberInputSchema,
@@ -22,6 +24,8 @@ import {
   McpSendResultSchema,
   parseMcpAskInput,
   parseMcpAskResult,
+  parseMcpCoreMemoryRememberInput,
+  parseMcpCoreMemoryRememberResult,
   parseMcpIdentityReadInput,
   parseMcpIdentityReadResult,
   parseMcpIdentityRememberInput,
@@ -53,6 +57,7 @@ export const GROUPX_MCP_TOOL_NAMES = [
   "read",
   "memory_search",
   "memory_remember",
+  "core_memory_remember",
   "identity_read",
   "identity_remember"
 ] as const;
@@ -214,6 +219,25 @@ export function createGroupXMcpServer(options: CreateGroupXMcpServerOptions): Mc
           await options.broker.memoryRemember(
             caller,
             parseMcpMemoryRememberInput(input, knownTargetOptions)
+          )
+        )
+      )
+  );
+
+  server.registerTool(
+    "core_memory_remember",
+    {
+      description:
+        "Write a curated core memory for the current Agent only. Caller and target identity come from the active GroupX binding.",
+      inputSchema: McpCoreMemoryRememberInputSchema,
+      outputSchema: McpCoreMemoryRememberResultSchema
+    },
+    async (input, extra) =>
+      invoke(options.binding, extra, async (caller) =>
+        parseMcpCoreMemoryRememberResult(
+          await options.broker.coreMemoryRemember(
+            caller,
+            parseMcpCoreMemoryRememberInput(input)
           )
         )
       )

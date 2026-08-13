@@ -9,17 +9,17 @@
     >
     <meta name="color-scheme" content="light dark">
     <title>GroupX · Agent 配置</title>
-    <link rel="stylesheet" href="/setup.css?v=0.1.4-memory-layout1">
-    <script type="module" src="/setup.js?v=0.1.4-memory-layout1"></script>
+    <link rel="stylesheet" href="/setup.css?v=0.1.8-memory-layers1">
+    <script type="module" src="/setup.js?v=0.1.8-memory-layers1"></script>
   </head>
   <body>
     <header class="setup-header">
-      <a class="brand" href="/?v=0.1.4-memory-layout1" aria-label="GroupX">
+      <a class="brand" href="/?v=0.1.8-memory-layers1" aria-label="GroupX">
         <span class="brand-mark" aria-hidden="true">GX</span>
         <span><strong>GroupX</strong><small>Agent room setup</small></span>
       </a>
       <div class="header-actions">
-        <a id="back-room" class="quiet-link" href="/?v=0.1.4-memory-layout1" hidden>返回群聊</a>
+        <a id="back-room" class="quiet-link" href="/?v=0.1.8-memory-layers1" hidden>返回群聊</a>
         <button id="theme-toggle" class="theme-toggle" type="button" aria-label="切换到夜间模式">☾</button>
       </div>
     </header>
@@ -106,7 +106,7 @@
           <p id="success-copy"></p>
           <code id="saved-path"></code>
           <div class="success-actions">
-            <a id="success-room-link" class="primary-link" href="/?v=0.1.4-memory-layout1" hidden>返回群聊</a>
+            <a id="success-room-link" class="primary-link" href="/?v=0.1.8-memory-layers1" hidden>返回群聊</a>
             <button id="edit-again" class="secondary-button" type="button">继续编辑</button>
           </div>
         </section>
@@ -164,8 +164,8 @@
         <details class="agent-memory-settings">
           <summary>
             <span>
-              <strong>Agent 独立记忆</strong>
-              <small>只注入这个 Agent，按日期保存</small>
+              <strong>Agent 记忆</strong>
+              <small>核心记忆主动维护，日期记忆自动归档</small>
             </span>
             <span class="agent-memory-count">0</span>
           </summary>
@@ -190,10 +190,10 @@
                   </select>
                 </label>
                 <label class="agent-memory-content-field">
-                  <span>记录一条独立记忆</span>
-                  <textarea class="agent-memory-input" maxlength="32768" rows="3" placeholder="写下只供这个 Agent 后续回合使用的信息"></textarea>
+                  <span>添加核心记忆</span>
+                  <textarea class="agent-memory-input" maxlength="32768" rows="3" placeholder="写下这个 Agent 需要长期保持的核心信息"></textarea>
                 </label>
-                <button class="agent-memory-submit" type="button">保存记忆</button>
+                <button class="agent-memory-submit" type="button">保存核心记忆</button>
               </div>
             </div>
           </div>

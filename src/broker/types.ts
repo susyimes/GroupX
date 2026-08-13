@@ -65,6 +65,11 @@ export interface BrokerContextProvider {
   }): BrokerContextPacket | Promise<BrokerContextPacket>;
 }
 
+export interface BrokerContextController {
+  inspectUsage(roomId: string): import("../memory/types.js").RoomContextUsage;
+  compactNow(roomId: string): Promise<import("../memory/types.js").RoomContextCompactionResult>;
+}
+
 export interface BrokerEventPublisher {
   publish(envelope: GroupXEnvelope): void | Promise<void>;
 }
@@ -114,6 +119,7 @@ export interface BrokerDependencies {
   publisher: BrokerEventPublisher;
   agentController?: BrokerAgentController;
   contextProvider?: BrokerContextProvider;
+  contextController?: BrokerContextController;
   turnLifecycle?: BrokerTurnLifecycle;
   acceptMessageLimits?: AcceptMessageLimits;
   selectedTransport: RuntimeTransport;
@@ -136,6 +142,12 @@ export interface CancelTurnFromBindingInput {
   turnId: string;
   bindingId: string;
   clientCommandId: string;
+}
+
+export interface CompactContextFromBindingInput {
+  bindingId: string;
+  clientCommandId: string;
+  roomId?: string;
 }
 
 export interface CorrelationReadResult {
@@ -258,6 +270,10 @@ export interface BrokerFacade {
   acceptMessage(input: AcceptBrokerMessageInput): Promise<import("../storage/types.js").AcceptMessageResult>;
   cancelTurn(turnId: string): Promise<CancelTurnOutcome>;
   cancelFromBinding(input: CancelTurnFromBindingInput): Promise<CancelTurnOutcome>;
+  contextUsage(roomId?: string): import("../memory/types.js").RoomContextUsage;
+  compactContextFromBinding(
+    input: CompactContextFromBindingInput
+  ): Promise<import("../memory/types.js").RoomContextCompactionResult>;
   readCorrelation(input?: ReadCorrelationInput): CorrelationReadResult;
   waitForCorrelation(input: WaitForCorrelationInput): Promise<CorrelationWaitResult>;
   health(): BrokerHealth;

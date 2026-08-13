@@ -4,6 +4,8 @@ import type {
   BootstrapResponse,
   CancelTurnRequest,
   CancelTurnResult,
+  CompactContextRequest,
+  CompactContextResult,
   CreateMessageAccepted,
   CreateMessageRequest,
   IdentityQuery,
@@ -14,6 +16,7 @@ import type {
   RememberMemoryRequest,
   RestartAgentAccepted,
   RestartAgentRequest,
+  RoomContextUsage,
   RetractIdentityRequest,
   RetractMemoryRequest,
   SupersedeIdentityRequest,
@@ -69,6 +72,11 @@ export interface BrokerApi {
 
   health(signal: AbortSignal): Awaitable<BrokerHealth>;
   bootstrap(signal: AbortSignal): Awaitable<BootstrapResponse>;
+  contextUsage(signal: AbortSignal): Awaitable<RoomContextUsage>;
+  compactContext(
+    request: CompactContextRequest,
+    signal: AbortSignal
+  ): Awaitable<CompactContextResult>;
   createMessage(
     request: CreateMessageRequest,
     signal: AbortSignal

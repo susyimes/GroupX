@@ -16,6 +16,8 @@ import {
   parseBootstrapResponse,
   parseCancelTurnRequest,
   parseCancelTurnResult,
+  parseCompactContextRequest,
+  parseCompactContextResult,
   parseContractOutput,
   parseCreateMessageAccepted,
   parseCreateMessageRequest,
@@ -30,6 +32,7 @@ import {
   parseRememberMemoryRequest,
   parseRestartAgentAccepted,
   parseRestartAgentRequest,
+  parseRoomContextUsage,
   parseSetupSaveRequest,
   parseSetupSaveResponse,
   parseSetupSnapshot,
@@ -585,6 +588,33 @@ export class GroupXHttpServer {
           validateBrokerOutput(
             parseBootstrapResponse,
             await this.#options.broker.bootstrap(abort.signal)
+          )
+        );
+        return;
+      }
+      if (url.pathname === "/api/context") {
+        if (method !== "GET") return methodNotAllowed(response, ["GET"]);
+        writeJson(
+          response,
+          200,
+          validateBrokerOutput(
+            parseRoomContextUsage,
+            await this.#options.broker.contextUsage(abort.signal)
+          )
+        );
+        return;
+      }
+      if (url.pathname === "/api/context/compact") {
+        if (method !== "POST") return methodNotAllowed(response, ["POST"]);
+        const body = parseCompactContextRequest(
+          await readJsonBody(request, this.#options.maxRequestBodyBytes)
+        );
+        writeJson(
+          response,
+          200,
+          validateBrokerOutput(
+            parseCompactContextResult,
+            await this.#options.broker.compactContext(body, abort.signal)
           )
         );
         return;

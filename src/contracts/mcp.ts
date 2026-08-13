@@ -13,6 +13,7 @@ import {
 } from "./common.js";
 import { GroupXEnvelopeSchema } from "./events.js";
 import {
+  AgentMemoryTypeSchema,
   IdentityKindSchema,
   MemoryKindSchema,
   MemoryRecordSchema,
@@ -110,6 +111,7 @@ export const McpReadResultSchema = z.object({
 export const McpMemorySearchInputSchema = z.strictObject({
   query: z.string().min(1).max(1_024).optional(),
   scope: MemoryScopeSchema.optional(),
+  agentMemoryType: AgentMemoryTypeSchema.optional(),
   kind: MemoryKindSchema.optional(),
   subjectActorId: AgentActorIdSchema.optional(),
   cursor: CursorParameterSchema.optional(),
@@ -134,6 +136,15 @@ export const McpMemoryRememberInputSchema = z.strictObject({
 export const McpMemoryRememberResultSchema = z.object({
   memory: MemoryRecordSchema
 }).passthrough();
+
+export const McpCoreMemoryRememberInputSchema = z.strictObject({
+  clientCommandId: ClientCommandIdSchema,
+  kind: WritableMemoryKindSchema,
+  content: MessageContentSchema,
+  sourceEventId: ReferenceIdSchema.optional()
+});
+
+export const McpCoreMemoryRememberResultSchema = McpMemoryRememberResultSchema;
 
 export const McpIdentityReadInputSchema = z.strictObject({
   cursor: CursorParameterSchema.optional(),
@@ -167,6 +178,8 @@ export type McpMemorySearchInput = z.infer<typeof McpMemorySearchInputSchema>;
 export type McpMemorySearchResult = z.infer<typeof McpMemorySearchResultSchema>;
 export type McpMemoryRememberInput = z.infer<typeof McpMemoryRememberInputSchema>;
 export type McpMemoryRememberResult = z.infer<typeof McpMemoryRememberResultSchema>;
+export type McpCoreMemoryRememberInput = z.infer<typeof McpCoreMemoryRememberInputSchema>;
+export type McpCoreMemoryRememberResult = z.infer<typeof McpCoreMemoryRememberResultSchema>;
 export type McpIdentityReadInput = z.infer<typeof McpIdentityReadInputSchema>;
 export type McpIdentityReadResult = z.infer<typeof McpIdentityReadResultSchema>;
 export type McpIdentityRememberInput = z.infer<typeof McpIdentityRememberInputSchema>;
@@ -233,6 +246,14 @@ export function parseMcpMemorySearchResult(input: unknown): McpMemorySearchResul
 
 export function parseMcpMemoryRememberResult(input: unknown): McpMemoryRememberResult {
   return parseContractOutput(McpMemoryRememberResultSchema, input);
+}
+
+export function parseMcpCoreMemoryRememberInput(input: unknown): McpCoreMemoryRememberInput {
+  return parseWriteRequest(McpCoreMemoryRememberInputSchema, input);
+}
+
+export function parseMcpCoreMemoryRememberResult(input: unknown): McpCoreMemoryRememberResult {
+  return parseContractOutput(McpCoreMemoryRememberResultSchema, input);
 }
 
 export function parseMcpIdentityReadResult(input: unknown): McpIdentityReadResult {

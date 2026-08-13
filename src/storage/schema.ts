@@ -1,4 +1,4 @@
-export const CURRENT_SCHEMA_VERSION = 5;
+export const CURRENT_SCHEMA_VERSION = 6;
 
 export interface Migration {
   version: number;
@@ -338,6 +338,38 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE UNIQUE INDEX IF NOT EXISTS summaries_one_active_room_idx
         ON summaries(room_id)
         WHERE status = 'active';
+    `
+  },
+  {
+    version: 6,
+    name: "split_agent_core_and_dated_memory",
+    sql: `
+      ALTER TABLE memory_records
+        ADD COLUMN agent_memory_type TEXT
+        CHECK (agent_memory_type IN ('core', 'dated'));
+
+      UPDATE memory_records
+      SET agent_memory_type = 'core'
+      WHERE scope_type = 'agent';
+
+      CREATE INDEX memory_agent_type_status_created_idx
+        ON memory_records(scope_type, scope_id, agent_memory_type, status, created_at DESC);
+
+      CREATE TRIGGER memory_records_agent_type_bi
+      BEFORE INSERT ON memory_records
+      WHEN (NEW.scope_type = 'agent' AND NEW.agent_memory_type IS NULL)
+        OR (NEW.scope_type <> 'agent' AND NEW.agent_memory_type IS NOT NULL)
+      BEGIN
+        SELECT RAISE(ABORT, 'agent_memory_type must match agent scope');
+      END;
+
+      CREATE TRIGGER memory_records_agent_type_bu
+      BEFORE UPDATE OF scope_type, agent_memory_type ON memory_records
+      WHEN (NEW.scope_type = 'agent' AND NEW.agent_memory_type IS NULL)
+        OR (NEW.scope_type <> 'agent' AND NEW.agent_memory_type IS NOT NULL)
+      BEGIN
+        SELECT RAISE(ABORT, 'agent_memory_type must match agent scope');
+      END;
     `
   }
 ];

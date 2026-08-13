@@ -41,6 +41,9 @@ function createBroker(callers: ToolCallerContext[]): ToolBrokerApi {
     async memoryRemember() {
       throw new Error("unexpected memoryRemember");
     },
+    async coreMemoryRemember() {
+      throw new Error("unexpected coreMemoryRemember");
+    },
     async identityRead() {
       throw new Error("unexpected identityRead");
     },

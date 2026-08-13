@@ -8,6 +8,9 @@ import {
   parseCreateMessageRequest,
   parseCreateMessageAccepted,
   parseCancelTurnResult,
+  parseCompactContextRequest,
+  parseCompactContextResult,
+  parseRoomContextUsage,
   parseLastEventId,
   parseMcpSendInput,
   httpStatusForErrorCode,
@@ -281,5 +284,45 @@ describe("cancel Turn response contract", () => {
     ]) {
       expectContractCode(() => parseCancelTurnResult(invalid), "INVALID_ENVELOPE");
     }
+  });
+});
+
+describe("single-room context controls", () => {
+  const usage = {
+    roomId: "room:main",
+    throughSeq: 18,
+    estimatedCharacters: 128_000,
+    maxCharacters: 256_000,
+    compactionTriggerCharacters: 192_000,
+    utilizationPercent: 50,
+    uncompactedMessageCount: 18,
+    summaryThroughSeq: 8,
+    compactable: true
+  } as const;
+
+  it("accepts a strict idempotent compact command and bounded usage projection", () => {
+    expect(parseCompactContextRequest({ clientCommandId: "web-context-1" })).toEqual({
+      clientCommandId: "web-context-1"
+    });
+    expect(parseRoomContextUsage(usage)).toEqual(usage);
+    expect(parseCompactContextResult({ compacted: true, usage })).toEqual({
+      compacted: true,
+      usage
+    });
+  });
+
+  it("rejects forged sender fields and inconsistent usage boundaries", () => {
+    expectContractCode(
+      () => parseCompactContextRequest({ clientCommandId: "web-context-2", from: "agent:codex" }),
+      "SENDER_FIELD_FORBIDDEN"
+    );
+    expectContractCode(
+      () =>
+        parseRoomContextUsage({
+          ...usage,
+          compactionTriggerCharacters: usage.maxCharacters + 1
+        }),
+      "INVALID_ENVELOPE"
+    );
   });
 });

@@ -18,7 +18,7 @@ import type {
   IdentityContextEntry
 } from "./types.js";
 
-const CONTEXT_SCHEMA = "groupx.context/0.3" as const;
+const CONTEXT_SCHEMA = "groupx.context/0.4" as const;
 const QUERY_LIMIT = 500;
 const MAX_REPLY_DEPTH = 64;
 
@@ -204,7 +204,8 @@ export function renderContextPacket(input: {
   pushSection(parts, "self_identity", input.sections.selfIdentity);
   pushSection(parts, "user_authored_identity", input.sections.userAuthoredIdentity);
   pushSection(parts, "observed_identity", input.sections.observedIdentity);
-  pushSection(parts, "agent_memory", input.sections.agentMemory);
+  pushSection(parts, "agent_core_memory", input.sections.agentCoreMemory);
+  pushSection(parts, "agent_dated_memory", input.sections.agentDatedMemory);
   pushSection(parts, "public_memory", input.sections.publicMemory);
   pushSection(parts, "room_checkpoint_summary", input.sections.generatedSummary);
   pushSection(parts, "room_delta_since_cursor", input.sections.unreadTranscript);
@@ -285,15 +286,31 @@ export class ContextPacketBuilder {
         .filter((memory) => memory.status === "active")
         .map(memoryEntry)
     );
-    const agentMemory = sortRecent(
-      this.#store
-        .searchMemory({
-          scopeType: "agent",
-          scopeId: input.targetActorId,
-          includeHistory: false,
-          limit: QUERY_LIMIT
-        })
-        .filter((memory) => memory.status === "active")
+    const agentMemoryRecords = this.#store
+      .searchMemory({
+        scopeType: "agent",
+        scopeId: input.targetActorId,
+        includeHistory: false,
+        limit: QUERY_LIMIT
+      })
+      .filter((memory) => memory.status === "active");
+    const agentCoreMemory = sortRecent(
+      agentMemoryRecords
+        .filter((memory) => memory.agentMemoryType === "core")
+        .map(memoryEntry)
+    );
+    const representedMessageIds = new Set([
+      currentMessage.id,
+      ...replyChain.map((entry) => entry.id),
+      ...unreadTranscript.map((entry) => entry.id)
+    ]);
+    const agentDatedMemory = sortRecent(
+      agentMemoryRecords
+        .filter(
+          (memory) =>
+            memory.agentMemoryType === "dated" &&
+            (memory.sourceEventId === undefined || !representedMessageIds.has(memory.sourceEventId))
+        )
         .map(memoryEntry)
     );
     const identities = sortRecent(
@@ -322,7 +339,8 @@ export class ContextPacketBuilder {
       selfIdentity: [],
       userAuthoredIdentity: [],
       observedIdentity: [],
-      agentMemory: [],
+      agentCoreMemory: [],
+      agentDatedMemory: [],
       publicMemory: [],
       generatedSummary,
       unreadTranscript: [],
@@ -351,10 +369,11 @@ export class ContextPacketBuilder {
       section: OptionalSectionName;
       entry: ContextEntry | IdentityContextEntry;
     }> = [
+      ...agentCoreMemory.map((entry) => ({ section: "agentCoreMemory" as const, entry })),
       ...[...unreadTranscript]
         .sort((left, right) => (right.seq ?? 0) - (left.seq ?? 0))
         .map((entry) => ({ section: "unreadTranscript" as const, entry })),
-      ...agentMemory.map((entry) => ({ section: "agentMemory" as const, entry })),
+      ...agentDatedMemory.map((entry) => ({ section: "agentDatedMemory" as const, entry })),
       ...publicMemory.map((entry) => ({ section: "publicMemory" as const, entry })),
       ...identityGroups.selfIdentity.map((entry) => ({
         section: "selfIdentity" as const,
@@ -388,7 +407,8 @@ export class ContextPacketBuilder {
       userAuthoredIdentity:
         identityGroups.userAuthoredIdentity.length - sections.userAuthoredIdentity.length,
       observedIdentity: identityGroups.observedIdentity.length - sections.observedIdentity.length,
-      agentMemory: agentMemory.length - sections.agentMemory.length,
+      agentCoreMemory: agentCoreMemory.length - sections.agentCoreMemory.length,
+      agentDatedMemory: agentDatedMemory.length - sections.agentDatedMemory.length,
       publicMemory: publicMemory.length - sections.publicMemory.length,
       generatedSummary: 0,
       unreadTranscript: unreadTranscript.length - sections.unreadTranscript.length

@@ -36,6 +36,62 @@ class RecordingSummarizer implements RoomContextSummarizer {
 afterEach(cleanupMemoryTestFixtures);
 
 describe("RoomContextEngine", () => {
+  it("reports the single-room character budget and manually compacts only old messages", async () => {
+    const fixture = createMemoryTestFixture();
+    for (let index = 0; index < 16; index += 1) {
+      appendMessage(fixture, {
+        eventId: `evt_manual_context_${index}`,
+        actorId: index % 2 === 0 ? "user:web" : "agent:codex",
+        content: `manual-context-${index} ${"m".repeat(80)}`
+      });
+    }
+    fixture.store.appendDurableEvent({
+      eventId: "evt_manual_context_tool",
+      roomId: "room:main",
+      eventType: "tool.progress.recorded",
+      actorId: "agent:codex",
+      correlationId: "corr_manual_context",
+      body: { turnId: "turn:manual", details: { output: "not context" } }
+    });
+    const summarizer = new RecordingSummarizer();
+    const engine = new RoomContextEngine({
+      store: fixture.store,
+      summarizer,
+      maxChars: 10_000,
+      maxCompactionInputChars: 20_000,
+      maxSummaryChars: 500,
+      manualRetainMessages: 4
+    });
+
+    const before = engine.inspectUsage("room:main");
+    expect(before).toMatchObject({
+      roomId: "room:main",
+      throughSeq: 17,
+      maxCharacters: 10_000,
+      compactionTriggerCharacters: 7_500,
+      uncompactedMessageCount: 16,
+      compactable: true
+    });
+    expect(before.estimatedCharacters).toBeGreaterThan(1_000);
+
+    const result = await engine.compactNow("room:main");
+
+    expect(result.compacted).toBe(true);
+    expect(summarizer.calls).toHaveLength(1);
+    expect(summarizer.calls[0]!.messages).toHaveLength(12);
+    expect(summarizer.calls[0]!.messages.at(-1)?.eventId).toBe("evt_manual_context_11");
+    expect(JSON.stringify(summarizer.calls)).not.toContain("not context");
+    expect(result.usage).toMatchObject({
+      throughSeq: 17,
+      uncompactedMessageCount: 4,
+      compactable: false
+    });
+    expect(result.usage.summaryThroughSeq).toBe(
+      summarizer.calls[0]!.messages.at(-1)!.seq
+    );
+    expect(fixture.store.countEvents()).toBe(17);
+  });
+
   it("does not send durable reasoning or tool progress records to the compaction Agent", async () => {
     const fixture = createMemoryTestFixture();
     for (let index = 0; index < 10; index += 1) {

@@ -87,16 +87,29 @@ function seedContext(fixture: MemoryTestFixture) {
     memoryId: "memory_agent_codex",
     scopeType: "agent",
     scopeId: "agent:codex",
+    agentMemoryType: "core",
     kind: "instruction",
     authorActorId: "user:web",
     subjectActorId: "agent:codex",
-    content: "Codex private dated memory",
+    content: "Codex private core memory",
     sourceKind: "web"
+  });
+  memory.remember({
+    memoryId: "memory_agent_codex_dated",
+    scopeType: "agent",
+    scopeId: "agent:codex",
+    agentMemoryType: "dated",
+    kind: "note",
+    authorActorId: "agent:codex",
+    subjectActorId: "agent:codex",
+    content: "Codex automatic dated memory",
+    sourceKind: "automatic_turn"
   });
   memory.remember({
     memoryId: "memory_agent_grok",
     scopeType: "agent",
     scopeId: "agent:grok",
+    agentMemoryType: "core",
     kind: "note",
     authorActorId: "user:web",
     subjectActorId: "agent:grok",
@@ -247,15 +260,23 @@ describe("ContextPacketBuilder provenance and cursor semantics", () => {
         content: "Stable reviewer identity from groupx.json"
       })
     ]);
-    expect(packet.sections.agentMemory).toEqual([
+    expect(packet.sections.agentCoreMemory).toEqual([
       expect.objectContaining({
         id: "memory_agent_codex",
         subject: "agent:codex",
-        content: "Codex private dated memory"
+        content: "Codex private core memory"
+      })
+    ]);
+    expect(packet.sections.agentDatedMemory).toEqual([
+      expect.objectContaining({
+        id: "memory_agent_codex_dated",
+        subject: "agent:codex",
+        content: "Codex automatic dated memory"
       })
     ]);
     expect(packet.text).toContain("[configured_agent_identity]");
-    expect(packet.text).toContain("[agent_memory]");
+    expect(packet.text).toContain("[agent_core_memory]");
+    expect(packet.text).toContain("[agent_dated_memory]");
     expect(packet.text).not.toContain("Grok-only memory");
     expect(packet.text).not.toContain("Retracted public memory");
 
@@ -326,6 +347,39 @@ describe("ContextPacketBuilder provenance and cursor semantics", () => {
     expect(packet.text).toContain(content);
     expect(fixture.store.countEvents()).toBe(beforeEvents);
   });
+
+  it("does not duplicate automatic dated memory while its response is already in transcript", () => {
+    const fixture = createMemoryTestFixture();
+    const seeded = seedContext(fixture);
+    const memory = new GroupXMemoryService(fixture.store, fixedClock);
+    memory.remember({
+      memoryId: "memory_dated_duplicate",
+      scopeType: "agent",
+      scopeId: "agent:codex",
+      agentMemoryType: "dated",
+      kind: "note",
+      authorActorId: "agent:codex",
+      subjectActorId: "agent:codex",
+      content: "duplicate of unread response",
+      sourceEventId: "evt_unread_new",
+      sourceKind: "automatic_turn"
+    });
+
+    const packet = new ContextPacketBuilder(fixture.store).buildContextPacket({
+      roomId: "room:main",
+      targetActorId: "agent:codex",
+      currentEvent: seeded.current,
+      throughSeq: seeded.current.seq,
+      maxChars: 100_000
+    });
+
+    expect(packet.sections.unreadTranscript.map((entry) => entry.id)).toContain(
+      "evt_unread_new"
+    );
+    expect(packet.sections.agentDatedMemory.map((entry) => entry.id)).not.toContain(
+      "memory_dated_duplicate"
+    );
+  });
 });
 
 describe("ContextPacketBuilder deterministic budget", () => {
@@ -345,7 +399,8 @@ describe("ContextPacketBuilder deterministic budget", () => {
       selfIdentity: [],
       userAuthoredIdentity: [],
       observedIdentity: [],
-      agentMemory: [],
+      agentCoreMemory: [],
+      agentDatedMemory: [],
       publicMemory: [],
       generatedSummary: [],
       unreadTranscript: [],
@@ -382,7 +437,8 @@ describe("ContextPacketBuilder deterministic budget", () => {
       selfIdentity: 1,
       userAuthoredIdentity: 1,
       observedIdentity: 1,
-      agentMemory: 1,
+      agentCoreMemory: 1,
+      agentDatedMemory: 1,
       publicMemory: 1,
       generatedSummary: 0,
       unreadTranscript: 2
@@ -401,7 +457,7 @@ describe("ContextPacketBuilder deterministic budget", () => {
     );
   });
 
-  it("selects newest unread transcript before public memory and identity", () => {
+  it("selects core memory before dated memory, transcript, public memory and identity", () => {
     const fixture = createMemoryTestFixture();
     const seeded = seedContext(fixture);
     const builder = new ContextPacketBuilder(fixture.store);
@@ -412,10 +468,8 @@ describe("ContextPacketBuilder deterministic budget", () => {
       throughSeq: seeded.current.seq,
       maxChars: 100_000
     });
-    const newestUnread = full.sections.unreadTranscript.find(
-      (entry) => entry.id === "evt_unread_new"
-    )!;
-    const oneUnreadText = renderContextPacket({
+    const coreMemory = full.sections.agentCoreMemory[0]!;
+    const oneCoreText = renderContextPacket({
       roomId: "room:main",
       targetActorId: "agent:codex",
       afterSeq: seeded.root.seq,
@@ -425,10 +479,11 @@ describe("ContextPacketBuilder deterministic budget", () => {
         selfIdentity: [],
         userAuthoredIdentity: [],
         observedIdentity: [],
-        agentMemory: [],
+        agentCoreMemory: [coreMemory],
+        agentDatedMemory: [],
         publicMemory: [],
         generatedSummary: [],
-        unreadTranscript: [newestUnread],
+        unreadTranscript: [],
         replyChain: full.sections.replyChain,
         currentMessage: full.sections.currentMessage
       }
@@ -439,14 +494,16 @@ describe("ContextPacketBuilder deterministic budget", () => {
       targetActorId: "agent:codex",
       currentEvent: seeded.current,
       throughSeq: seeded.current.seq,
-      maxChars: oneUnreadText.length
+      maxChars: oneCoreText.length
     });
-    expect(packet.sections.unreadTranscript.map((entry) => entry.id)).toEqual([
-      "evt_unread_new"
+    expect(packet.sections.agentCoreMemory.map((entry) => entry.id)).toEqual([
+      "memory_agent_codex"
     ]);
+    expect(packet.sections.agentDatedMemory).toEqual([]);
+    expect(packet.sections.unreadTranscript).toEqual([]);
     expect(packet.sections.publicMemory).toEqual([]);
     expect(packet.sections.selfIdentity).toEqual([]);
-    expect(packet.text).toBe(oneUnreadText);
+    expect(packet.text).toBe(oneCoreText);
   });
 });
 
@@ -490,7 +547,7 @@ describe("ContextPacketBuilder durable room checkpoint", () => {
       throughSeq: current.seq,
       maxChars: 100_000
     });
-    expect(packet.schema).toBe("groupx.context/0.3");
+    expect(packet.schema).toBe("groupx.context/0.4");
     expect(packet.sections.generatedSummary).toEqual([
       expect.objectContaining({
         id: "summary:context",

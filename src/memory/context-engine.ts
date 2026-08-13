@@ -2,13 +2,22 @@ import { createId } from "../core/envelope.js";
 import { GroupXError, toGroupXError } from "../core/errors.js";
 import type { StoredEventRecord, SummaryRecord } from "../storage/types.js";
 import { ContextPacketBuilder } from "./context-packet.js";
-import type { BuildContextPacketInput, ContextPacket, ContextPacketStore } from "./types.js";
+import type {
+  BuildContextPacketInput,
+  ContextPacket,
+  ContextPacketStore,
+  RoomContextCompactionResult,
+  RoomContextUsage
+} from "./types.js";
 
 const EVENT_PAGE_LIMIT = 500;
 const DEFAULT_MAX_PASSES = 8;
 const DEFAULT_COMPACTION_TRIGGER_RATIO = 0.75;
 const MAX_SUMMARY_CHARS = 8_000;
 const MIN_COMPACTION_INPUT_CHARS = 40_000;
+const DEFAULT_MANUAL_RETAIN_MESSAGES = 12;
+const CONTEXT_PACKET_ESTIMATE_BASE_CHARS = 160;
+const SUMMARY_ESTIMATE_OVERHEAD_CHARS = 192;
 
 export interface RoomSummaryMessage {
   seq: number;
@@ -108,6 +117,8 @@ export interface RoomContextEngineOptions {
   /** Total attempts for one compactable chunk, including the first attempt. */
   compactionAttempts?: number;
   compactionRetryBaseMs?: number;
+  /** Recent message.created records left verbatim after an explicit compaction. */
+  manualRetainMessages?: number;
   onProgress?: (progress: RoomCompactionProgress) => void | Promise<void>;
 }
 
@@ -173,6 +184,7 @@ export class RoomContextEngine {
   readonly #maxSummaryChars: number;
   readonly #compactionAttempts: number;
   readonly #compactionRetryBaseMs: number;
+  readonly #manualRetainMessages: number;
   readonly #onProgress: RoomContextEngineOptions["onProgress"];
   readonly #roomFlights = new Map<string, Promise<void>>();
   readonly #activeControllers = new Set<AbortController>();
@@ -198,6 +210,8 @@ export class RoomContextEngine {
       Math.max(1_024, Math.min(MAX_SUMMARY_CHARS, Math.floor(options.maxChars / 4)));
     this.#compactionAttempts = options.compactionAttempts ?? 3;
     this.#compactionRetryBaseMs = options.compactionRetryBaseMs ?? 300;
+    this.#manualRetainMessages =
+      options.manualRetainMessages ?? DEFAULT_MANUAL_RETAIN_MESSAGES;
     this.#onProgress = options.onProgress;
     for (const [name, value] of [
       ["maxChars", this.#maxChars],
@@ -206,7 +220,8 @@ export class RoomContextEngine {
       ["maxCompactionInputChars", this.#maxCompactionInputChars],
       ["maxSummaryChars", this.#maxSummaryChars],
       ["compactionAttempts", this.#compactionAttempts],
-      ["compactionRetryBaseMs", this.#compactionRetryBaseMs]
+      ["compactionRetryBaseMs", this.#compactionRetryBaseMs],
+      ["manualRetainMessages", this.#manualRetainMessages]
     ] as const) {
       if (!Number.isSafeInteger(value) || value < 1) {
         throw new RangeError(`${name} must be a positive safe integer`);
@@ -289,6 +304,89 @@ export class RoomContextEngine {
     }
   }
 
+  /**
+   * Conservative room-level estimate: active checkpoint plus every
+   * message.created record after it. Target-specific identity/memory and native
+   * instructions are deliberately not presented as model-token usage.
+   */
+  inspectUsage(roomId: string): RoomContextUsage {
+    this.#assertOpen();
+    const throughSeq = this.#store.getRoomHighWaterSeq(roomId);
+    const summary = this.#store.getActiveSummary(roomId, throughSeq);
+    let estimatedCharacters = CONTEXT_PACKET_ESTIMATE_BASE_CHARS;
+    if (summary) {
+      estimatedCharacters += summary.content.length + SUMMARY_ESTIMATE_OVERHEAD_CHARS;
+    }
+    let uncompactedMessageCount = 0;
+    let cursor = summary?.throughSeq ?? 0;
+    while (cursor < throughSeq) {
+      const pageStart = cursor;
+      const page = this.#store.listEventsThrough({
+        roomId,
+        afterSeq: cursor,
+        throughSeq,
+        limit: EVENT_PAGE_LIMIT
+      });
+      if (page.events.length === 0) break;
+      for (const event of page.events) {
+        cursor = event.seq;
+        if (event.eventType !== "message.created") continue;
+        estimatedCharacters += renderedMessageChars(toSummaryMessage(event));
+        uncompactedMessageCount += 1;
+      }
+      if (!page.hasMore) break;
+      if (cursor <= pageStart) break;
+    }
+    const utilizationPercent = Math.min(
+      100,
+      Math.max(0, Math.round((estimatedCharacters / this.#maxChars) * 100))
+    );
+    return {
+      roomId,
+      throughSeq,
+      estimatedCharacters,
+      maxCharacters: this.#maxChars,
+      compactionTriggerCharacters: this.#compactionTriggerChars,
+      utilizationPercent,
+      uncompactedMessageCount,
+      ...(summary === undefined ? {} : { summaryThroughSeq: summary.throughSeq }),
+      compactable: uncompactedMessageCount > this.#manualRetainMessages
+    };
+  }
+
+  /** Explicitly rolls old message.created records into the same durable summary
+   * used by automatic compaction while retaining a recent verbatim tail. */
+  async compactNow(roomId: string): Promise<RoomContextCompactionResult> {
+    this.#assertOpen();
+    const throughSeq = this.#store.getRoomHighWaterSeq(roomId);
+    const before = this.#store.getActiveSummary(roomId, throughSeq);
+    const cutoff = this.#manualCompactionCutoff(
+      roomId,
+      before?.throughSeq ?? 0,
+      throughSeq
+    );
+    if (cutoff === undefined) {
+      return { compacted: false, usage: this.inspectUsage(roomId) };
+    }
+
+    for (let pass = 0; pass < this.#maxPasses; pass += 1) {
+      const current = this.#store.getActiveSummary(roomId, throughSeq);
+      if ((current?.throughSeq ?? 0) >= cutoff) break;
+      const previousThroughSeq = current?.throughSeq ?? 0;
+      await this.#compactSingleFlight(roomId, throughSeq, undefined, cutoff);
+      const advanced = this.#store.getActiveSummary(roomId, throughSeq)?.throughSeq ?? 0;
+      if (advanced <= previousThroughSeq) break;
+    }
+
+    const after = this.#store.getActiveSummary(roomId, throughSeq);
+    return {
+      compacted:
+        after !== undefined &&
+        (before === undefined || after.summaryId !== before.summaryId),
+      usage: this.inspectUsage(roomId)
+    };
+  }
+
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
@@ -300,14 +398,15 @@ export class RoomContextEngine {
   async #compactSingleFlight(
     roomId: string,
     throughSeq: number,
-    packet: ContextPacket | undefined
+    packet: ContextPacket | undefined,
+    forcedCutoff?: number
   ): Promise<void> {
     const existing = this.#roomFlights.get(roomId);
     if (existing) {
       await existing;
       return;
     }
-    const operation = this.#compactOneChunk(roomId, throughSeq, packet);
+    const operation = this.#compactOneChunk(roomId, throughSeq, packet, forcedCutoff);
     this.#roomFlights.set(roomId, operation);
     try {
       await operation;
@@ -319,7 +418,8 @@ export class RoomContextEngine {
   async #compactOneChunk(
     roomId: string,
     throughSeq: number,
-    packet: ContextPacket | undefined
+    packet: ContextPacket | undefined,
+    forcedCutoff?: number
   ): Promise<void> {
     const previous = this.#store.getActiveSummary(roomId, throughSeq);
     const firstRetainedSeq =
@@ -327,7 +427,7 @@ export class RoomContextEngine {
         (minimum, entry) => Math.min(minimum, entry.seq ?? Number.MAX_SAFE_INTEGER),
         throughSeq
       ) ?? throughSeq;
-    const desiredCutoff = Math.max(0, firstRetainedSeq - 1);
+    const desiredCutoff = forcedCutoff ?? Math.max(0, firstRetainedSeq - 1);
     const afterSeq = previous?.throughSeq ?? 0;
     if (desiredCutoff <= afterSeq) {
       throw new GroupXError(
@@ -533,5 +633,44 @@ export class RoomContextEngine {
       if (!page.hasMore) break;
     }
     return messages;
+  }
+
+  #manualCompactionCutoff(
+    roomId: string,
+    afterSeq: number,
+    throughSeq: number
+  ): number | undefined {
+    const recentMessageSeqs: number[] = [];
+    let messageCount = 0;
+    let cursor = afterSeq;
+    while (cursor < throughSeq) {
+      const pageStart = cursor;
+      const page = this.#store.listEventsThrough({
+        roomId,
+        afterSeq: cursor,
+        throughSeq,
+        limit: EVENT_PAGE_LIMIT
+      });
+      if (page.events.length === 0) break;
+      for (const event of page.events) {
+        cursor = event.seq;
+        if (event.eventType !== "message.created") continue;
+        messageCount += 1;
+        recentMessageSeqs.push(event.seq);
+        if (recentMessageSeqs.length > this.#manualRetainMessages + 1) {
+          recentMessageSeqs.shift();
+        }
+      }
+      if (!page.hasMore) break;
+      if (cursor <= pageStart) break;
+    }
+    if (messageCount <= this.#manualRetainMessages) return undefined;
+    return recentMessageSeqs[0];
+  }
+
+  #assertOpen(): void {
+    if (this.#closed) {
+      throw new GroupXError("SESSION_NOT_AVAILABLE", "Room context engine is closed");
+    }
   }
 }

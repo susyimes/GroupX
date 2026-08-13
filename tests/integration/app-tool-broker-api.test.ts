@@ -72,6 +72,23 @@ function brokerFixture() {
   const queryMemory: GroupXToolBrokerApiOptions["broker"]["queryMemory"] = vi.fn(() => [
     memory
   ]);
+  const rememberMemory: GroupXToolBrokerApiOptions["broker"]["rememberMemory"] = vi.fn(
+    async (input): Promise<MemoryRecord> => ({
+      memoryId: "memory:core",
+      scopeType: input.scopeType,
+      scopeId: input.scopeId,
+      agentMemoryType: input.agentMemoryType,
+      kind: input.kind,
+      authorActorId: "agent:codex",
+      ...(input.subjectActorId === undefined
+        ? {}
+        : { subjectActorId: input.subjectActorId }),
+      content: input.content,
+      sourceKind: "mcp",
+      status: "active",
+      createdAt: "2026-08-11T00:00:00.000Z"
+    })
+  );
   const rememberIdentity: GroupXToolBrokerApiOptions["broker"]["rememberIdentity"] = vi.fn(
     async (input): Promise<IdentityRecord> => ({
         identityId: "identity:1",
@@ -94,7 +111,7 @@ function brokerFixture() {
     rememberIdentity,
     waitForCorrelation: unsupported,
     cancelTurn: unsupported,
-    rememberMemory: unsupported,
+    rememberMemory,
     queryIdentity: () => []
   };
   const requireForCaller = vi.fn(() => ({ ...activeTurn }));
@@ -109,6 +126,7 @@ function brokerFixture() {
     acceptMessage,
     readCorrelation,
     queryMemory,
+    rememberMemory,
     rememberIdentity,
     requireForCaller
   };
@@ -223,6 +241,33 @@ describe("GroupXToolBrokerApi", () => {
     expect(fixture.rememberIdentity).toHaveBeenCalledWith(
       expect.objectContaining({
         bindingId: "binding:codex",
+        subjectActorId: "agent:codex",
+        correlationId: "corr:root"
+      })
+    );
+  });
+
+  it("binds core memory to the current Agent without a caller-supplied scope", async () => {
+    const fixture = brokerFixture();
+
+    const result = await fixture.api.coreMemoryRemember(caller(), {
+      clientCommandId: "command:core-memory",
+      kind: "instruction",
+      content: "Keep protocol evidence concise"
+    });
+
+    expect(result.memory).toMatchObject({
+      scope: { type: "agent", id: "agent:codex" },
+      agentMemoryType: "core",
+      authorActorId: "agent:codex",
+      subjectActorId: "agent:codex"
+    });
+    expect(fixture.rememberMemory).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bindingId: "binding:codex",
+        scopeType: "agent",
+        scopeId: "agent:codex",
+        agentMemoryType: "core",
         subjectActorId: "agent:codex",
         correlationId: "corr:root"
       })

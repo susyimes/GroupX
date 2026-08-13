@@ -6,7 +6,7 @@
 
 ![npm](https://img.shields.io/npm/v/@susyimes/groupx?color=3370ff&label=npm)
 ![Node](https://img.shields.io/badge/node-24.14.x-3c873a)
-![Tests](https://img.shields.io/badge/tests-474%20passing-0d9f6e)
+![Tests](https://img.shields.io/badge/tests-485%20passing-0d9f6e)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%C2%B7%20macOS%20%C2%B7%20Linux-0078d6)
 ![Transport](https://img.shields.io/badge/transport-structured-9440c9)
 
@@ -16,7 +16,7 @@ GroupX 是一个运行在本机的多 Agent 群聊 Broker。Web UI 负责发消�
 
 当前产品只启用 `structured` transport。历史 `direct` 代码不提供运行入口，也不会作为失败后的自动 fallback。
 
-## ✨ 0.1.7
+## ✨ 0.1.8
 
 - README 只保留当前已实现能力、安装配置和排障说明，删除旧版本流水账与未落地范围描述。
 - 移除不再反映当前 UI 的截图，并停止把这些图片打入 npm 包。
@@ -57,9 +57,9 @@ groupx update                  # 更新全局安装
 - **显式群聊路由**：可定向一个或多个 Agent，也可使用 `@all`；普通模型正文不会自动触发另一个 Agent。
 - **实时与持久时间线**：SSE 展示回复、推理和折叠工具进度；回合结束后保留最终回复、聚合推理和工具记录，刷新后仍可查看。
 - **上下文隔离**：推理与工具记录只用于页面回放，不进入 Context Packet、回复链、房间压缩或自动记忆。
-- **公共记忆与 Agent 记忆**：公共记忆在房间内共享；身份和按日期分组的独立记忆属于各 Agent。
-- **长房间压缩**：默认 Context Packet 上限为 `256,000` 字符，在约 `75%` 时生成滚动摘要；完整 transcript 始终保留在 SQLite。
-- **Agent 显式互调**：Structured 会话可通过 GroupX MCP 使用 `send`、`ask`、`read`。
+- **两层 Agent 记忆**：公共记忆在房间内共享；每个 Agent 另有主动维护的核心记忆，以及成功回合自动归档、按日期展示的私有记忆。
+- **长房间压缩**：默认 Context Packet 上限为 `256,000` 字符，在约 `75%` 时生成滚动摘要；输入窗口右上角显示房间字符估算并可手动压缩，完整 transcript 始终保留在 SQLite。
+- **Agent 显式互调与核心记忆**：Structured 会话可通过 GroupX MCP 使用 `send`、`ask`、`read`，并用 `core_memory_remember` 只写自己的核心记忆。
 - **会话恢复**：启动、恢复和压缩采用有界重试；可能已经送达的业务 Prompt 不会被自动重放。
 
 ## Agent 配置

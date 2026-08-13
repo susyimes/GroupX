@@ -22,11 +22,29 @@ export type ContextPacketStore = Pick<
   | "getDeliveryCursor"
   | "getActiveSummary"
   | "getEvent"
+  | "getRoomHighWaterSeq"
   | "listEvents"
   | "listEventsThrough"
   | "searchMemory"
   | "readIdentity"
 >;
+
+export interface RoomContextUsage {
+  roomId: string;
+  throughSeq: number;
+  estimatedCharacters: number;
+  maxCharacters: number;
+  compactionTriggerCharacters: number;
+  utilizationPercent: number;
+  uncompactedMessageCount: number;
+  summaryThroughSeq?: number;
+  compactable: boolean;
+}
+
+export interface RoomContextCompactionResult {
+  compacted: boolean;
+  usage: RoomContextUsage;
+}
 
 export type IdentityPerspective = "configured" | "self" | "user-authored" | "observed";
 
@@ -85,8 +103,10 @@ export interface ContextPacketSections {
   selfIdentity: IdentityContextEntry[];
   userAuthoredIdentity: IdentityContextEntry[];
   observedIdentity: IdentityContextEntry[];
-  /** Curated memory visible only to the target Agent. */
-  agentMemory: ContextEntry[];
+  /** Stable memory explicitly curated by the target Agent or user. */
+  agentCoreMemory: ContextEntry[];
+  /** Automatic successful-Turn journal, isolated to the target Agent. */
+  agentDatedMemory: ContextEntry[];
   publicMemory: ContextEntry[];
   /** At most one persisted cumulative room checkpoint. */
   generatedSummary: ContextEntry[];
@@ -99,14 +119,15 @@ export interface ContextPacketOmissions {
   selfIdentity: number;
   userAuthoredIdentity: number;
   observedIdentity: number;
-  agentMemory: number;
+  agentCoreMemory: number;
+  agentDatedMemory: number;
   publicMemory: number;
   generatedSummary: number;
   unreadTranscript: number;
 }
 
 export interface ContextPacket {
-  schema: "groupx.context/0.3";
+  schema: "groupx.context/0.4";
   roomId: string;
   targetActorId: string;
   afterSeq: number;

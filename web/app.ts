@@ -71,6 +71,18 @@ interface PendingSubmission {
   draft: MessageDraft;
 }
 
+interface ContextUsageView {
+  roomId: string;
+  throughSeq: number;
+  estimatedCharacters: number;
+  maxCharacters: number;
+  compactionTriggerCharacters: number;
+  utilizationPercent: number;
+  uncompactedMessageCount: number;
+  summaryThroughSeq: number | null;
+  compactable: boolean;
+}
+
 interface DeltaState {
   text: string;
   seenChunkIndexes: Set<number>;
@@ -231,6 +243,10 @@ const runtimeProgress = byId<HTMLElement>("runtime-progress");
 const runtimeProgressTitle = byId<HTMLElement>("runtime-progress-title");
 const runtimeProgressDetail = byId<HTMLElement>("runtime-progress-detail");
 const runtimeProgressAttempt = byId<HTMLElement>("runtime-progress-attempt");
+const contextUsage = byId<HTMLElement>("context-usage");
+const contextUsageValue = byId<HTMLElement>("context-usage-value");
+const contextUsageFill = byId<HTMLElement>("context-usage-fill");
+const compactContextButton = byId<HTMLButtonElement>("compact-context");
 
 function targetInputs(): HTMLInputElement[] {
   return Array.from(targetPicker.querySelectorAll<HTMLInputElement>('input[name="target"]'));
@@ -256,6 +272,10 @@ let lastTimelineDate = "";
 let trimmedItemCount = 0;
 let trimNoticeNode: HTMLLIElement | null = null;
 let runtimeProgressHideTimer: number | null = null;
+let contextUsageRefreshTimer: number | null = null;
+let contextUsageRefreshInFlight = false;
+let contextCompacting = false;
+let latestContextUsage: ContextUsageView | null = null;
 
 function isRecord(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -293,6 +313,41 @@ function readBooleanField(record: JsonRecord, fallback: boolean, ...keys: string
     }
   }
   return fallback;
+}
+
+function normalizeContextUsage(value: unknown): ContextUsageView | null {
+  if (!isRecord(value)) return null;
+  const roomId = readStringField(value, "roomId");
+  const throughSeq = readNumberField(value, "throughSeq");
+  const estimatedCharacters = readNumberField(value, "estimatedCharacters");
+  const maxCharacters = readNumberField(value, "maxCharacters");
+  const compactionTriggerCharacters = readNumberField(value, "compactionTriggerCharacters");
+  const utilizationPercent = readNumberField(value, "utilizationPercent");
+  const uncompactedMessageCount = readNumberField(value, "uncompactedMessageCount");
+  const summaryThroughSeq = readNumberField(value, "summaryThroughSeq");
+  if (
+    !roomId ||
+    throughSeq === null ||
+    estimatedCharacters === null ||
+    maxCharacters === null ||
+    maxCharacters <= 0 ||
+    compactionTriggerCharacters === null ||
+    utilizationPercent === null ||
+    uncompactedMessageCount === null
+  ) {
+    return null;
+  }
+  return {
+    roomId,
+    throughSeq,
+    estimatedCharacters,
+    maxCharacters,
+    compactionTriggerCharacters,
+    utilizationPercent: Math.min(100, Math.max(0, Math.round(utilizationPercent))),
+    uncompactedMessageCount,
+    summaryThroughSeq,
+    compactable: readBooleanField(value, false, "compactable")
+  };
 }
 
 function asArray(value: unknown): unknown[] {
@@ -681,6 +736,130 @@ async function requestJson<T>(path: string, options: RequestInit = {}): Promise<
     throw new ApiFailure(code || "HTTP_ERROR", message || `请求失败（HTTP ${response.status}）`, response.status);
   }
   return decoded as T;
+}
+
+function formatContextCharacters(value: number): string {
+  if (value < 1_000) return String(Math.max(0, Math.round(value)));
+  const scaled = value / 1_000;
+  const digits = scaled >= 100 ? 0 : 1;
+  return `${scaled.toFixed(digits).replace(/\.0$/u, "")}k`;
+}
+
+function renderContextUsage(usage: ContextUsageView | null): void {
+  latestContextUsage = usage;
+  if (!usage) {
+    contextUsageValue.textContent = "暂不可用";
+    contextUsageFill.style.width = "0%";
+    contextUsage.dataset.level = "normal";
+    compactContextButton.disabled = true;
+    return;
+  }
+  contextUsageValue.textContent = `约 ${formatContextCharacters(usage.estimatedCharacters)} / ${formatContextCharacters(usage.maxCharacters)} 字符`;
+  contextUsageFill.style.width = `${usage.utilizationPercent}%`;
+  contextUsage.dataset.level =
+    usage.utilizationPercent >= 95
+      ? "critical"
+      : usage.utilizationPercent >= 75
+        ? "warning"
+        : "normal";
+  contextUsage.title = [
+    `GroupX 房间上下文估算：${Math.round(usage.estimatedCharacters).toLocaleString()} / ${Math.round(usage.maxCharacters).toLocaleString()} 字符`,
+    `自动压缩软阈值：${Math.round(usage.compactionTriggerCharacters).toLocaleString()} 字符`,
+    "这不是模型 token 数；目标 Agent 的身份、记忆和原生 instructions 会另占空间。"
+  ].join("\n");
+  compactContextButton.disabled = contextCompacting || !usage.compactable;
+  compactContextButton.title = usage.compactable
+    ? "把较早消息滚动整理为摘要；完整聊天记录仍保留"
+    : "近期未压缩消息较少，当前无需手动压缩";
+}
+
+async function refreshContextUsage(): Promise<void> {
+  if (contextUsageRefreshInFlight) return;
+  contextUsageRefreshInFlight = true;
+  try {
+    const decoded = await requestJson<unknown>("/api/context");
+    const usage = normalizeContextUsage(decoded);
+    if (!usage) throw new ApiFailure("INVALID_CONTEXT_USAGE", "上下文用量响应无效", 500);
+    renderContextUsage(usage);
+  } catch (error) {
+    renderContextUsage(null);
+    if (!(error instanceof ApiFailure) || error.status !== 404) {
+      contextUsage.title = errorMessage(error);
+    }
+  } finally {
+    contextUsageRefreshInFlight = false;
+  }
+}
+
+function scheduleContextUsageRefresh(delayMs = 120): void {
+  if (contextUsageRefreshTimer !== null) {
+    window.clearTimeout(contextUsageRefreshTimer);
+  }
+  contextUsageRefreshTimer = window.setTimeout(() => {
+    contextUsageRefreshTimer = null;
+    void refreshContextUsage();
+  }, delayMs);
+}
+
+async function compactCurrentContext(): Promise<void> {
+  if (contextCompacting || !latestContextUsage?.compactable) return;
+  if (runtimeProgressHideTimer !== null) {
+    window.clearTimeout(runtimeProgressHideTimer);
+    runtimeProgressHideTimer = null;
+  }
+  contextCompacting = true;
+  compactContextButton.disabled = true;
+  compactContextButton.textContent = "压缩中…";
+  compactContextButton.setAttribute("aria-busy", "true");
+  runtimeProgress.hidden = false;
+  runtimeProgress.dataset.phase = "started";
+  runtimeProgressTitle.textContent = "正在请求压缩会话";
+  runtimeProgressDetail.textContent = "较早消息会整理为摘要，完整记录不会删除";
+  runtimeProgressAttempt.textContent = "手动";
+  const retryKey = `context-compact:${state.roomId}`;
+  try {
+    const decoded = await requestJson<unknown>("/api/context/compact", {
+      method: "POST",
+      body: JSON.stringify({
+        clientCommandId: retryableCommandId(retryKey, "web-context-compact")
+      })
+    });
+    if (!isRecord(decoded)) {
+      throw new ApiFailure("INVALID_CONTEXT_RESULT", "压缩响应无效", 500);
+    }
+    const usage = normalizeContextUsage(decoded.usage);
+    if (!usage) throw new ApiFailure("INVALID_CONTEXT_USAGE", "压缩后的用量响应无效", 500);
+    retryCommandIds.delete(retryKey);
+    renderContextUsage(usage);
+    if (!readBooleanField(decoded, false, "compacted")) {
+      runtimeProgress.dataset.phase = "completed";
+      runtimeProgressTitle.textContent = "当前无需压缩";
+      runtimeProgressDetail.textContent = "近期消息会继续保留原文";
+      runtimeProgressAttempt.textContent = "";
+      runtimeProgressHideTimer = window.setTimeout(() => {
+        runtimeProgress.hidden = true;
+      }, 3_000);
+    } else if (runtimeProgress.dataset.phase !== "completed") {
+      runtimeProgress.dataset.phase = "completed";
+      runtimeProgressTitle.textContent = "房间上下文已压缩";
+      runtimeProgressDetail.textContent = "较早消息已整理为摘要，近期消息仍保留原文";
+      runtimeProgressAttempt.textContent = "";
+      runtimeProgressHideTimer = window.setTimeout(() => {
+        runtimeProgress.hidden = true;
+      }, 4_000);
+    }
+  } catch (error) {
+    runtimeProgress.dataset.phase = "failed";
+    runtimeProgressTitle.textContent = "会话压缩失败";
+    runtimeProgressDetail.textContent = `${errorMessage(error)} · 原聊天记录未丢失`;
+    runtimeProgressAttempt.textContent = "";
+    showGlobalError(errorMessage(error));
+  } finally {
+    contextCompacting = false;
+    compactContextButton.textContent = "压缩会话";
+    compactContextButton.removeAttribute("aria-busy");
+    renderContextUsage(latestContextUsage);
+  }
 }
 
 function createActorAvatar(actor: ActorRef): HTMLSpanElement {
@@ -1559,6 +1738,9 @@ function acceptEnvelope(envelope: GroupXEnvelope, source: "bootstrap" | "live"):
   }
   state.seenEventIds.add(envelope.eventId);
   dispatchEnvelope(envelope);
+  if (envelope.type === "message.created" || envelope.type === "context.compaction.completed") {
+    scheduleContextUsageRefresh();
+  }
   return true;
 }
 
@@ -2187,6 +2369,7 @@ async function bootstrap(): Promise<void> {
     }
 
     void loadMemoryRecords();
+    void refreshContextUsage();
     connectEventSource(supportedEventTypesFromBootstrap(decoded));
     void refreshHealth();
     if (healthTimer === null) {
@@ -2248,6 +2431,10 @@ targetAll.addEventListener("change", () => {
 });
 
 clearReplyButton.addEventListener("click", clearReply);
+
+compactContextButton.addEventListener("click", () => {
+  void compactCurrentContext();
+});
 
 jumpLatest.addEventListener("click", () => {
   timeline.scrollTo({ top: timeline.scrollHeight, behavior: "smooth" });
@@ -2336,6 +2523,9 @@ window.addEventListener("beforeunload", () => {
   }
   if (healthTimer !== null) {
     window.clearInterval(healthTimer);
+  }
+  if (contextUsageRefreshTimer !== null) {
+    window.clearTimeout(contextUsageRefreshTimer);
   }
 });
 

@@ -853,12 +853,14 @@ input:disabled {
 
 .runtime-progress {
   display: grid;
-  flex: 0 0 auto;
+  flex: 0 1 360px;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: 10px;
-  padding: 9px 12px;
-  margin: 0 var(--conversation-gutter) 8px;
+  gap: 8px;
+  min-width: 220px;
+  max-width: min(360px, 36vw);
+  padding: 7px 9px;
+  margin: 0;
   border: 1px solid color-mix(in srgb, var(--accent) 25%, var(--line));
   border-radius: 11px;
   background: color-mix(in srgb, var(--accent-wash) 74%, var(--card-bg));
@@ -1609,10 +1611,104 @@ input:disabled {
   backdrop-filter: blur(18px) saturate(1.2);
 }
 
+.composer-topbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.context-controls {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+
+.context-usage {
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: baseline;
+  gap: 2px 8px;
+  min-width: 148px;
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg-2);
+  color: var(--subtle);
+  font-size: 0.6rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.context-usage-label {
+  white-space: nowrap;
+}
+
+.context-usage strong {
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 0.64rem;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.context-usage-meter {
+  grid-column: 1 / -1;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--line);
+}
+
+.context-usage-meter > span {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 180ms ease, background 180ms ease;
+}
+
+.context-usage[data-level="warning"] .context-usage-meter > span {
+  background: var(--warning);
+}
+
+.context-usage[data-level="critical"] .context-usage-meter > span {
+  background: var(--danger);
+}
+
+.context-compact-button {
+  min-height: 34px;
+  padding: 6px 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--card-bg);
+  color: var(--text);
+  font-size: 0.66rem;
+  white-space: nowrap;
+  transition: border-color 120ms ease, background 120ms ease, color 120ms ease;
+}
+
+.context-compact-button:hover:not(:disabled) {
+  border-color: var(--accent-border);
+  background: var(--accent-wash);
+  color: var(--accent);
+}
+
+.context-compact-button:disabled {
+  cursor: default;
+  color: var(--subtle);
+  opacity: 0.58;
+}
+
 .target-picker {
   display: flex;
+  flex: 1 1 auto;
   flex-wrap: nowrap;
   gap: 7px;
+  min-width: 0;
   max-width: 100%;
   padding: 0 0 3px;
   margin: 0 0 9px;
@@ -2032,6 +2128,10 @@ input:disabled {
   .app-shell {
     grid-template-columns: 240px minmax(440px, 1fr);
   }
+
+  .runtime-progress-copy span {
+    display: none;
+  }
 }
 
 @media (max-width: 760px) {
@@ -2137,6 +2237,29 @@ input:disabled {
   .composer {
     position: relative;
     padding: 10px 12px;
+  }
+
+  .composer-topbar {
+    flex-wrap: wrap;
+    gap: 7px;
+  }
+
+  .target-picker,
+  .context-controls {
+    flex-basis: 100%;
+  }
+
+  .context-controls {
+    flex-wrap: wrap;
+  }
+
+  .runtime-progress {
+    flex-basis: 100%;
+    max-width: none;
+  }
+
+  .context-usage {
+    margin-left: auto;
   }
 
 }

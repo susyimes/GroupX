@@ -77,6 +77,29 @@ function brokerFixture(): GroupXWebBrokerApiOptions["broker"] {
       recentEvents: [],
       activeTurns: []
     }),
+    contextUsage: () => ({
+      roomId: "room:main",
+      throughSeq: 0,
+      estimatedCharacters: 160,
+      maxCharacters: 256_000,
+      compactionTriggerCharacters: 192_000,
+      utilizationPercent: 0,
+      uncompactedMessageCount: 0,
+      compactable: false
+    }),
+    compactContextFromBinding: async () => ({
+      compacted: false,
+      usage: {
+        roomId: "room:main",
+        throughSeq: 0,
+        estimatedCharacters: 160,
+        maxCharacters: 256_000,
+        compactionTriggerCharacters: 192_000,
+        utilizationPercent: 0,
+        uncompactedMessageCount: 0,
+        compactable: false
+      }
+    }),
     acceptMessage: unsupported,
     cancelFromBinding: unsupported,
     queryMemory: () => [],
@@ -172,6 +195,35 @@ describe("RestartAgentCommandCoordinator", () => {
 });
 
 describe("GroupXWebBrokerApi", () => {
+  it("projects room context usage and preserves the manual compaction command id", async () => {
+    const readiness = new RuntimeReadiness();
+    readiness.markReady();
+    const broker = brokerFixture();
+    const compactContextFromBinding = vi.fn(broker.compactContextFromBinding);
+    broker.compactContextFromBinding = compactContextFromBinding;
+    const api = new GroupXWebBrokerApi({
+      broker,
+      restartCommands: { restart: async () => ({ actorId: "agent:codex", accepted: true }) },
+      readiness,
+      config: appConfig(),
+      roomId: "room:main",
+      bindingId: "binding:web"
+    });
+    const signal = new AbortController().signal;
+
+    expect(api.contextUsage(signal)).toMatchObject({
+      roomId: "room:main",
+      maxCharacters: 256_000,
+      compactable: false
+    });
+    await api.compactContext({ clientCommandId: "command:compact" }, signal);
+    expect(compactContextFromBinding).toHaveBeenCalledWith({
+      bindingId: "binding:web",
+      clientCommandId: "command:compact",
+      roomId: "room:main"
+    });
+  });
+
   it("gates writes until startup recovery and sessions are ready", async () => {
     const readiness = new RuntimeReadiness();
     const broker = brokerFixture();
