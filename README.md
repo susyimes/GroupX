@@ -45,14 +45,18 @@ Structured 模式下，它们还能通过 GroupX MCP 在当前回合**显式互�
   <a href="./docs/assets/agent-settings-light.png"><img src="./docs/assets/agent-settings-light.png" width="100%" alt="GroupX Agent 设置 · 浅色主题"></a>
 </div>
 
-## ✨ 0.1.4 更新
+## ✨ 0.1.5 更新
+
+- 推理流与折叠工具进度在回合结束时形成 durable 记录，页面刷新后仍可回放；二者与公开消息、回复链、记忆和上下文严格隔离。
+- Structured 业务回合若以 `PROTOCOL_INVALID_MESSAGE` 失败，GroupX 会保留原失败并自动重建 native 进程/session，供后续回合继续使用；不会重放失败回合的 Prompt。
+
+## 0.1.4 更新
 
 - 新增房间上下文引擎：接近预算时由首个可用 Agent 生成滚动摘要，原始聊天记录仍完整保留。
-- 压缩与会话启动过程现在有可见状态提示；临时连接和压缩故障采用有界重试。业务回合若以 `PROTOCOL_INVALID_MESSAGE` 失败，GroupX 会保留该失败并自动重建 native 进程/session 供后续回合使用，绝不自动重放可能已送达的 Prompt。
+- 压缩与会话启动过程现在有可见状态提示；临时连接和压缩故障采用有界重试，绝不自动重放可能已送达的业务 Prompt。
 - Agent 身份配置移入 Agent 设置，并为每个 Agent 增加按日期分隔的独立记忆；公共记忆继续保持独立。
 - 初始化向导与 Agent 名册支持任意数量和同类多实例，保存后直接进入群聊。
 - 收紧会话 UI、折叠工具进度和记忆编辑器，并移除 Agent 卡片上多余的单发入口。
-- 推理流与折叠工具进度在回合结束时形成 durable 记录，页面刷新后仍可回放；二者与公开消息、回复链、记忆和上下文严格隔离。
 
 ## 0.1.3 更新
 
