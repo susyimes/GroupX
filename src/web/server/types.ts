@@ -23,6 +23,7 @@ import type {
   SetupSnapshot
 } from "../../contracts/index.js";
 import type { SseRuntime } from "../sse/index.js";
+import type { GroupXRuntimeIdentity } from "../../core/runtime-instance.js";
 
 export type Awaitable<T> = T | Promise<T>;
 
@@ -125,6 +126,8 @@ export interface GroupXHttpServerOptions {
   readonly gracefulCloseTimeoutMs?: number;
   readonly mcpHandler?: McpHttpHandler;
   readonly setupApi?: SetupApi;
+  /** Present on the product runtime; optional only for embedded/test servers. */
+  readonly runtimeIdentity?: GroupXRuntimeIdentity;
 }
 
 export interface GroupXHttpServerAddress {

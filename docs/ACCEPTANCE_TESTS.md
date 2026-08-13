@@ -37,6 +37,8 @@
 | G-006 | 重启后 queued Turn transport snapshot 不同 | `TRANSPORT_MODE_MISMATCH`，不跨 transport 派发 |
 | G-007 | Kimi 官方默认全局配置 | global permission=`manual` 或配置键缺省不阻断 Structured ACP；new/load 后在首 prompt 前成功发送 `session/set_mode(auto)` |
 | G-008 | Kimi session mode 负向 | `session/set_mode(auto)` 的明确 native policy 拒绝为 `NATIVE_POLICY_BLOCKED`；普通协议失败按 Adapter 错误收敛；不写全局配置、不 fallback |
+| G-009 | 重复 `groupx start` | 同 config path + canonical config 的现有 runtime 被识别并复用，命令返回成功且不打开 Store/Adapter；另一 config、旧版 GroupX 或非 GroupX listener 明确报端口冲突，不杀进程、不换端口 |
+| G-010 | 并发启动 bind 竞态 | 预检后 `EADDRINUSE` 会有界复查；同 key 赢家按复用成功，无法识别的 listener 返回友好错误，失败方不修改现有 binding/session |
 
 精确 native profile：
 

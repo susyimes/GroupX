@@ -457,6 +457,8 @@ Web UI 不再暴露 identity 写入面板；稳定 Agent 身份由 `/setup` 写�
 
 setup contract 不包含 `transport`、`access`、approval、sandbox、model 或任意 native flags。standalone `groupx init` 成功保存后启动正式 runtime，并让引导页轮询同源 `GET /api/setup/launch`；只有该接口返回 loopback 正式 origin 的 `ready` 状态后，页面才自动跳转到群聊，随后关闭临时服务。运行中的 `/setup` 可以更新配置文件，但响应必须标记 `restartRequired=true`，不能自动跳转或在旧 runtime 中热换 binding/session。
 
+`GET /api/health` 的正式 runtime 响应必须包含 `service="groupx"`、`protocol="groupx.runtime/1"` 和 64 位十六进制 `runtimeKey`。key 是 canonical config 与 canonical config path 的 SHA-256，只用于本机重复启动的实例相关性，不是 credential、安全边界或远程发现标识。`groupx start` 仅在 service/protocol/key 全部匹配时把已运行实例视为成功；其他 listener 必须 fail-closed 并提示端口冲突。CLI 的预检不能替代 `listen` 的原子租约，`EADDRINUSE` 后必须再做有界探测以处理并发启动竞态。
+
 ## 11. SSE 合同
 
 ```http

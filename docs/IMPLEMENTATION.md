@@ -254,7 +254,7 @@ REST 负责有副作用的用户命令；SSE 负责服务端事件流。
 
 | Method | Path | 作用 |
 | --- | --- | --- |
-| GET | `/api/health` | Broker、数据库和 Adapter 健康 |
+| GET | `/api/health` | runtime 身份、Broker、数据库和 Adapter 健康 |
 | GET | `/api/bootstrap` | 当前房间投影、Agent、游标和能力摘要 |
 | GET | `/api/events?afterSeq=` | SSE 增量事件；支持 `Last-Event-ID` |
 | POST | `/api/messages` | 用户定向消息或 `@all` |
@@ -460,7 +460,7 @@ Agent `enabled` 默认 true;`enabled: false` 的 agent 不建 Adapter、不进�
 
 `groupx init` 启动一个临时 loopback 引导服务并打开浏览器；首次 `groupx start` 没有配置时复用同一流程。引导页可创建多个相同 driver 实例并填写 id/name/cwd/command；保存严格配置后，CLI 启动正式 runtime，临时服务通过同源 launch 状态通知当前页面，并在正式服务 ready 后自动跳转到群聊。运行中的 `/setup` 使用同一合同编辑名册；保存只更新配置文件并提示重启，不自动跳转，也不在运行时热增删 Adapter/session。setup API 不暴露 transport、access、approval 或 sandbox 字段。
 
-正式 runtime 必须先成功绑定配置的 loopback HTTP 端口，才能执行 stale Agent instance/session recovery。该监听是单 runtime 启动租约：若端口已被另一个 GroupX 占用，新进程以 `EADDRINUSE` 失败且不得把现有 runtime 的 ready binding 标成 interrupted，也不得留下永久 queued Turn。
+正式 runtime 必须先成功绑定配置的 loopback HTTP 端口，才能执行 stale Agent instance/session recovery。该监听是单 runtime 启动租约。`GET /api/health` 同时返回固定 `service=groupx`、协议版本和由 canonical config + canonical config path 生成的非秘密 `runtimeKey`。CLI 在构造 SQLite/Adapter 前探测该身份：相同 key 直接复用现有页面并成功退出；不同 key、旧版 GroupX 或非 GroupX listener 明确报冲突，不杀进程、不自动换端口。预检与 bind 之间仍可能竞态，因此实际 `EADDRINUSE` 后最多有界复查三次；若竞态赢家是同一 key，同样按复用成功收敛。失败进程不得把现有 runtime 的 ready binding 标成 interrupted，也不得留下永久 queued Turn。
 
 公开配置没有 `access` 字段。`access` 在 v0.1 内部恒为 unrestricted；Adapter 根据 Agent + transport 生成固定 argv/session mode。用户不能通过 `extraArgs` 改写、删除或替换这些访问参数。
 

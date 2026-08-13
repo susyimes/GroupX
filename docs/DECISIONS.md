@@ -243,6 +243,19 @@ runtime 启动时把名册中的自定义/改名 agent upsert 进 actors 表，�
 
 迁移与回滚：不新增表或列。旧 reader 可忽略未知 event type；回滚停止生成新记录即可，既有事件仍不会成为上下文输入。
 
+## D-020：`groupx start` 是幂等的启动或复用
+
+决定：loopback HTTP listener 继续是单 runtime 的原子租约，CLI 不新增第二套锁文件。正式 runtime 的 `GET /api/health` 返回 `service="groupx"`、`protocol="groupx.runtime/1"` 和 `runtimeKey`；key 由 canonical config 与 canonical config path 做 SHA-256，只用于判断重复启动是否指向同一配置，不是 secret 或认证机制。
+
+CLI 在创建 Store、Adapter 和 native session 前先探测目标 origin：
+
+1. service/protocol/key 全部相同：打印现有 URL、按 `--no-open` 决定是否打开页面，然后以成功状态退出；
+2. GroupX key 不同、旧版/不兼容 GroupX 或其他 HTTP listener：明确提示冲突；
+3. listener 不可达：正常尝试 `listen`；若发生 `EADDRINUSE`，最多有界复查三次以收敛并发启动竞态；
+4. GroupX 永不自动杀掉占用进程，也不自动选择下一个端口，因为那可能创建两个 Broker 共用一份 SQLite 与 native session lineage。
+
+回滚边界：移除 CLI 预检只会恢复原始 `EADDRINUSE` UX；健康响应新增字段是向后兼容的 JSON 扩展，不改变 REST 写合同、数据库 schema 或 Agent 协议。
+
 ## 决策变更规则
 
 任何 Accepted 决策变更必须同时提供：

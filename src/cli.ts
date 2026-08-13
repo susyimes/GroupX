@@ -2,9 +2,18 @@
 import { readFile } from "node:fs/promises";
 import { statSync } from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { runDoctor } from "./app/doctor.js";
 import { GroupXConfigSetupService } from "./app/init-config.js";
+import type { GroupXRuntime } from "./app/runtime.js";
+import {
+  describeGroupXRuntimeLaunch,
+  isAddressInUseError,
+  probeGroupXRuntime,
+  type GroupXRuntimeLaunchDescriptor,
+  type GroupXRuntimeProbe
+} from "./app/runtime-instance.js";
 import { runGroupXUpdate } from "./app/update.js";
 import { parseConfigPath } from "./config.js";
 import { openBrowser } from "./utils/open-browser.js";
@@ -33,10 +42,135 @@ function fileExists(candidate: string): boolean {
   }
 }
 
+export interface StartConfiguredRuntimeDependencies {
+  describeLaunch(configPath: string): Promise<GroupXRuntimeLaunchDescriptor>;
+  probe(descriptor: GroupXRuntimeLaunchDescriptor): Promise<GroupXRuntimeProbe>;
+  startRuntime(configPath: string): Promise<GroupXRuntime>;
+  open(url: string): Promise<boolean>;
+  writeLine(line: string): void;
+  delay(milliseconds: number): Promise<void>;
+}
+
+export type StartConfiguredRuntimeResult =
+  | { readonly kind: "started"; readonly origin: string; readonly runtime: GroupXRuntime }
+  | { readonly kind: "reused"; readonly origin: string };
+
+const startDependencies: StartConfiguredRuntimeDependencies = {
+  describeLaunch: describeGroupXRuntimeLaunch,
+  probe: probeGroupXRuntime,
+  startRuntime: async (configPath) => {
+    const { main } = await import("./main.js");
+    return await main(["--config", configPath]);
+  },
+  open: openBrowser,
+  writeLine: stdout,
+  delay: async (milliseconds) => {
+    await new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+  }
+};
+
+function portConflictError(
+  descriptor: GroupXRuntimeLaunchDescriptor,
+  probe: Exclude<GroupXRuntimeProbe, { kind: "same" } | { kind: "unreachable" }>
+): Error {
+  if (probe.kind === "different-config") {
+    return new Error(
+      `无法启动 GroupX：${descriptor.origin} 上已有使用其他配置的 GroupX。` +
+        "请停止原实例，或修改当前配置的 server.port。"
+    );
+  }
+  if (probe.kind === "legacy-groupx") {
+    return new Error(
+      `无法启动 GroupX：${descriptor.origin} 上已有旧版 GroupX，无法确认配置一致。` +
+        "请先停止原实例再重试。"
+    );
+  }
+  if (probe.kind === "incompatible-groupx") {
+    return new Error(
+      `无法启动 GroupX：${descriptor.origin} 上已有不兼容的 GroupX runtime。` +
+        "请先停止原实例再重试。"
+    );
+  }
+  return new Error(
+    `无法启动 GroupX：端口 ${descriptor.port} 已被其他程序占用。` +
+      "请停止占用程序，或修改当前配置的 server.port。"
+  );
+}
+
+async function reuseRunningRuntime(
+  descriptor: GroupXRuntimeLaunchDescriptor,
+  noOpen: boolean,
+  dependencies: StartConfiguredRuntimeDependencies
+): Promise<StartConfiguredRuntimeResult> {
+  dependencies.writeLine(`GroupX 已在运行: ${descriptor.origin}/`);
+  if (!noOpen) {
+    dependencies.writeLine(
+      (await dependencies.open(`${descriptor.origin}/`))
+        ? "已复用现有 GroupX 实例并打开页面"
+        : `请手动打开 ${descriptor.origin}/`
+    );
+  }
+  return { kind: "reused", origin: descriptor.origin };
+}
+
+async function probeAfterAddressInUse(
+  descriptor: GroupXRuntimeLaunchDescriptor,
+  dependencies: StartConfiguredRuntimeDependencies
+): Promise<GroupXRuntimeProbe> {
+  let latest: GroupXRuntimeProbe = { kind: "unreachable" };
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    latest = await dependencies.probe(descriptor);
+    if (latest.kind !== "unreachable") return latest;
+    if (attempt < 2) await dependencies.delay(100);
+  }
+  return latest;
+}
+
+/** Idempotent product start: reuse the same runtime, but never kill or replace another listener. */
+export async function startConfiguredRuntime(
+  configPath: string,
+  noOpen: boolean,
+  dependencies: StartConfiguredRuntimeDependencies = startDependencies
+): Promise<StartConfiguredRuntimeResult> {
+  const descriptor = await dependencies.describeLaunch(configPath);
+  const existing = await dependencies.probe(descriptor);
+  if (existing.kind === "same") {
+    return await reuseRunningRuntime(descriptor, noOpen, dependencies);
+  }
+  if (existing.kind !== "unreachable") {
+    throw portConflictError(descriptor, existing);
+  }
+
+  let runtime: GroupXRuntime;
+  try {
+    runtime = await dependencies.startRuntime(configPath);
+  } catch (error) {
+    if (!isAddressInUseError(error)) throw error;
+    const raced = await probeAfterAddressInUse(descriptor, dependencies);
+    if (raced.kind === "same") {
+      return await reuseRunningRuntime(descriptor, noOpen, dependencies);
+    }
+    if (raced.kind === "unreachable") {
+      throw portConflictError(descriptor, { kind: "occupied" });
+    }
+    throw portConflictError(descriptor, raced);
+  }
+
+  const origin = runtime.address?.origin;
+  if (origin === undefined) throw new Error("GroupX runtime did not expose a loopback address");
+  if (!noOpen) {
+    const url = `${origin}/`;
+    dependencies.writeLine(
+      (await dependencies.open(url)) ? `已在浏览器打开 ${url}` : `请手动打开 ${url}`
+    );
+  }
+  return { kind: "started", origin, runtime };
+}
+
 async function runSetupWizard(
   configPath: string,
   noOpen: boolean
-): Promise<import("./app/runtime.js").GroupXRuntime> {
+): Promise<GroupXRuntime | undefined> {
   const service = new GroupXConfigSetupService({ configPath, runtimeActive: false });
   const server = createGroupXSetupHttpServer({ setupApi: service });
   const address = await server.start();
@@ -48,11 +182,9 @@ async function runSetupWizard(
     }
     const result = await server.completed;
     stdout(`已保存 ${result.agentCount} 个 Agent: ${result.configPath}`);
-    const { main } = await import("./main.js");
     try {
-      const runtime = await main(["--config", configPath]);
-      const origin = runtime.address?.origin;
-      if (origin === undefined) throw new Error("GroupX runtime did not expose a loopback address");
+      const started = await startConfiguredRuntime(configPath, true);
+      const origin = started.origin;
       server.markLaunchReady(origin);
       stdout(`GroupX 已就绪，引导页将自动进入 ${origin}/`);
       if (noOpen) stdout(`请手动打开 ${origin}/`);
@@ -60,7 +192,7 @@ async function runSetupWizard(
         server.launchObserved,
         new Promise<void>((resolve) => setTimeout(resolve, 5_000))
       ]);
-      return runtime;
+      return started.kind === "started" ? started.runtime : undefined;
     } catch (error) {
       server.markLaunchFailed();
       await Promise.race([
@@ -86,7 +218,7 @@ async function packageVersion(): Promise<string> {
   }
 }
 
-async function run(argv: readonly string[]): Promise<number> {
+export async function run(argv: readonly string[]): Promise<number> {
   const [command, ...rest] = argv;
   switch (command) {
     case undefined:
@@ -98,13 +230,7 @@ async function run(argv: readonly string[]): Promise<number> {
         stdout(`未找到配置 ${configPath}，先打开 Agent 引导页。`);
         await runSetupWizard(configPath, noOpen);
       } else {
-        const { main } = await import("./main.js");
-        const runtime = await main(["--config", configPath]);
-        const origin = runtime.address?.origin;
-        if (origin !== undefined && !noOpen) {
-          const url = `${origin}/`;
-          stdout((await openBrowser(url)) ? `已在浏览器打开 ${url}` : `请手动打开 ${url}`);
-        }
+        await startConfiguredRuntime(configPath, noOpen);
       }
       return 0;
     }
@@ -147,11 +273,18 @@ async function run(argv: readonly string[]): Promise<number> {
   }
 }
 
-void run(process.argv.slice(2))
-  .then((code) => {
-    process.exitCode = code;
-  })
-  .catch((error: unknown) => {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-    process.exitCode = 1;
-  });
+function isEntryModule(): boolean {
+  const entry = process.argv[1];
+  return entry !== undefined && import.meta.url === pathToFileURL(path.resolve(entry)).href;
+}
+
+if (isEntryModule()) {
+  void run(process.argv.slice(2))
+    .then((code) => {
+      process.exitCode = code;
+    })
+    .catch((error: unknown) => {
+      process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+      process.exitCode = 1;
+    });
+}

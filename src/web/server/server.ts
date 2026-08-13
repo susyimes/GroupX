@@ -385,6 +385,7 @@ export class GroupXHttpServer {
     readonly gracefulCloseTimeoutMs: number;
     readonly mcpHandler?: McpHttpHandler;
     readonly setupApi?: GroupXHttpServerOptions["setupApi"];
+    readonly runtimeIdentity?: GroupXHttpServerOptions["runtimeIdentity"];
   };
   readonly #server: Server;
   readonly #sseConnections = new Set<SseConnection>();
@@ -414,7 +415,10 @@ export class GroupXHttpServer {
         "gracefulCloseTimeoutMs"
       ),
       ...(options.mcpHandler === undefined ? {} : { mcpHandler: options.mcpHandler }),
-      ...(options.setupApi === undefined ? {} : { setupApi: options.setupApi })
+      ...(options.setupApi === undefined ? {} : { setupApi: options.setupApi }),
+      ...(options.runtimeIdentity === undefined
+        ? {}
+        : { runtimeIdentity: options.runtimeIdentity })
     };
     this.#server = createServer((request, response) => {
       void this.#handle(request, response).catch((error: unknown) => {
@@ -567,7 +571,10 @@ export class GroupXHttpServer {
     try {
       if (url.pathname === "/api/health") {
         if (method !== "GET") return methodNotAllowed(response, ["GET"]);
-        writeJson(response, 200, await this.#options.broker.health(abort.signal));
+        writeJson(response, 200, {
+          ...(await this.#options.broker.health(abort.signal)),
+          ...(this.#options.runtimeIdentity ?? {})
+        });
         return;
       }
       if (url.pathname === "/api/bootstrap") {
