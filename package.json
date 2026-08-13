@@ -19,7 +19,8 @@
     "dist/src",
     "!dist/src/adapters/direct",
     "!dist/src/adapters/kimi-config-preflight*",
-    "dist/web"
+    "dist/web",
+    "docs/assets/groupx-demo.gif"
   ],
   "engines": {
     "node": ">=24.14.1 <25"

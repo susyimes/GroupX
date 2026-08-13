@@ -2,7 +2,9 @@
 
 # ⚡ GroupX
 
-**在一个本地 Web 房间里连接 Codex、Grok 和 Kimi CLI。**
+**把 Codex App Server、Grok ACP 和 Kimi ACP 放进同一个本地 Agent 房间。**
+
+一个 Web UI，统一完成群聊路由、会话恢复、上下文压缩与本地记忆。
 
 ![npm](https://img.shields.io/npm/v/@susyimes/groupx?color=3370ff&label=npm)
 ![Node](https://img.shields.io/badge/node-24.14.x-3c873a)
@@ -10,16 +12,44 @@
 ![Platform](https://img.shields.io/badge/platform-Windows%20%C2%B7%20macOS%20%C2%B7%20Linux-0078d6)
 ![Transport](https://img.shields.io/badge/transport-structured-9440c9)
 
+<img src="./docs/assets/groupx-demo.gif" width="100%" alt="GroupX 当前界面交互演示">
+
+<sub>演示数据由本地静态场景生成，不包含真实会话或 CLI 数据。</sub>
+
 </div>
 
-GroupX 是一个运行在本机的多 Agent 群聊 Broker。Web UI 负责发消息和查看时间线，Broker 负责路由、会话、上下文与持久化，Codex App Server、Grok ACP 和 Kimi ACP 作为长驻 Agent 接入。
+## GroupX 是什么
 
-当前产品只启用 `structured` transport。历史 `direct` 代码不提供运行入口，也不会作为失败后的自动 fallback。
+GroupX 是一个只监听本机 loopback 的多 Agent 群聊 Broker。用户从浏览器发送消息，Broker 把消息显式路由给一个或多个本地 CLI Agent，并把公共对话、Turn 状态、记忆与上下文摘要保存在本地 SQLite。
 
-## ✨ 0.1.8
+当前产品只启用 `structured` transport：
 
-- README 只保留当前已实现能力、安装配置和排障说明，删除旧版本流水账与未落地范围描述。
-- 移除不再反映当前 UI 的截图，并停止把这些图片打入 npm 包。
+- Codex：App Server；
+- Grok：ACP；
+- Kimi：ACP。
+
+历史 `direct` 代码没有运行入口，不参与当前发布，也不会在 Structured 失败时自动 fallback。
+
+## 当前能力
+
+- **动态 Agent 名册**：可添加、禁用、改名 Agent，也可以为同一个 CLI driver 建立多个独立实例。
+- **显式群聊路由**：选择单个、多个 Agent 或 `@all`；模型正文中的自然语言 `@` 不会自动派发新回合。
+- **共享时间线**：SSE 实时展示回复、推理和工具进度；工具记录折叠在所属 Agent 气泡中。
+- **刷新后仍可回放**：最终回复、聚合推理与工具记录持久化到 SQLite，不会因为刷新页面消失。
+- **Agent 主动互调**：Structured Agent 可通过 GroupX MCP 使用 `send`、`ask` 和 `read`。
+- **单房间上下文引擎**：输入区右上角显示当前字符预算，支持自动和手动滚动压缩；完整 transcript 不会被删除。
+- **公共记忆**：用户显式固定给整个房间的事实、决定、偏好、指令、约束或备注。
+- **两层 Agent 记忆**：每个 Agent 拥有主动维护的核心记忆，以及成功回合后自动生成、按日期展示的私有记忆。
+- **会话恢复与故障收敛**：原生 session 支持 resume/load；可能已送达的业务 Prompt 不会自动重放。
+
+## 0.1.8 更新
+
+- 把上下文用量与“压缩会话”入口移到输入框右上角；默认 Context Packet 上限为 `256,000` 字符，约 `75%` 时触发滚动摘要。
+- 新增 Agent `core | dated` 两层记忆，SQLite schema 升级到 v6；旧 Agent 记忆保守迁移为 core。
+- 新增 `core_memory_remember` MCP 工具，调用方只能写自己绑定身份的核心记忆。
+- 成功 Turn 自动生成日期记忆，内容只来自当前用户消息与最终回复，并限制在 32K 字符以内。
+- 推理、工具、stderr 与原生 payload 不进入 Context Packet、回复链、房间压缩或自动记忆。
+- Agent 设置页现在分别管理核心记忆和按日期自动记忆；公共记忆继续位于房间左侧。
 
 ## 快速开始
 
@@ -33,38 +63,48 @@ npm i -g @susyimes/groupx
 groupx start
 ```
 
-首次启动会打开 Agent 引导页。保存名册后，页面自动进入群聊。默认地址是 [http://127.0.0.1:4310/](http://127.0.0.1:4310/)。
+首次启动会打开 Agent 引导页。添加 Agent、填写工作目录和命令并保存后，页面会进入群聊。默认地址为 [http://127.0.0.1:4310/](http://127.0.0.1:4310/)。
 
 常用命令：
 
 ```bash
-groupx start                   # 启动或复用当前 GroupX
-groupx start --no-open         # 不自动打开浏览器
-groupx start --config x.json   # 使用指定配置
+groupx start                   # 启动，或复用同配置的现有 GroupX
+groupx start --no-open         # 启动但不自动打开浏览器
+groupx start --config x.json   # 使用指定配置文件
 groupx init                    # 打开 Agent 配置引导页
 groupx doctor                  # 检查 Node 与本机 CLI
 groupx update --check          # 只检查 npm 更新
-groupx update                  # 更新全局安装
+groupx update                  # 更新当前全局安装
 ```
 
-`Ctrl+C` 会有界关闭当前进程，SQLite 数据不会被删除。运行中的 Agent 名册可以从页面右上角“Agent 设置”修改，保存后重启 GroupX 生效。
+运行中的 Agent 名册可以从右上角“Agent 设置”修改，保存后重启 GroupX 生效。`Ctrl+C` 会有界关闭当前进程，不会删除 SQLite 数据。
 
-> 全局命令是 `groupx`，不是 `group`。如果安装后仍提示找不到命令，请重新打开终端，并确认 npm 全局 bin 目录已加入 `PATH`。
+> 全局命令是 `groupx`，不是 `group`。安装后如果仍提示找不到命令，请重新打开终端，并确认 npm 全局 bin 目录已经加入 `PATH`。
 
-## 当前能力
+## 界面结构
 
-- **多 Agent 名册**：支持启用、禁用、改名以及同一 CLI driver 的多个独立实例。
-- **显式群聊路由**：可定向一个或多个 Agent，也可使用 `@all`；普通模型正文不会自动触发另一个 Agent。
-- **实时与持久时间线**：SSE 展示回复、推理和折叠工具进度；回合结束后保留最终回复、聚合推理和工具记录，刷新后仍可查看。
-- **上下文隔离**：推理与工具记录只用于页面回放，不进入 Context Packet、回复链、房间压缩或自动记忆。
-- **两层 Agent 记忆**：公共记忆在房间内共享；每个 Agent 另有主动维护的核心记忆，以及成功回合自动归档、按日期展示的私有记忆。
-- **长房间压缩**：默认 Context Packet 上限为 `256,000` 字符，在约 `75%` 时生成滚动摘要；输入窗口右上角显示房间字符估算并可手动压缩，完整 transcript 始终保留在 SQLite。
-- **Agent 显式互调与核心记忆**：Structured 会话可通过 GroupX MCP 使用 `send`、`ask`、`read`，并用 `core_memory_remember` 只写自己的核心记忆。
-- **会话恢复**：启动、恢复和压缩采用有界重试；可能已经送达的业务 Prompt 不会被自动重放。
+- **左侧 Agent 状态**：查看原生进程/session 状态、重启 Agent，并折叠管理公共记忆。
+- **中央共享时间线**：用户消息、Agent 回复、Turn 状态、推理记录与折叠工具进度按事件顺序展示。
+- **输入区**：选择 recipients、回复消息、查看上下文字符估算并手动触发压缩。
+- **Agent 设置**：维护 driver、稳定 ID、显示名、群内身份、工作目录、CLI 命令、核心记忆和日期记忆。
+
+GroupX 当前保持单房间结构，房间 ID 为 `room:main`。
+
+## 记忆与上下文
+
+| 数据 | 写入方式 | 可进入 Agent Context | 说明 |
+| --- | --- | --- | --- |
+| 公共记忆 | 用户显式固定 | 是 | 对房间内所有 Agent 可见 |
+| Agent 核心记忆 | Agent 调用 `core_memory_remember`，或用户在 Agent 设置维护 | 仅对应 Agent | 少量、长期、主动筛选 |
+| Agent 日期记忆 | 成功 Turn 自动生成 | 仅对应 Agent | 当前消息 + 最终回复，按日期展示 |
+| 房间滚动摘要 | 上下文引擎自动或用户手动压缩 | 是 | 替代较早 transcript 进入后续 Context Packet |
+| 推理与工具记录 | Adapter 事件聚合 | 否 | 只用于本地时间线回放和审计 |
+
+上下文用量是 **GroupX Context Packet 的字符估算**，不是模型 token 计数。压缩只改变后续输入的构造方式，完整消息和 durable 事件仍保留在 SQLite。
 
 ## Agent 配置
 
-推荐从 Web 引导页和“Agent 设置”维护名册。`agents` 的键是稳定 Agent ID；内置 ID 可以省略 `driver`，自定义 ID 必须声明 `driver: codex | grok | kimi`。
+推荐通过首次引导页或右上角“Agent 设置”维护。`agents` 的键是稳定 Agent ID；内置 ID 可省略 `driver`，自定义 ID 必须声明 `driver: codex | grok | kimi`。
 
 ```json
 {
@@ -94,26 +134,26 @@ groupx update                  # 更新全局安装
 }
 ```
 
-每个启用的 Agent 拥有独立 native process/session。修改名册不会热替换正在运行的 session，需要重启 GroupX。
+每个启用的 Agent 拥有独立原生 process/session。修改名册不会热替换正在运行的 session，需要重启 GroupX。
 
 ## 数据与运行边界
 
 - Web/API 默认只监听 `127.0.0.1`。
-- SQLite/WAL 是消息、Turn、记忆和摘要的本地权威存储。
+- SQLite/WAL 是消息、Turn、记忆和摘要的本地权威事实源。
 - GroupX 不修改 Codex、Grok 或 Kimi 的全局配置。
-- GroupX 按固定 `unrestricted` profile 启动原生 CLI，但不会绕过操作系统权限、企业策略或服务端限制。
-- GroupX 没有审批系统；如果 native CLI 仍要求审批或交互，当前 Turn 会明确失败。
+- GroupX 按固定 `unrestricted` profile 启动原生 CLI，但不能绕过操作系统权限、企业策略、静态 deny rule 或服务端限制。
+- GroupX 没有审批系统；如果 native CLI 仍请求审批、权限或用户交互，当前 Turn 会明确失败。
 - GroupX 不扫描普通消息或记忆中的秘密内容。不要把凭据发送到群聊。
 
-## 启动问题
+## 常见问题
 
 ### 端口已经占用
 
-相同配置的新版 GroupX 会被自动复用。如果端口属于另一配置、旧版 GroupX 或其他程序，CLI 会提示停止原进程或修改 `server.port`，不会自动终止占用进程。
+相同配置的新版 GroupX 会复用现有 runtime。如果端口属于另一配置、旧版 GroupX 或其他程序，CLI 会明确提示冲突，不会自动终止占用进程或偷偷切换端口。
 
 ### Node 版本不受支持
 
-Node 22 会触发 `EBADENGINE`。请安装 Node `24.14.1` 或同一 Node 24 支持范围内的更新版本。
+Node 22 会触发 `EBADENGINE`。请使用 Node `24.14.1` 或当前支持范围内的 Node 24 更新版本。
 
 ### CLI 无法启动
 
@@ -123,7 +163,7 @@ Node 22 会触发 `EBADENGINE`。请安装 Node `24.14.1` 或同一 Node 24 支�
 groupx doctor
 ```
 
-确认对应 CLI 已安装、可以在当前终端直接运行，并已完成自己的登录配置。
+确认对应 CLI 已安装、能在当前终端直接运行，并且已经完成自己的登录配置。
 
 ## 从源码运行
 
