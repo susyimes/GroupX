@@ -328,6 +328,9 @@ export interface TerminalTurnResult {
   reasoningEvent?: StoredEventRecord;
   toolProgressEvents?: StoredEventRecord[];
   responseEvent?: StoredEventRecord;
+  /** Automatic per-Agent dated memory written in the same terminal transaction. */
+  datedMemory?: MemoryRecord;
+  datedMemoryEvent?: StoredEventRecord;
   terminalEvent: StoredEventRecord;
 }
 
@@ -417,12 +420,16 @@ export const MEMORY_KINDS = [
   "note"
 ] as const;
 export type MemoryKind = (typeof MEMORY_KINDS)[number];
+export const AGENT_MEMORY_TYPES = ["core", "dated"] as const;
+export type AgentMemoryType = (typeof AGENT_MEMORY_TYPES)[number];
 export type RecordStatus = "active" | "superseded" | "retracted";
 
 export interface MemoryRecord {
   memoryId: string;
   scopeType: MemoryScopeType;
   scopeId: string;
+  /** Present only for Agent-scoped records. */
+  agentMemoryType?: AgentMemoryType;
   kind: MemoryKind;
   authorActorId: string;
   subjectActorId?: string;
@@ -439,6 +446,8 @@ export interface CreateMemoryInput {
   memoryId?: string;
   scopeType: MemoryScopeType;
   scopeId: string;
+  /** Required for Agent scope and forbidden for room/correlation scope. */
+  agentMemoryType?: AgentMemoryType;
   kind: MemoryKind;
   authorActorId: string;
   subjectActorId?: string;
@@ -475,6 +484,7 @@ export interface MemoryMutationOutcome {
 export interface MemoryQuery {
   scopeType?: MemoryScopeType;
   scopeId?: string;
+  agentMemoryType?: AgentMemoryType;
   kind?: MemoryKind;
   authorActorId?: string;
   subjectActorId?: string;

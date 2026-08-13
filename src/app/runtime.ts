@@ -12,6 +12,10 @@ import {
 } from "../core/envelope.js";
 import { GroupXError } from "../core/errors.js";
 import {
+  createGroupXRuntimeIdentity,
+  type GroupXRuntimeIdentity
+} from "../core/runtime-instance.js";
+import {
   RoomContextEngine,
   type RoomCompactionProgress,
   type RoomContextSummarizer
@@ -57,6 +61,8 @@ export interface GroupXRuntimeOptions {
   onError?: (error: unknown, context: BrokerErrorContext) => void;
   /** Test/custom injection. Runtime defaults to the first healthy configured Agent. */
   contextSummarizer?: RoomContextSummarizer;
+  /** CLI-supplied identity; embedded/test runtimes derive one from resolved config. */
+  runtimeIdentity?: GroupXRuntimeIdentity;
 }
 
 export interface GroupXRuntimeStartResult {
@@ -138,6 +144,7 @@ export class GroupXRuntime {
   readonly sessions: AgentSessionManager;
   readonly contextEngine: RoomContextEngine;
   readonly roomId: string;
+  readonly runtimeIdentity: GroupXRuntimeIdentity;
 
   readonly #closeStore: boolean;
   readonly #port: number;
@@ -169,6 +176,8 @@ export class GroupXRuntime {
     this.#onError = options.onError;
     this.#setupApi = options.setupApi;
     this.roomId = options.roomId ?? DEFAULT_ROOM_ID;
+    this.runtimeIdentity =
+      options.runtimeIdentity ?? createGroupXRuntimeIdentity({ embeddedConfig: config });
 
     const reader = new SqliteSseEventReader(this.store);
     this.sse = new SseRuntime(reader, {
@@ -299,6 +308,7 @@ export class GroupXRuntime {
           }
         },
         contextProvider: contextProvider(this.contextEngine, this.config),
+        contextController: this.contextEngine,
         turnLifecycle: turns,
         acceptMessageLimits: {
           rootTurns: this.config.limits.rootTurns,
@@ -352,7 +362,8 @@ export class GroupXRuntime {
           ? { staticRoot: fileURLToPath(new URL("../../web/", import.meta.url)) }
           : { staticRoot: this.#staticRoot }),
         ...(mcpHandler === undefined ? {} : { mcpHandler }),
-        ...(this.#setupApi === undefined ? {} : { setupApi: this.#setupApi })
+        ...(this.#setupApi === undefined ? {} : { setupApi: this.#setupApi }),
+        runtimeIdentity: this.runtimeIdentity
       });
       this.#broker = broker;
       this.#turns = turns;

@@ -57,6 +57,7 @@ interface DriverMeta {
 interface AgentMemoryRecord {
   memoryId: string;
   actorId: string;
+  agentMemoryType: "core" | "dated";
   kind: string;
   content: string;
   createdAt: string;
@@ -216,6 +217,7 @@ function normalizeAgentMemory(value: unknown): AgentMemoryRecord | null {
   return {
     memoryId,
     actorId,
+    agentMemoryType: readStringField(value, "agentMemoryType") === "dated" ? "dated" : "core",
     kind: readStringField(value, "kind") || "note",
     content,
     createdAt: readStringField(value, "createdAt"),
@@ -281,39 +283,31 @@ function renderAgentMemoryCard(card: HTMLElement, agent: AgentDraft): void {
   const available = snapshot?.runtimeActive === true && runtimeAgentIds.has(agent.id);
   editor.hidden = !available;
   if (!snapshot?.runtimeActive) {
-    status.textContent = "首次启动后可在这里管理这个 Agent 的独立记忆。";
+    status.textContent = "首次启动后可在这里管理核心记忆，并查看自动日期记忆。";
   } else if (!runtimeAgentIds.has(agent.id)) {
-    status.textContent = "这是新增或改名的 Agent；保存并重启后即可记录独立记忆。";
+    status.textContent = "这是新增或改名的 Agent；保存并重启后即可使用两层记忆。";
   } else if (agentMemoriesLoading) {
     status.textContent = "正在读取独立记忆…";
   } else if (agentMemoriesError) {
     status.textContent = agentMemoriesError;
   } else if (records.length === 0) {
-    status.textContent = "还没有独立记忆。";
+    status.textContent = "还没有核心记忆或自动日期记忆。";
   } else {
-    status.textContent = "只进入这个 Agent 的后续上下文，不会写入公共记忆。";
+    status.textContent = "核心记忆长期保留；成功回合会自动生成日期记忆。两者都只进入这个 Agent 的上下文。";
   }
 
-  const byDate = new Map<string, AgentMemoryRecord[]>();
-  for (const record of records) {
-    const heading = localDateHeading(record.createdAt);
-    const group = byDate.get(heading) ?? [];
-    group.push(record);
-    byDate.set(heading, group);
-  }
-  for (const [heading, recordsForDate] of byDate) {
-    const section = document.createElement("section");
-    section.className = "agent-memory-date-group";
-    const title = document.createElement("h4");
-    title.textContent = heading;
-    const list = document.createElement("ul");
-    for (const record of recordsForDate) {
-      const item = document.createElement("li");
-      const meta = document.createElement("div");
-      meta.className = "agent-memory-record-meta";
-      const badge = document.createElement("span");
-      badge.textContent = record.kind;
-      const actions = document.createElement("span");
+  const appendRecord = (
+    list: HTMLUListElement,
+    record: AgentMemoryRecord,
+    allowReplace: boolean
+  ): void => {
+    const item = document.createElement("li");
+    const meta = document.createElement("div");
+    meta.className = "agent-memory-record-meta";
+    const badge = document.createElement("span");
+    badge.textContent = record.kind;
+    const actions = document.createElement("span");
+    if (allowReplace) {
       const replace = document.createElement("button");
       replace.type = "button";
       replace.textContent = "替换";
@@ -325,31 +319,65 @@ function renderAgentMemoryCard(card: HTMLElement, agent: AgentDraft): void {
         submit.textContent = "保存替换";
         input.focus();
       });
-      const retract = document.createElement("button");
-      retract.type = "button";
-      retract.textContent = "移除";
-      let retractArmed = false;
-      let retractTimer: number | undefined;
-      retract.addEventListener("click", () => {
-        if (!retractArmed) {
-          retractArmed = true;
-          retract.textContent = "确认移除";
-          retractTimer = window.setTimeout(() => {
-            retractArmed = false;
-            retract.textContent = "移除";
-          }, 3_000);
-          return;
-        }
-        if (retractTimer !== undefined) window.clearTimeout(retractTimer);
-        void retractAgentMemory(record);
-      });
-      actions.append(replace, retract);
-      meta.append(badge, actions);
-      const content = document.createElement("p");
-      content.textContent = record.content;
-      item.append(meta, content);
-      list.append(item);
+      actions.append(replace);
     }
+    const retract = document.createElement("button");
+    retract.type = "button";
+    retract.textContent = "移除";
+    let retractArmed = false;
+    let retractTimer: number | undefined;
+    retract.addEventListener("click", () => {
+      if (!retractArmed) {
+        retractArmed = true;
+        retract.textContent = "确认移除";
+        retractTimer = window.setTimeout(() => {
+          retractArmed = false;
+          retract.textContent = "移除";
+        }, 3_000);
+        return;
+      }
+      if (retractTimer !== undefined) window.clearTimeout(retractTimer);
+      void retractAgentMemory(record);
+    });
+    actions.append(retract);
+    meta.append(badge, actions);
+    const content = document.createElement("p");
+    content.textContent = record.content;
+    item.append(meta, content);
+    list.append(item);
+  };
+
+  const coreRecords = records.filter((record) => record.agentMemoryType === "core");
+  const datedRecords = records.filter((record) => record.agentMemoryType === "dated");
+  if (coreRecords.length > 0) {
+    const section = document.createElement("section");
+    section.className = "agent-memory-date-group agent-memory-core-group";
+    const title = document.createElement("h4");
+    title.textContent = "核心记忆";
+    const list = document.createElement("ul");
+    for (const record of coreRecords) appendRecord(list, record, true);
+    section.append(title, list);
+    groups.append(section);
+  }
+
+  const datedHeading = document.createElement("h4");
+  datedHeading.className = "agent-memory-layer-heading";
+  datedHeading.textContent = "按日期自动记忆";
+  if (datedRecords.length > 0) groups.append(datedHeading);
+  const byDate = new Map<string, AgentMemoryRecord[]>();
+  for (const record of datedRecords) {
+    const heading = localDateHeading(record.createdAt);
+    const group = byDate.get(heading) ?? [];
+    group.push(record);
+    byDate.set(heading, group);
+  }
+  for (const [heading, recordsForDate] of byDate) {
+    const section = document.createElement("section");
+    section.className = "agent-memory-date-group";
+    const title = document.createElement("h4");
+    title.textContent = heading;
+    const list = document.createElement("ul");
+    for (const record of recordsForDate) appendRecord(list, record, false);
     section.append(title, list);
     groups.append(section);
   }
@@ -357,7 +385,7 @@ function renderAgentMemoryCard(card: HTMLElement, agent: AgentDraft): void {
   cancel.onclick = () => {
     replacingMemoryIds.delete(actorId);
     banner.hidden = true;
-    submit.textContent = "保存记忆";
+    submit.textContent = "保存核心记忆";
     input.value = "";
   };
   submit.onclick = () => void saveAgentMemory(agent, { kind, input, submit, banner });
@@ -440,7 +468,7 @@ async function saveAgentMemory(
     replacingMemoryIds.delete(actorId);
     controls.input.value = "";
     controls.banner.hidden = true;
-    controls.submit.textContent = "保存记忆";
+    controls.submit.textContent = "保存核心记忆";
     refreshRenderedAgentMemoryCards();
   } catch (error) {
     showError(error instanceof Error ? error.message : "保存 Agent 记忆失败");

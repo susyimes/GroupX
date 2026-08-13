@@ -151,7 +151,7 @@ adapter.heartbeat
 
 该事件有 durable `seq`，可以随 SQLite cursor 在刷新或重连后回放。`turn.reasoning.recorded` 与 `tool.progress.recorded` 都只服务本地时间线与审计，不属于 message、memory、identity 或 summary；Context Packet、reply chain、房间压缩与自动记忆只能消费明确的 `message.created`/记忆数据，不得读取两类记录正文。
 
-每个 Turn 恰好有一个 durable terminal event。可选 reasoning record、tool progress records、成功 response message、terminal event、Turn 与 attempt terminal 更新在同一事务提交，durable 顺序固定为 reasoning → tool progress → response（仅成功）→ terminal。若崩溃发生在 final commit 前，可保存已合并的 partial text 并将 Turn 标记为 `interrupted`，但不能把 partial text 伪装成 completed message。
+每个 Turn 恰好有一个 durable terminal event。可选 reasoning record、tool progress records、成功 response message、terminal event、成功 Turn 的 Agent dated memory，以及 Turn/attempt terminal 更新在同一事务提交，durable 顺序固定为 reasoning → tool progress → response（仅成功）→ terminal → dated memory（仅成功）。dated memory 只投影当前消息与最终回复，不读取 reasoning/tool。若崩溃发生在 final commit 前，可保存已合并的 partial text 并将 Turn 标记为 `interrupted`，但不能把 partial text 伪装成 completed message。
 
 ## 3. 发送者身份合同
 
@@ -242,7 +242,7 @@ Terminal 状态不可回到 running。若用户显式重试，创建新的 Turn�
 
 ## 6. Agent 互发工具（仅 Structured）
 
-GroupX 必须实现 `send/ask/read`，它们是 Structured Agent 在当前原生回合主动互调的主路径。某个 Adapter 只有在现场 probe 已验证 MCP 注入、发现和实际调用后，才向该 session 暴露工具；普通 attach/call 失败只能分级为 `unsupported` 或 `not_observed`。只有 Agent 已通过独立外部策略 evidence 投影为 `native_policy_blocked` 时，MCP 不可用原因才可引用该状态。三种情况都返回 `MCP_UNAVAILABLE`；不能启用 deprecated Direct 作为替代。Web/REST 也可创建相同路由命令，公共 transcript、公共记忆和身份记忆不依赖 MCP。
+GroupX 必须实现 `send/ask/read`，并向 Structured Agent 提供绑定到自身的 `core_memory_remember`。某个 Adapter 只有在现场 probe 已验证 MCP 注入、发现和实际调用后，才向该 session 暴露工具；普通 attach/call 失败只能分级为 `unsupported` 或 `not_observed`。只有 Agent 已通过独立外部策略 evidence 投影为 `native_policy_blocked` 时，MCP 不可用原因才可引用该状态。三种情况都返回 `MCP_UNAVAILABLE`；不能启用 deprecated Direct 作为替代。Web/REST 也可创建相同路由命令，公共 transcript、公共记忆和身份记忆不依赖 MCP。
 
 ### 6.1 `groupx.send`
 
@@ -449,13 +449,21 @@ POST /api/identity/:identityId/retract
 
 Web identity 写入请求包含 `clientCommandId`、`subjectActorId`、`kind`、`content` 和可选 `sourceEventId`；author 固定为 `user:web`。supersede 追加新版本并引用旧 identity ID，retract 写 tombstone。任何请求都不能指定 author/from。
 
-Web UI 不再暴露 identity 写入面板；稳定 Agent 身份由 `/setup` 写入对应 Agent 配置。`/api/identity` 与 MCP identity 工具仅作为兼容接口保留。`/api/memory` 同时承载 room scope 的公共记忆与 agent scope 的独立记忆；客户端按 scope 分区展示，agent scope 以 `createdAt` 日期分组。
+Web UI 不再暴露 identity 写入面板；稳定 Agent 身份由 `/setup` 写入对应 Agent 配置。`/api/identity` 与 MCP identity 工具仅作为兼容接口保留。`/api/memory` 同时承载 room scope 的公共记忆与 agent scope 的两层记忆；`agentMemoryType=core|dated` 只允许出现在 Agent scope。Agent 设置把 core 独立展示并允许维护，把 dated 按 `createdAt` 日期分组展示。成功 Turn 自动写 dated；其他状态不写。
 
-### 10.5 本机 Agent 引导与配置
+### 10.5 单房间上下文用量与显式压缩
+
+`GET /api/context` 返回当前 `room:main` 的 active checkpoint、其后 `message.created` 与协议格式开销的字符估算：`estimatedCharacters/maxCharacters/compactionTriggerCharacters/utilizationPercent`。它不是任一模型的 token 计数，也不把目标 Agent 身份、记忆或原生 instructions 伪装成统一窗口。
+
+`POST /api/context/compact` 接受严格的 `{ "clientCommandId": "..." }`。命令经 Web binding 和 Broker receipt 单飞，调用与自动压缩相同的 Room Context Engine、摘要校验与 CAS；默认保留最近 12 条 `message.created` 原文。`turn.reasoning.recorded`、`tool.progress.recorded` 与其他审计事件仍不进入压缩输入。响应只返回 `compacted` 与更新后的 usage 投影，不返回摘要正文。完整 transcript 不删除，失败也不替换 active summary。
+
+### 10.6 本机 Agent 引导与配置
 
 `GET /api/setup` 返回 config 路径、是否已有配置、runtime 是否正在运行、三种 native driver 的默认命令检测结果，以及可编辑的 `serverPort/storagePath/agents[]` 草稿。`POST /api/setup` 严格接收同一草稿并要求稳定 Agent ID 唯一、至少一个 Agent 启用；每个 Agent 只包含 `id/driver/name/command/cwd/enabled`。
 
 setup contract 不包含 `transport`、`access`、approval、sandbox、model 或任意 native flags。standalone `groupx init` 成功保存后启动正式 runtime，并让引导页轮询同源 `GET /api/setup/launch`；只有该接口返回 loopback 正式 origin 的 `ready` 状态后，页面才自动跳转到群聊，随后关闭临时服务。运行中的 `/setup` 可以更新配置文件，但响应必须标记 `restartRequired=true`，不能自动跳转或在旧 runtime 中热换 binding/session。
+
+`GET /api/health` 的正式 runtime 响应必须包含 `service="groupx"`、`protocol="groupx.runtime/1"` 和 64 位十六进制 `runtimeKey`。key 是 canonical config 与 canonical config path 的 SHA-256，只用于本机重复启动的实例相关性，不是 credential、安全边界或远程发现标识。`groupx start` 仅在 service/protocol/key 全部匹配时把已运行实例视为成功；其他 listener 必须 fail-closed 并提示端口冲突。CLI 的预检不能替代 `listen` 的原子租约，`EADDRINUSE` 后必须再做有界探测以处理并发启动竞态。
 
 ## 11. SSE 合同
 
@@ -507,11 +515,12 @@ groupx.ask
 groupx.read
 groupx.memory.search
 groupx.memory.remember
+groupx.core_memory_remember
 groupx.identity.read
 groupx.identity.remember
 ```
 
-`identity.remember` 的 subject 固定为调用方自身。其他 Agent 对该身份的描述可以进入普通公共 memory，记录 `author != subject`，不能冒充对方的自我记忆。
+`core_memory_remember` 不接受 scope、subject、author 或 binding 参数；Broker 从当前 session binding 固定 `scope_id=subject=author=调用 Agent` 以及 `agentMemoryType=core`。`identity.remember` 的 subject 同样固定为调用方自身。其他 Agent 对该身份的描述可以进入普通公共 memory，记录 `author != subject`，不能冒充对方的自我记忆。
 
 ## 13. A2A 映射边界
 

@@ -1,6 +1,6 @@
 {
   "name": "@susyimes/groupx",
-  "version": "0.1.5",
+  "version": "0.1.8",
   "description": "Local transparent group-chat broker for Codex, Grok, and Kimi CLIs",
   "type": "module",
   "main": "dist/src/main.js",
@@ -20,7 +20,7 @@
     "!dist/src/adapters/direct",
     "!dist/src/adapters/kimi-config-preflight*",
     "dist/web",
-    "docs/assets"
+    "docs/assets/groupx-demo.gif"
   ],
   "engines": {
     "node": ">=24.14.1 <25"

@@ -217,6 +217,8 @@ SQLite/WAL 保存：
 Memory Service 提供：
 
 - 显式记忆写入；
+- 绑定到调用 Agent 自身的核心记忆写入；
+- 成功 Turn 的自动日期记忆归档；
 - 作用域与来源校验；
 - supersede/retract；
 - 按 scope/kind/text/cursor 检索；
@@ -236,11 +238,12 @@ groupx.ask
 groupx.read
 groupx.memory.search
 groupx.memory.remember
+groupx.core_memory_remember
 groupx.identity.read
 groupx.identity.remember
 ```
 
-工具调用方来自 session binding。Agent 只能以自己的 actor 身份写 identity record；Web UI 可以为任意 Agent 写用户来源的 identity record。
+工具调用方来自 session binding。`core_memory_remember` 没有 scope/subject/author 输入，只能写调用 Agent 自己的 core；Agent 也只能以自己的 actor 身份写 identity record。Web UI 可以为任意 Agent 写用户来源的 identity/core record。
 
 `groupx.send` 持久化后异步返回；`groupx.ask` 等待目标 terminal response 并将结果带回当前 CLI 回合；`groupx.read` 查询异步 correlation。同步 ask 遇到 active causal stack 中的祖先 Agent 时返回 `CAUSAL_CYCLE`，避免相互等待死锁。
 
@@ -254,8 +257,10 @@ REST 负责有副作用的用户命令；SSE 负责服务端事件流。
 
 | Method | Path | 作用 |
 | --- | --- | --- |
-| GET | `/api/health` | Broker、数据库和 Adapter 健康 |
+| GET | `/api/health` | runtime 身份、Broker、数据库和 Adapter 健康 |
 | GET | `/api/bootstrap` | 当前房间投影、Agent、游标和能力摘要 |
+| GET | `/api/context` | 当前单房间的 Context Packet 字符预算估算 |
+| POST | `/api/context/compact` | 显式滚动压缩较早消息，保留近期原文和完整 transcript |
 | GET | `/api/events?afterSeq=` | SSE 增量事件；支持 `Last-Event-ID` |
 | POST | `/api/messages` | 用户定向消息或 `@all` |
 | POST | `/api/turns/:id/cancel` | 请求原生取消 |
@@ -279,10 +284,11 @@ M1 UI 使用原生 HTML/CSS/TypeScript，避免在首版引入大型框架。
 
 - 左侧：Agent 状态、cwd、会话状态、能力、重启按钮和可折叠的公共记忆；
 - 中间：群聊、发送者徽标、reply/forward、目标选择和取消；
-- Agent 设置：每个 Agent 的稳定身份与按日期分组的独立记忆；不保留右侧记忆栏；
-- 底部：composer，明确选择 `@codex/@grok/@kimi/@all`。
+- Agent 设置：每个 Agent 的稳定身份、可维护的核心记忆与按日期分组的自动记忆；不保留右侧记忆栏；
+- 底部：composer，左侧明确选择 `@codex/@grok/@kimi/@all`，输入区域右上角显示字符用量并提供“压缩会话”。
 
 UI 只根据 Envelope actor 渲染发送者，不解析正文决定头像或身份。
+用量控件显示的是 active checkpoint 加其后 `message.created` 的保守字符估算，不是模型 token window；目标 Agent 身份、记忆与原生 instructions 仍会另占空间。手动压缩同样经过 Broker 和 `clientCommandId` receipt，保留最近 12 条消息原文，不删除 transcript。
 `tool.progress` 按 `turnId + toolCallId` 归并到对应 Agent 的会话气泡，started/completed 更新同一条；默认只显示一行工具名与状态，用户点击“展开”后才显示受限长度的结构化详情。terminal 时同形投影写成 `tool.progress.recorded`，刷新后仍走同一归并/折叠路径。两种事件都不得回退成独立的全量 JSON 事件卡，也不得进入 Agent 上下文。
 首版将模型输出作为普通文本渲染，不执行其中的 HTML/脚本。服务器只绑定 loopback；GroupX 不在其上叠加认证、Origin 防护或浏览器安全策略。
 
@@ -345,12 +351,12 @@ GroupX 只承诺命令接收与派发记录幂等，不虚构模型执行的 exa
 每个 Adapter 维护 `lastDeliveredSeq`。一次 prompt 的 Context Packet 最多包含：
 
 1. GroupX 协议与 Agent 设置中的稳定身份；
-2. 与当前 actor 相关的兼容身份记录；
-3. 当前 Agent 的独立记忆（按 `created_at` 日期展示、按 actor scope 注入）；
-4. 当前有效的固定公共记忆；
-5. 自上次投递后的相关消息增量；
-6. 当前目标消息和 reply chain；
-7. 必要时的持久滚动摘要检查点。
+2. 当前目标消息、完整 reply chain 与必要的持久滚动摘要检查点；
+3. 当前 Agent 的核心记忆（`agent_memory_type=core`，可选区段中最高优先级）；
+4. 自上次投递后的相关消息增量；
+5. 当前 Agent 的自动日期记忆（`agent_memory_type=dated`；若来源回复已在增量/reply chain 中则去重）；
+6. 当前有效的固定公共记忆；
+7. 与当前 actor 相关的兼容身份记录。
 
 不把完整数据库或完整房间历史重复注入每个 turn。默认 Context Packet 硬上限是 `256,000` 字符，Room Context Engine 以其约 `75%`（默认 `192,000` 字符）作为压缩软目标，给原生 instructions、工具调用和回复留余量；这是跨 Agent 的确定性字符预算，不等同于某个模型的 token window（例如 Codex UI 可能显示约 258k tokens）。用户可通过 `limits.contextCharacters` 覆盖硬上限。
 
@@ -460,7 +466,7 @@ Agent `enabled` 默认 true;`enabled: false` 的 agent 不建 Adapter、不进�
 
 `groupx init` 启动一个临时 loopback 引导服务并打开浏览器；首次 `groupx start` 没有配置时复用同一流程。引导页可创建多个相同 driver 实例并填写 id/name/cwd/command；保存严格配置后，CLI 启动正式 runtime，临时服务通过同源 launch 状态通知当前页面，并在正式服务 ready 后自动跳转到群聊。运行中的 `/setup` 使用同一合同编辑名册；保存只更新配置文件并提示重启，不自动跳转，也不在运行时热增删 Adapter/session。setup API 不暴露 transport、access、approval 或 sandbox 字段。
 
-正式 runtime 必须先成功绑定配置的 loopback HTTP 端口，才能执行 stale Agent instance/session recovery。该监听是单 runtime 启动租约：若端口已被另一个 GroupX 占用，新进程以 `EADDRINUSE` 失败且不得把现有 runtime 的 ready binding 标成 interrupted，也不得留下永久 queued Turn。
+正式 runtime 必须先成功绑定配置的 loopback HTTP 端口，才能执行 stale Agent instance/session recovery。该监听是单 runtime 启动租约。`GET /api/health` 同时返回固定 `service=groupx`、协议版本和由 canonical config + canonical config path 生成的非秘密 `runtimeKey`。CLI 在构造 SQLite/Adapter 前探测该身份：相同 key 直接复用现有页面并成功退出；不同 key、旧版 GroupX 或非 GroupX listener 明确报冲突，不杀进程、不自动换端口。预检与 bind 之间仍可能竞态，因此实际 `EADDRINUSE` 后最多有界复查三次；若竞态赢家是同一 key，同样按复用成功收敛。失败进程不得把现有 runtime 的 ready binding 标成 interrupted，也不得留下永久 queued Turn。
 
 公开配置没有 `access` 字段。`access` 在 v0.1 内部恒为 unrestricted；Adapter 根据 Agent + transport 生成固定 argv/session mode。用户不能通过 `extraArgs` 改写、删除或替换这些访问参数。
 

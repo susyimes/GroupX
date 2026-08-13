@@ -3,6 +3,8 @@ import type {
   BootstrapResponse,
   CancelTurnRequest,
   CancelTurnResult,
+  CompactContextRequest,
+  CompactContextResult,
   CreateMessageAccepted,
   CreateMessageRequest,
   IdentityQuery,
@@ -10,6 +12,7 @@ import type {
   RememberMemoryRequest,
   RestartAgentAccepted,
   RestartAgentRequest,
+  RoomContextUsage,
   RetractIdentityRequest,
   RetractMemoryRequest,
   SupersedeIdentityRequest,
@@ -19,7 +22,9 @@ import type {
 import {
   parseBootstrapResponse,
   parseCancelTurnResult,
-  parseCreateMessageAccepted
+  parseCompactContextResult,
+  parseCreateMessageAccepted,
+  parseRoomContextUsage
 } from "../contracts/rest.js";
 import { TRANSPORT_LIFECYCLE, type GroupXConfig } from "../config.js";
 import type { BrokerApi, BrokerHealth, IdentityMutationAccepted, IdentityPage, MemoryMutationAccepted, MemoryPage } from "../web/server/types.js";
@@ -47,6 +52,8 @@ type WebBrokerSurface = Pick<
   | "bootstrap"
   | "acceptMessage"
   | "cancelFromBinding"
+  | "contextUsage"
+  | "compactContextFromBinding"
   | "queryMemory"
   | "queryIdentity"
   | "rememberMemory"
@@ -127,6 +134,25 @@ export class GroupXWebBrokerApi implements BrokerApi {
     });
   }
 
+  contextUsage(signal: AbortSignal): RoomContextUsage {
+    throwIfAborted(signal);
+    return parseRoomContextUsage(this.#broker.contextUsage(this.roomId));
+  }
+
+  async compactContext(
+    request: CompactContextRequest,
+    signal: AbortSignal
+  ): Promise<CompactContextResult> {
+    this.#requireWritable(signal);
+    return parseCompactContextResult(
+      await this.#broker.compactContextFromBinding({
+        bindingId: this.#bindingId,
+        clientCommandId: request.clientCommandId,
+        roomId: this.roomId
+      })
+    );
+  }
+
   async createMessage(
     request: CreateMessageRequest,
     signal: AbortSignal
@@ -183,6 +209,9 @@ export class GroupXWebBrokerApi implements BrokerApi {
     const items = this.#broker.queryMemory({
       ...(query.scopeType === undefined ? {} : { scopeType: query.scopeType }),
       ...(query.scopeId === undefined ? {} : { scopeId: query.scopeId }),
+      ...(query.agentMemoryType === undefined
+        ? {}
+        : { agentMemoryType: query.agentMemoryType }),
       ...(query.kind === undefined ? {} : { kind: query.kind }),
       ...(query.authorActorId === undefined ? {} : { authorActorId: query.authorActorId }),
       ...(query.subjectActorId === undefined ? {} : { subjectActorId: query.subjectActorId }),

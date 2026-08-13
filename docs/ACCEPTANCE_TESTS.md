@@ -37,6 +37,8 @@
 | G-006 | 重启后 queued Turn transport snapshot 不同 | `TRANSPORT_MODE_MISMATCH`，不跨 transport 派发 |
 | G-007 | Kimi 官方默认全局配置 | global permission=`manual` 或配置键缺省不阻断 Structured ACP；new/load 后在首 prompt 前成功发送 `session/set_mode(auto)` |
 | G-008 | Kimi session mode 负向 | `session/set_mode(auto)` 的明确 native policy 拒绝为 `NATIVE_POLICY_BLOCKED`；普通协议失败按 Adapter 错误收敛；不写全局配置、不 fallback |
+| G-009 | 重复 `groupx start` | 同 config path + canonical config 的现有 runtime 被识别并复用，命令返回成功且不打开 Store/Adapter；另一 config、旧版 GroupX 或非 GroupX listener 明确报端口冲突，不杀进程、不换端口 |
+| G-010 | 并发启动 bind 竞态 | 预检后 `EADDRINUSE` 会有界复查；同 key 赢家按复用成功，无法识别的 listener 返回友好错误，失败方不修改现有 binding/session |
 
 精确 native profile：
 
@@ -158,12 +160,12 @@ binding 是 provenance/correlation handle，不是 secret、token 或本机抗�
 | I-011 | native reasoning delta 后刷新/重连 | delta 不逐条落库；terminal transaction 生成最多一条 `turn.reasoning.recorded`，按 seq 在 response/terminal 前回放 |
 | I-012 | native tool started/completed 后刷新/重连 | live `tool.progress` 保持 transient；terminal transaction 生成 `tool.progress.recorded`，同一 `turnId + toolCallId` 仍合并为气泡内折叠记录 |
 
-## 11. 公共记忆与身份记忆
+## 11. 公共、核心、日期与身份记忆
 
 | ID | 用例 | 通过标准 |
 | --- | --- | --- |
 | M-001 | 用户固定公共记忆 | author/source 可追溯，重启后可检索 |
-| M-002 | 普通聊天 | 不自动升级 MemoryRecord |
+| M-002 | 普通聊天 | 不自动升级公共/core MemoryRecord；仅成功 Agent Turn 自动形成自身 dated record |
 | M-003 | Structured MCP memory.remember | author 来自 binding，不能冒充他人 |
 | M-004 | supersede/retract | 追加版本/tombstone，不原地抹除 |
 | M-005 | 用户身份记录 | subject 可选 Agent，author 固定 user:web |
@@ -175,6 +177,9 @@ binding 是 provenance/correlation handle，不是 secret、token 或本机抗�
 | M-011 | 摘要与 cursor 原子边界 | 只有已持久且嵌入 attempt 的摘要可写 `summary_through_seq`，native start 确认后才推进 `last_summary_seq` |
 | M-012 | 压缩失败 | 尝试后续健康 Agent；全失败则 Turn 明确失败，原 transcript、旧摘要和 cursor 不变 |
 | M-013 | durable reasoning/tool records | 时间线可回放，但 Context Packet、reply chain、压缩输入与自动记忆均不包含其正文 |
+| M-014 | Structured `core_memory_remember` | wire 不含 scope/subject/author/binding；Broker 固定为调用 Agent 自己的 `agent_memory_type=core`，重试幂等 |
+| M-015 | 成功/失败 Turn 的日期记忆 | completed 的 response/terminal/dated memory 同事务且仅一份；failed/cancelled/interrupted 不写；dated 只含有界当前消息和最终回复 |
+| M-016 | Context Packet 两层记忆 | core 优先于其他可选区段；dated 按 actor 隔离，来源回复仍在 unread/reply chain 时不重复注入 |
 
 ## 12. Web 与本地传输
 
@@ -191,6 +196,8 @@ binding 是 provenance/correlation handle，不是 secret、token 或本机抗�
 | W-009 | 多实例名册 | 可添加两个以上 Codex App Server，稳定 id 唯一，name/cwd 独立；保存后 runtime 各有独立 actor/binding/session |
 | W-010 | 运行中 Agent 设置 | `/setup` 载入现有名册，保存返回 restartRequired；不热换当前 session，不出现 access/approval/sandbox 控件 |
 | W-011 | `groupx update` | 查询 npm latest；已最新/本地更高不安装，`--check` 无副作用，有更新时锁定精确版本并通过 shell-free npm 入口全局安装 |
+| W-012 | 单房间上下文控件 | 输入窗口右上角显示明确标注的字符估算；手动压缩经 Broker/clientCommandId 单飞，保留最近消息与完整 transcript，reasoning/tool 记录不进入摘要 |
+| W-013 | Agent 设置两层记忆 | core 独立展示并可维护；dated 只读按本地日期分组并允许显式移除；公共记忆仍在群聊左栏 |
 
 loopback 与 binding 是产品范围/来源合同，不是认证或安全保证。
 

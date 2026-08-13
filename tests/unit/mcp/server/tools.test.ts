@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type {
   McpAskInput,
+  McpCoreMemoryRememberInput,
   McpIdentityReadInput,
   McpIdentityRememberInput,
   McpMemoryRememberInput,
@@ -75,6 +76,24 @@ class FakeBroker implements ToolBrokerApi {
         ...(input.subjectActorId === undefined
           ? {}
           : { subjectActorId: input.subjectActorId }),
+        content: input.content,
+        sourceKind: "mcp" as const,
+        status: "active" as const,
+        createdAt: CREATED_AT
+      }
+    };
+  }
+
+  async coreMemoryRemember(caller: ToolCallerContext, input: McpCoreMemoryRememberInput) {
+    this.calls.push({ method: "coreMemoryRemember", caller, input });
+    return {
+      memory: {
+        memoryId: "memory-core-1",
+        scope: { type: "agent" as const, id: caller.actorId },
+        agentMemoryType: "core" as const,
+        kind: input.kind,
+        authorActorId: caller.actorId,
+        subjectActorId: caller.actorId,
         content: input.content,
         sourceKind: "mcp" as const,
         status: "active" as const,
@@ -215,6 +234,14 @@ describe("GroupX MCP tools", () => {
         content: "Use explicit routing"
       }
     });
+    const core = await fixture.client.callTool({
+      name: "core_memory_remember",
+      arguments: {
+        clientCommandId: "command-core-memory",
+        kind: "instruction",
+        content: "Keep protocol evidence concise"
+      }
+    });
     const identity = await fixture.client.callTool({
       name: "identity_remember",
       arguments: {
@@ -230,11 +257,22 @@ describe("GroupX MCP tools", () => {
         authorActorId: "agent:codex"
       }
     });
+    expect(core.structuredContent).toMatchObject({
+      memory: {
+        scope: { type: "agent", id: "agent:codex" },
+        agentMemoryType: "core",
+        authorActorId: "agent:codex",
+        subjectActorId: "agent:codex"
+      }
+    });
     expect(broker.calls.map((call) => call.method)).toEqual([
       "memoryRemember",
+      "coreMemoryRemember",
       "identityRemember"
     ]);
+    expect(broker.calls[1]?.input).not.toHaveProperty("scope");
     expect(broker.calls[1]?.input).not.toHaveProperty("subjectActorId");
+    expect(broker.calls[2]?.input).not.toHaveProperty("subjectActorId");
   });
 
   it("dispatches every remaining wire tool to its matching Broker operation", async () => {

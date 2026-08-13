@@ -103,7 +103,47 @@ export const RestartAgentAcceptedSchema = z.object({
   previousInstanceId: ReferenceIdSchema.optional()
 }).passthrough();
 
+export const CompactContextRequestSchema = z.strictObject({
+  clientCommandId: ClientCommandIdSchema
+});
+
+export const RoomContextUsageSchema = z
+  .object({
+    roomId: ReferenceIdSchema,
+    throughSeq: NonNegativeIntegerSchema,
+    estimatedCharacters: NonNegativeIntegerSchema,
+    maxCharacters: z.number().int().positive(),
+    compactionTriggerCharacters: z.number().int().positive(),
+    utilizationPercent: z.number().int().min(0).max(100),
+    uncompactedMessageCount: NonNegativeIntegerSchema,
+    summaryThroughSeq: NonNegativeIntegerSchema.optional(),
+    compactable: z.boolean()
+  })
+  .passthrough()
+  .superRefine((usage, context) => {
+    if (usage.compactionTriggerCharacters > usage.maxCharacters) {
+      context.addIssue({
+        code: "custom",
+        message: "compaction trigger must not exceed the hard context limit",
+        path: ["compactionTriggerCharacters"]
+      });
+    }
+    if (usage.summaryThroughSeq !== undefined && usage.summaryThroughSeq > usage.throughSeq) {
+      context.addIssue({
+        code: "custom",
+        message: "summaryThroughSeq must not exceed throughSeq",
+        path: ["summaryThroughSeq"]
+      });
+    }
+  });
+
+export const CompactContextResultSchema = z.object({
+  compacted: z.boolean(),
+  usage: RoomContextUsageSchema
+}).passthrough();
+
 export const MemoryScopeTypeSchema = z.enum(["room", "agent", "correlation"]);
+export const AgentMemoryTypeSchema = z.enum(["core", "dated"]);
 export const MemoryKindSchema = z.enum([
   "fact",
   "decision",
@@ -191,6 +231,7 @@ export const EventsQuerySchema = z.strictObject({
 export const MemoryQuerySchema = z.strictObject({
   scopeType: MemoryScopeTypeSchema.optional(),
   scopeId: ReferenceIdSchema.optional(),
+  agentMemoryType: AgentMemoryTypeSchema.optional(),
   kind: MemoryKindSchema.optional(),
   authorActorId: ActorIdSchema.optional(),
   subjectActorId: AgentActorIdSchema.optional(),
@@ -208,20 +249,39 @@ export const IdentityQuerySchema = z.strictObject({
   includeHistory: z.boolean().optional()
 });
 
-export const MemoryRecordSchema = z.object({
-  memoryId: ReferenceIdSchema,
-  scope: MemoryScopeOutputSchema,
-  kind: MemoryKindSchema,
-  authorActorId: ActorIdSchema,
-  subjectActorId: AgentActorIdSchema.optional(),
-  content: z.string().max(MAX_MESSAGE_CONTENT_LENGTH),
-  sourceEventId: ReferenceIdSchema.optional(),
-  sourceKind: z.enum(["web", "mcp", "generated_summary"]),
-  status: z.enum(["active", "superseded", "retracted"]),
-  supersedesMemoryId: ReferenceIdSchema.optional(),
-  createdAt: z.string().min(1).max(64),
-  retractedAt: z.string().min(1).max(64).optional()
-}).passthrough();
+export const MemoryRecordSchema = z
+  .object({
+    memoryId: ReferenceIdSchema,
+    scope: MemoryScopeOutputSchema,
+    agentMemoryType: AgentMemoryTypeSchema.optional(),
+    kind: MemoryKindSchema,
+    authorActorId: ActorIdSchema,
+    subjectActorId: AgentActorIdSchema.optional(),
+    content: z.string().max(MAX_MESSAGE_CONTENT_LENGTH),
+    sourceEventId: ReferenceIdSchema.optional(),
+    sourceKind: z.enum(["web", "mcp", "generated_summary", "automatic_turn"]),
+    status: z.enum(["active", "superseded", "retracted"]),
+    supersedesMemoryId: ReferenceIdSchema.optional(),
+    createdAt: z.string().min(1).max(64),
+    retractedAt: z.string().min(1).max(64).optional()
+  })
+  .passthrough()
+  .superRefine((record, context) => {
+    if (record.scope.type === "agent" && record.agentMemoryType === undefined) {
+      context.addIssue({
+        code: "custom",
+        message: "Agent memory records require agentMemoryType",
+        path: ["agentMemoryType"]
+      });
+    }
+    if (record.scope.type !== "agent" && record.agentMemoryType !== undefined) {
+      context.addIssue({
+        code: "custom",
+        message: "agentMemoryType is only valid for Agent memory",
+        path: ["agentMemoryType"]
+      });
+    }
+  });
 
 export const IdentityRecordSchema = z.object({
   identityId: ReferenceIdSchema,
@@ -299,6 +359,9 @@ export type CancelTurnRequest = z.infer<typeof CancelTurnRequestSchema>;
 export type CancelTurnResult = z.infer<typeof CancelTurnResultSchema>;
 export type RestartAgentRequest = z.infer<typeof RestartAgentRequestSchema>;
 export type RestartAgentAccepted = z.infer<typeof RestartAgentAcceptedSchema>;
+export type CompactContextRequest = z.infer<typeof CompactContextRequestSchema>;
+export type RoomContextUsage = z.infer<typeof RoomContextUsageSchema>;
+export type CompactContextResult = z.infer<typeof CompactContextResultSchema>;
 export type RememberMemoryRequest = z.infer<typeof RememberMemoryRequestSchema>;
 export type SupersedeMemoryRequest = z.infer<typeof SupersedeMemoryRequestSchema>;
 export type RetractMemoryRequest = z.infer<typeof RetractMemoryRequestSchema>;
@@ -326,6 +389,10 @@ export function parseCancelTurnRequest(input: unknown): CancelTurnRequest {
 
 export function parseRestartAgentRequest(input: unknown): RestartAgentRequest {
   return parseWriteRequest(RestartAgentRequestSchema, input);
+}
+
+export function parseCompactContextRequest(input: unknown): CompactContextRequest {
+  return parseWriteRequest(CompactContextRequestSchema, input);
 }
 
 export function parseRememberMemoryRequest(
@@ -390,6 +457,14 @@ export function parseCancelTurnResult(input: unknown): CancelTurnResult {
 
 export function parseRestartAgentAccepted(input: unknown): RestartAgentAccepted {
   return parseContractOutput(RestartAgentAcceptedSchema, input);
+}
+
+export function parseRoomContextUsage(input: unknown): RoomContextUsage {
+  return parseContractOutput(RoomContextUsageSchema, input);
+}
+
+export function parseCompactContextResult(input: unknown): CompactContextResult {
+  return parseContractOutput(CompactContextResultSchema, input);
 }
 
 export function parseRememberMemoryAccepted(

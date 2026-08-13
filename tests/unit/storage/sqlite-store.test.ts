@@ -946,19 +946,38 @@ describe.sequential("SqliteGroupXStore transactions and idempotency", () => {
     ]);
     expect(terminal.responseEvent?.eventType).toBe("message.created");
     expect(terminal.terminalEvent.eventType).toBe("turn.completed");
+    expect(terminal.datedMemory).toMatchObject({
+      scopeType: "agent",
+      scopeId: "agent:codex",
+      agentMemoryType: "dated",
+      authorActorId: "agent:codex",
+      subjectActorId: "agent:codex",
+      sourceEventId: terminal.responseEvent?.eventId,
+      sourceKind: "automatic_turn"
+    });
+    expect(terminal.datedMemory?.content).toContain("[current_message]");
+    expect(terminal.datedMemory?.content).toContain("[agent_response]\nfinal");
+    expect(terminal.datedMemory?.content).not.toContain("first thought");
+    expect(terminal.datedMemory?.content).not.toContain("memory_search");
+    expect(terminal.datedMemoryEvent).toMatchObject({
+      eventType: "memory.remembered",
+      actorId: "agent:codex",
+      body: { record: terminal.datedMemory }
+    });
     expect(terminal.reasoningEvent!.seq).toBeLessThan(terminal.toolProgressEvents![0]!.seq);
     expect(terminal.toolProgressEvents![0]!.seq).toBeLessThan(
       terminal.toolProgressEvents![1]!.seq
     );
     expect(terminal.toolProgressEvents![1]!.seq).toBeLessThan(terminal.responseEvent!.seq);
     expect(terminal.responseEvent!.seq).toBeLessThan(terminal.terminalEvent.seq);
+    expect(terminal.terminalEvent.seq).toBeLessThan(terminal.datedMemoryEvent!.seq);
     expect(terminal.terminalEvent.body).toMatchObject({
       reasoningEventId: terminal.reasoningEvent?.eventId,
       toolProgressEventIds: terminal.toolProgressEvents?.map((event) => event.eventId)
     });
     expect(terminal.turn.responseEventId).toBe(terminal.responseEvent?.eventId);
     expect(terminal.turn.terminalEventId).toBe(terminal.terminalEvent.eventId);
-    expect(fixture.store.countEvents()).toBe(beforeDeltas + 5);
+    expect(fixture.store.countEvents()).toBe(beforeDeltas + 6);
 
     expectGroupXCode(
       () =>
@@ -970,7 +989,38 @@ describe.sequential("SqliteGroupXStore transactions and idempotency", () => {
         }),
       "STORE_CONFLICT"
     );
-    expect(fixture.store.countEvents()).toBe(beforeDeltas + 5);
+    expect(fixture.store.countEvents()).toBe(beforeDeltas + 6);
+  });
+
+  it("bounds automatic dated memory while preserving both semantic sections", () => {
+    const fixture = createFixture();
+    const accepted = fixture.store.acceptMessage(
+      messageInput("dated-memory-bounds", "u".repeat(32_768))
+    );
+    const turnId = accepted.turns[0]!.turnId;
+    const source = fixture.store.getEvent(accepted.messageEventId)!;
+    const claim = fixture.store.claimNextQueuedTurn({
+      targetActorId: "agent:codex",
+      bindingId: "binding:codex",
+      instanceId: "instance:codex",
+      contextThroughSeq: source.seq,
+      expectedTurnId: turnId,
+      expectedTransport: "structured"
+    })!;
+    fixture.store.markPromptInvoked(claim.attempt.attemptId);
+    fixture.store.markAttemptRunning(claim.attempt.attemptId, "native-dated-bounds");
+
+    const terminal = fixture.store.terminalizeTurn({
+      turnId,
+      attemptId: claim.attempt.attemptId,
+      status: "completed",
+      content: "a".repeat(32_768)
+    });
+
+    expect(terminal.datedMemory?.content.length).toBeLessThanOrEqual(32_768);
+    expect(terminal.datedMemory?.content).toContain("[current_message]");
+    expect(terminal.datedMemory?.content).toContain("[agent_response]");
+    expect(terminal.datedMemory?.content).toContain("[…truncated by GroupX]");
   });
 
   it("claims only one FIFO lane head until its attempt reaches terminal state", () => {
@@ -1431,7 +1481,7 @@ describe.sequential("SqliteGroupXStore summaries and recovery", () => {
     });
     reopen(fixture);
 
-    expect(fixture.store.getSchemaVersion()).toBe(5);
+    expect(fixture.store.getSchemaVersion()).toBe(6);
     expect(fixture.store.getJournalMode()).toBe("wal");
     expect(fixture.store.getSessionBinding("binding:codex")?.capabilities).toEqual({
       prompt: true
@@ -1616,6 +1666,10 @@ describe.sequential("SqliteGroupXStore summaries and recovery", () => {
       ALTER TABLE agent_instances DROP COLUMN transport;
       ALTER TABLE session_bindings DROP COLUMN transport;
       ALTER TABLE turns DROP COLUMN transport;
+      DROP TRIGGER memory_records_agent_type_bi;
+      DROP TRIGGER memory_records_agent_type_bu;
+      DROP INDEX memory_agent_type_status_created_idx;
+      ALTER TABLE memory_records DROP COLUMN agent_memory_type;
       DELETE FROM schema_migrations WHERE version > 1;
       PRAGMA user_version = 1;
       COMMIT;
@@ -1623,7 +1677,7 @@ describe.sequential("SqliteGroupXStore summaries and recovery", () => {
     raw.close();
 
     fixture.store = new SqliteGroupXStore(fixture.databasePath);
-    expect(fixture.store.getSchemaVersion()).toBe(5);
+    expect(fixture.store.getSchemaVersion()).toBe(6);
     expect(fixture.store.getTurnAttempt(claim.attempt.attemptId)).toMatchObject({
       dispatchPhase: "prompt_invoked",
       deliveryCertainty: "unknown"
@@ -1632,6 +1686,40 @@ describe.sequential("SqliteGroupXStore summaries and recovery", () => {
     expect(recovery.interruptedTurns.map((turn) => turn.turnId)).toEqual([turnId]);
     expect(recovery.queuedTurns).toEqual([]);
     expect(fixture.store.getTurn(turnId)?.status).toBe("interrupted");
+  });
+
+  it("migrates existing v5 Agent memory to core without rewriting room memory", () => {
+    const fixture = createFixture();
+    fixture.store.close();
+    const raw = new Database(fixture.databasePath);
+    raw.exec(`
+      BEGIN IMMEDIATE;
+      DROP TRIGGER memory_records_agent_type_bi;
+      DROP TRIGGER memory_records_agent_type_bu;
+      DROP INDEX memory_agent_type_status_created_idx;
+      ALTER TABLE memory_records DROP COLUMN agent_memory_type;
+      DELETE FROM schema_migrations WHERE version = 6;
+      PRAGMA user_version = 5;
+      INSERT INTO memory_records(
+        memory_id, scope_type, scope_id, kind, author_actor_id, subject_actor_id,
+        content, source_event_id, source_kind, status, supersedes_memory_id,
+        created_at, retracted_at
+      ) VALUES (
+        'memory:legacy-agent', 'agent', 'agent:codex', 'instruction', 'user:web',
+        'agent:codex', 'legacy curated memory', NULL, 'web', 'active', NULL,
+        '2026-08-11T00:00:00.000Z', NULL
+      );
+      COMMIT;
+    `);
+    raw.close();
+
+    fixture.store = new SqliteGroupXStore(fixture.databasePath);
+    expect(fixture.store.getSchemaVersion()).toBe(6);
+    expect(fixture.store.getMemory("memory:legacy-agent")).toMatchObject({
+      scopeType: "agent",
+      agentMemoryType: "core",
+      content: "legacy curated memory"
+    });
   });
 
   it("closes and deregisters the database when migration validation fails", () => {
@@ -1644,10 +1732,10 @@ describe.sequential("SqliteGroupXStore summaries and recovery", () => {
     expectGroupXCode(() => new SqliteGroupXStore(fixture.databasePath), "STORE_UNAVAILABLE");
 
     const repair = new Database(fixture.databasePath);
-    repair.pragma("user_version = 5");
+    repair.pragma("user_version = 6");
     repair.close();
     fixture.store = new SqliteGroupXStore(fixture.databasePath);
-    expect(fixture.store.getSchemaVersion()).toBe(5);
+    expect(fixture.store.getSchemaVersion()).toBe(6);
     expect(fixture.store.integrityCheck()).toEqual({ ok: true, messages: ["ok"] });
   });
 
@@ -1950,6 +2038,7 @@ describe.sequential("SqliteGroupXStore memory and identity", () => {
     const record = fixture.store.rememberMemory({
       scopeType: "agent",
       scopeId: "agent:codex",
+      agentMemoryType: "core",
       kind: "preference",
       authorActorId: "user:web",
       subjectActorId: "agent:codex",

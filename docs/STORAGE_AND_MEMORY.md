@@ -28,7 +28,8 @@ SQLite/WAL 是 GroupX 唯一权威事实源。Broker 是唯一写入者。
 | aggregated reasoning record | 是 | 是 | 每个已产生推理的 terminal Turn 最多一条；仅供时间线回放，不进入上下文 |
 | tool progress records | 是 | 是 | terminal 时保存 Adapter 已投影的 started/completed；折叠回放，不进入上下文 |
 | public memory | 是 | 是 | 显式记忆、来源可追溯 |
-| per-Agent dated memory | 是 | 是 | `scope_type=agent`，按目标 actor 隔离，日期来自 `created_at` |
+| per-Agent core memory | 是 | 是 | `scope_type=agent, agent_memory_type=core`；Agent 通过绑定工具主动写自己，Web 可维护 |
+| per-Agent dated memory | 是 | 是 | `scope_type=agent, agent_memory_type=dated`；成功 Turn 自动写，日期来自 `created_at` |
 | identity memory | 是 | 是 | 群组层身份记录，不替换 CLI 原生身份 |
 | configured Agent identity | 配置 | 是 | 存在 `groupx.json`，每轮注入，不写入 memory 表 |
 | generated summary | 派生 | 是 | 标记 summary，可重新生成 |
@@ -254,6 +255,7 @@ memory_records(
   memory_id TEXT PRIMARY KEY,
   scope_type TEXT NOT NULL,
   scope_id TEXT NOT NULL,
+  agent_memory_type TEXT,
   kind TEXT NOT NULL,
   author_actor_id TEXT NOT NULL,
   subject_actor_id TEXT,
@@ -266,6 +268,8 @@ memory_records(
   retracted_at TEXT
 )
 ```
+
+`agent_memory_type` 只允许 `core | dated`，仅在 `scope_type=agent` 时非空。schema v6 把升级前已有的 Agent 独立记忆迁移为 `core`，room/correlation memory 保持空值。
 
 `scope_type`：
 
@@ -347,11 +351,12 @@ Turn terminal transaction 先对 `terminal_event_id IS NULL` 和当前 non-termi
 2. 为已观察到的工具 started/completed 写入有界 `tool.progress.recorded` 投影；不保存未建模 native payload；
 3. 成功时插入唯一 response `message.created`；失败时不伪造 response；
 4. 以统一 idempotency key `turn:<turnId>:terminal` 插入唯一 durable terminal event，不论 event type 为 completed/failed/cancelled/interrupted；
-5. 更新 Turn terminal 状态、错误码及 event 引用；
-6. 更新当前 attempt 的 `dispatch_phase=terminal`、delivery certainty 和 `terminal_at`；
-7. 仅在 confirmed delivered 时把 delivery cursor 最多推进到该 attempt 的 `context_through_seq`；若 attempt 带 `summary_through_seq`，同事务推进 `last_summary_seq`；
-8. commit；
-9. 唤醒 SQLite-backed SSE cursor tail，再由它按 reasoning → tool progress → response（仅成功）→ terminal 的 durable seq 发布。
+5. 成功时从 source `message.created` 和最终 response 构造一条有界 `agent_memory_type=dated` 记录，并追加 `memory.remembered`；不读取 reasoning/tool 记录；
+6. 更新 Turn terminal 状态、错误码及 event 引用；
+7. 更新当前 attempt 的 `dispatch_phase=terminal`、delivery certainty 和 `terminal_at`；
+8. 仅在 confirmed delivered 时把 delivery cursor 最多推进到该 attempt 的 `context_through_seq`；若 attempt 带 `summary_through_seq`，同事务推进 `last_summary_seq`；
+9. commit；
+10. 唤醒 SQLite-backed SSE cursor tail，再由它按 reasoning → tool progress → response（仅成功）→ terminal → dated memory 的 durable seq 发布。
 
 transient delta 可以在 commit 前实时广播，但 UI 必须把它显示为未完成状态。浏览器刷新时不会重放历史 delta；terminal commit 后由聚合 reasoning record 与 tool progress records 恢复推理和折叠工具展示。
 
@@ -404,7 +409,14 @@ Broker 启动时先枚举非终态 attempt，不先写 terminal：
 - Structured Agent 通过 GroupX MCP 显式调用 `groupx.memory.remember`；
 - 系统生成滚动摘要，且 `kind=summary/source_kind=generated_summary`。
 
-普通聊天内容不会自动成为 MemoryRecord。
+普通聊天内容不会自动成为公共 MemoryRecord；成功 Agent Turn 会按第 6.3 节自动形成该 Agent 自己的 dated memory。
+
+### 6.3 Agent 核心记忆与日期记忆
+
+- `core`：长期、少量、显式维护。`core_memory_remember` 的 wire input 不含 scope、subject、author 或 binding，Broker 始终从当前 Structured binding 固定为调用 Agent 自己；Web Agent 设置也可追加、替换或撤回 core。
+- `dated`：每个成功 Turn 自动追加一条 episodic 记录，包含有界的当前 `message.created` 与最终 response。失败、取消或 interrupted Turn 不写 dated；reasoning、tool progress、stderr 与 native payload 永不进入。
+- 自动记录与 response/terminal 在同一个 SQLite immediate transaction 中提交；terminal CAS 保证重试不会生成第二条日期记忆。
+- dated 记录在其 response 仍已由 unread transcript/reply chain 表示时不重复注入 Context Packet；跨过 delivery cursor 或房间摘要边界后才作为该 Agent 的私有日期记忆参与预算。
 
 ### 6.2 冲突与纠正
 
@@ -457,7 +469,8 @@ IdentityRecord 没有以下专用字段：
 [groupx_protocol]
 [configured_agent_identity]
 [self_identity]
-[agent_memory]
+[agent_core_memory]
+[agent_dated_memory]
 [pinned_group_memory]
 [relevant_memory]
 [room_checkpoint_summary]
@@ -466,13 +479,15 @@ IdentityRecord 没有以下专用字段：
 [current_message]
 ```
 
-Agent 设置中的稳定身份、滚动摘要、当前消息和完整 reply chain 是强制区段。滚动摘要是已省略旧 transcript 的覆盖证明，因此不能先推进 cursor 再丢掉摘要。其余可选区段在预算内优先保留近期 room delta，再保留目标 Agent 独立记忆、公共记忆和兼容身份记录。
+Agent 设置中的稳定身份、滚动摘要、当前消息和完整 reply chain 是强制区段。滚动摘要是已省略旧 transcript 的覆盖证明，因此不能先推进 cursor 再丢掉摘要。其余可选区段优先保留 Agent core，再保留近期 room delta、Agent dated、公共记忆和兼容身份记录。
 
 `turn.reasoning.recorded` 与 `tool.progress.recorded` 是可回放的 UI/审计记录，不是 Context Packet 区段。未读 transcript、reply chain 与压缩输入都只从 `message.created` 投影；两类记录不得被摘要、自动记忆或再次发送给任一 Agent。
 
-`memory_records.scope_type=agent` 且 `scope_id=agent:<id>` 的记录只进入该目标 Agent 的 Context Packet。Web 在 Agent 设置的对应卡片中按 `created_at` 的本地日期分组展示；公共记忆仍使用 `scope_type=room` 并位于群聊左栏，两者不会相互提升或复制。Agent 稳定身份同样在 Agent 设置中写入配置，主界面不保留右侧记忆栏。
+`memory_records.scope_type=agent` 且 `scope_id=agent:<id>` 的记录只进入该目标 Agent 的 Context Packet。Web 在 Agent 设置中把 core 独立列出，把 dated 按 `created_at` 的本地日期分组；公共记忆仍使用 `scope_type=room` 并位于群聊左栏，三者不会相互提升或复制。Agent 稳定身份同样在 Agent 设置中写入配置，主界面不保留右侧记忆栏。
 
 默认硬上限为 `256,000` 字符，可配置；该值不是 token 数。Room Context Engine 在约 `75%` 的软目标（默认 `192,000` 字符）将省略 unread transcript 时触发，并以“旧检查点 + 有界旧消息块”滚动生成下一检查点，为原生 instructions、工具和回复保留余量。不可压缩的强制区段可以使用到硬上限。生成者是配置顺序中第一个健康 Agent；不可用或返回无效摘要时尝试下一个健康 Agent。
+
+Web 输入区域右上角的用量是 active checkpoint 加其后 `message.created` 及协议开销的保守字符估算，不是 token 计数。用户可通过 Broker 的幂等命令显式压缩；它复用同一累计摘要 CAS，并保留最近 12 条消息原文。该操作不删除 transcript，不读取 reasoning/tool 记录，也不直接推进任一 Agent 的 delivery cursor。
 
 压缩 session 不挂载 GroupX MCP，不形成公开聊天 Turn，也不让压缩任务主动调用其他 Agent。若所有 Agent 都失败，当前业务 Turn 以 `CONTEXT_BUDGET_EXCEEDED` 结束；原文、旧摘要和 delivery cursor 保持不变。
 

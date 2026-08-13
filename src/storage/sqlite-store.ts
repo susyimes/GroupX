@@ -80,6 +80,27 @@ const TRANSIENT_EVENT_TYPES = new Set([
   "adapter.heartbeat"
 ]);
 const WAITS_FOR_CHILDREN_COMMAND_TYPES = new Set(["mcp.ask"]);
+const MAX_DATED_MEMORY_CHARS = 32_768;
+const MAX_DATED_MEMORY_INPUT_CHARS = 8_192;
+
+function truncateDatedMemoryPart(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  const marker = "\n[…truncated by GroupX]";
+  return `${value.slice(0, Math.max(0, maxChars - marker.length))}${marker}`;
+}
+
+function datedMemoryContent(input: string, response: string): string {
+  const inputText = truncateDatedMemoryPart(input, MAX_DATED_MEMORY_INPUT_CHARS);
+  const framing = "[current_message]\n\n\n[agent_response]\n";
+  const responseBudget = Math.max(
+    0,
+    MAX_DATED_MEMORY_CHARS - framing.length - inputText.length
+  );
+  return `[current_message]\n${inputText}\n\n[agent_response]\n${truncateDatedMemoryPart(
+    response,
+    responseBudget
+  )}`;
+}
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -382,6 +403,7 @@ function mapMemory(row: Row): MemoryRecord {
     createdAt: requiredString(row.created_at, "created_at")
   };
   const optionalFields = {
+    agentMemoryType: optionalString(row.agent_memory_type),
     subjectActorId: optionalString(row.subject_actor_id),
     sourceEventId: optionalString(row.source_event_id),
     supersedesMemoryId: optionalString(row.supersedes_memory_id),
@@ -1640,7 +1662,7 @@ export class SqliteGroupXStore implements GroupXStore {
 
   #insertTurnUnsafe(input: EnqueueTurnInput): TurnRecord {
     const source = this.#database
-      .prepare("SELECT seq, room_id FROM events WHERE event_id = ?")
+      .prepare("SELECT seq, room_id, body_json FROM events WHERE event_id = ?")
       .get(input.sourceEventId) as Row | undefined;
     if (!source) {
       throw new GroupXError("STORE_CONFLICT", "Turn source event does not exist");
@@ -2284,7 +2306,7 @@ export class SqliteGroupXStore implements GroupXStore {
     }
 
     const source = this.#database
-      .prepare("SELECT seq, room_id FROM events WHERE event_id = ?")
+      .prepare("SELECT seq, room_id, body_json FROM events WHERE event_id = ?")
       .get(turn.sourceEventId) as Row | undefined;
     if (!source) {
       throw new GroupXError("STORE_UNAVAILABLE", "Turn source event is missing");
@@ -2437,6 +2459,48 @@ export class SqliteGroupXStore implements GroupXStore {
       }
     });
 
+    let datedMemory: MemoryRecord | undefined;
+    let datedMemoryEvent: StoredEventRecord | undefined;
+    if (input.status === "completed" && responseEvent !== undefined && attempt !== undefined) {
+      const sourceBody = parseJson<Record<string, unknown>>(source.body_json, {});
+      if (typeof sourceBody.content !== "string") {
+        throw new GroupXError(
+          "STORE_UNAVAILABLE",
+          "Completed Turn source message has no string content"
+        );
+      }
+      datedMemory = this.#insertMemoryUnsafe({
+        scopeType: "agent",
+        scopeId: turn.targetActorId,
+        agentMemoryType: "dated",
+        kind: "note",
+        authorActorId: turn.targetActorId,
+        subjectActorId: turn.targetActorId,
+        content: datedMemoryContent(sourceBody.content, input.content ?? ""),
+        sourceEventId: responseEvent.eventId,
+        sourceKind: "automatic_turn",
+        createdAt: occurredAt
+      });
+      datedMemoryEvent = this.#insertEventUnsafe({
+        roomId: requiredString(source.room_id, "room_id"),
+        eventType: "memory.remembered",
+        actorId: turn.targetActorId,
+        instanceId: attempt.instanceId,
+        targets: [turn.targetActorId],
+        replyToEventId: responseEvent.eventId,
+        causationId: responseEvent.eventId,
+        correlationId: turn.rootCorrelationId,
+        occurredAt,
+        body: { record: datedMemory },
+        provenance: {
+          sourceKind: "adapter",
+          authorActorId: turn.targetActorId,
+          subjectActorId: turn.targetActorId,
+          sourceEventId: responseEvent.eventId
+        }
+      });
+    }
+
     const updated = this.#database
       .prepare(`
         UPDATE turns
@@ -2477,6 +2541,8 @@ export class SqliteGroupXStore implements GroupXStore {
     if (reasoningEvent !== undefined) result.reasoningEvent = reasoningEvent;
     if (toolProgressEvents.length > 0) result.toolProgressEvents = toolProgressEvents;
     if (responseEvent !== undefined) result.responseEvent = responseEvent;
+    if (datedMemory !== undefined) result.datedMemory = datedMemory;
+    if (datedMemoryEvent !== undefined) result.datedMemoryEvent = datedMemoryEvent;
     return result;
   }
 
@@ -2854,19 +2920,29 @@ export class SqliteGroupXStore implements GroupXStore {
   }
 
   #insertMemoryUnsafe(input: CreateMemoryInput, supersedesMemoryId?: string): MemoryRecord {
+    if (input.scopeType === "agent" && input.agentMemoryType === undefined) {
+      throw new GroupXError("INVALID_ENVELOPE", "Agent memory requires agentMemoryType");
+    }
+    if (input.scopeType !== "agent" && input.agentMemoryType !== undefined) {
+      throw new GroupXError(
+        "INVALID_ENVELOPE",
+        "agentMemoryType is only valid for Agent memory"
+      );
+    }
     const memoryId = input.memoryId ?? createId("mem");
     this.#database
       .prepare(`
         INSERT INTO memory_records(
-          memory_id, scope_type, scope_id, kind, author_actor_id, subject_actor_id,
+          memory_id, scope_type, scope_id, agent_memory_type, kind, author_actor_id, subject_actor_id,
           content, source_event_id, source_kind, status, supersedes_memory_id,
           created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
       `)
       .run(
         memoryId,
         input.scopeType,
         input.scopeId,
+        input.agentMemoryType ?? null,
         input.kind,
         input.authorActorId,
         input.subjectActorId ?? null,
@@ -3052,9 +3128,13 @@ export class SqliteGroupXStore implements GroupXStore {
     }
     if (
       previous.scopeType !== replacement.scopeType ||
-      previous.scopeId !== replacement.scopeId
+      previous.scopeId !== replacement.scopeId ||
+      previous.agentMemoryType !== replacement.agentMemoryType
     ) {
-      throw new GroupXError("STORE_CONFLICT", "A memory replacement must remain in its scope");
+      throw new GroupXError(
+        "STORE_CONFLICT",
+        "A memory replacement must remain in its scope and memory type"
+      );
     }
     const next = this.#insertMemoryUnsafe(replacement, memoryId);
     const updated = this.#database
@@ -3120,6 +3200,10 @@ export class SqliteGroupXStore implements GroupXStore {
     if (input.scopeId !== undefined) {
       predicates.push("memory_records.scope_id = ?");
       parameters.push(input.scopeId);
+    }
+    if (input.agentMemoryType !== undefined) {
+      predicates.push("memory_records.agent_memory_type = ?");
+      parameters.push(input.agentMemoryType);
     }
     if (input.kind !== undefined) {
       predicates.push("memory_records.kind = ?");

@@ -203,6 +203,7 @@ function createFixture(input: {
   closeTimeoutMs?: number;
   nativeCancelTimeoutMs?: number;
   contextProvider?: BrokerContextProvider;
+  contextController?: BrokerDependencies["contextController"];
   turnLifecycle?: BrokerTurnLifecycle;
   publish?: (event: GroupXEnvelope) => void | Promise<void>;
   selectedTransport?: "direct" | "structured";
@@ -252,6 +253,9 @@ function createFixture(input: {
     contextProvider: input.contextProvider ?? {
       prepare: ({ sourceEvent }) => ({ contextThroughSeq: sourceEvent.seq })
     },
+    ...(input.contextController === undefined
+      ? {}
+      : { contextController: input.contextController }),
     ...(input.turnLifecycle === undefined ? {} : { turnLifecycle: input.turnLifecycle }),
     ...(input.agentController === undefined ? {} : { agentController: input.agentController }),
     clock: { now: () => "2026-08-11T00:00:02.000Z" },
@@ -394,6 +398,42 @@ describe.sequential("GroupXBroker acceptance, dispatch and terminal semantics", 
     expect(fixture.adapters.codex.prompts).toHaveLength(promptCount);
     expect(fixture.store.countEvents()).toBe(eventCount);
     expect(fixture.published).toHaveLength(publishCount);
+  });
+
+  it("single-flights and replays an explicit room compaction command", async () => {
+    const release = deferred<import("../../../src/memory/types.js").RoomContextCompactionResult>();
+    const usage = {
+      roomId: "room:main",
+      throughSeq: 20,
+      estimatedCharacters: 128_000,
+      maxCharacters: 256_000,
+      compactionTriggerCharacters: 192_000,
+      utilizationPercent: 50,
+      uncompactedMessageCount: 18,
+      compactable: true
+    } as const;
+    const compactNow = vi.fn(async () => await release.promise);
+    const fixture = createFixture({
+      contextController: {
+        inspectUsage: () => usage,
+        compactNow
+      }
+    });
+    const command = {
+      bindingId: "binding:web",
+      clientCommandId: "context-command-1",
+      roomId: "room:main"
+    } as const;
+
+    expect(fixture.broker.contextUsage()).toEqual(usage);
+    const first = fixture.broker.compactContextFromBinding(command);
+    const concurrent = fixture.broker.compactContextFromBinding(command);
+    const result = { compacted: true, usage: { ...usage, compactable: false } };
+    release.resolve(result);
+
+    await expect(Promise.all([first, concurrent])).resolves.toEqual([result, result]);
+    await expect(fixture.broker.compactContextFromBinding(command)).resolves.toEqual(result);
+    expect(compactNow).toHaveBeenCalledTimes(1);
   });
 
   it("keeps one actor FIFO and persists only one response/terminal on duplicate native terminal", async () => {

@@ -192,6 +192,9 @@ describe("GroupXRuntime composition", () => {
         async (response) => await response.json()
       );
       expect(health).toMatchObject({
+        service: "groupx",
+        protocol: "groupx.runtime/1",
+        runtimeKey: expect.stringMatching(/^[a-f0-9]{64}$/u),
         status: "ok",
         readiness: "ready",
         transport: "structured",

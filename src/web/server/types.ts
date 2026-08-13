@@ -4,6 +4,8 @@ import type {
   BootstrapResponse,
   CancelTurnRequest,
   CancelTurnResult,
+  CompactContextRequest,
+  CompactContextResult,
   CreateMessageAccepted,
   CreateMessageRequest,
   IdentityQuery,
@@ -14,6 +16,7 @@ import type {
   RememberMemoryRequest,
   RestartAgentAccepted,
   RestartAgentRequest,
+  RoomContextUsage,
   RetractIdentityRequest,
   RetractMemoryRequest,
   SupersedeIdentityRequest,
@@ -23,6 +26,7 @@ import type {
   SetupSnapshot
 } from "../../contracts/index.js";
 import type { SseRuntime } from "../sse/index.js";
+import type { GroupXRuntimeIdentity } from "../../core/runtime-instance.js";
 
 export type Awaitable<T> = T | Promise<T>;
 
@@ -68,6 +72,11 @@ export interface BrokerApi {
 
   health(signal: AbortSignal): Awaitable<BrokerHealth>;
   bootstrap(signal: AbortSignal): Awaitable<BootstrapResponse>;
+  contextUsage(signal: AbortSignal): Awaitable<RoomContextUsage>;
+  compactContext(
+    request: CompactContextRequest,
+    signal: AbortSignal
+  ): Awaitable<CompactContextResult>;
   createMessage(
     request: CreateMessageRequest,
     signal: AbortSignal
@@ -125,6 +134,8 @@ export interface GroupXHttpServerOptions {
   readonly gracefulCloseTimeoutMs?: number;
   readonly mcpHandler?: McpHttpHandler;
   readonly setupApi?: SetupApi;
+  /** Present on the product runtime; optional only for embedded/test servers. */
+  readonly runtimeIdentity?: GroupXRuntimeIdentity;
 }
 
 export interface GroupXHttpServerAddress {

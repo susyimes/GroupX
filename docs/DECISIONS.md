@@ -27,6 +27,10 @@
 | D-015 | GroupX 不构成安全边界，也不实现审批子系统 | Accepted |
 | D-016 | 所选 transport 派发不确定时绝不自动重放或切换 | Accepted |
 | D-017 | 配置驱动的 Agent 名册(driver/name/自定义 id)与 npm CLI 分发 | Accepted |
+| D-018 | 推理记录可回放但不进入上下文 | Accepted |
+| D-019 | 工具进度可回放但不进入上下文 | Accepted |
+| D-020 | `groupx start` 复用同配置的现有 runtime | Accepted |
+| D-021 | Agent 记忆拆分为显式核心记忆与自动日期记忆 | Accepted |
 
 ## D-001：透明 Broker
 
@@ -125,6 +129,8 @@ Direct/Kimi one-shot 的旧 preflight 规则只保留作历史实现说明，不
 纠错使用 supersede/tombstone，不原地抹除来源。
 
 Room Context Engine 使用累计 checkpoint summary + 近期真实消息，默认 `256,000` 字符硬上限、约 `75%` 的压缩软目标。预算不是 token window；不同 CLI/模型窗口无需伪装成相同。触发压缩时按房间配置顺序使用第一个健康 Agent，不可用或输出无效时再尝试下一个。摘要持久化、attempt `summary_through_seq` 与 delivery cursor 的推进顺序必须保证：失败只会让当前 Turn 明确失败，绝不会以裁剪历史换取继续运行。
+
+单房间 UI 可显示 checkpoint + 未压缩消息的字符估算并显式请求压缩。该命令仍由 Broker 接收、以 `clientCommandId` 单飞，复用自动压缩的摘要 CAS，保留最近 12 条消息；它不是清空会话或删除 transcript，也不把字符估算称为 token 数。
 
 ## D-009：并发
 
@@ -242,6 +248,35 @@ runtime 启动时把名册中的自定义/改名 agent upsert 进 actors 表，�
 原因：工具进度完全 transient 会在刷新后消失；直接把它拼进 reasoning 或最终回复会混淆数据类型并可能污染后续上下文。独立 durable event 保留 UI 与审计价值，同时维持语义隔离。
 
 迁移与回滚：不新增表或列。旧 reader 可忽略未知 event type；回滚停止生成新记录即可，既有事件仍不会成为上下文输入。
+
+## D-020：`groupx start` 是幂等的启动或复用
+
+决定：loopback HTTP listener 继续是单 runtime 的原子租约，CLI 不新增第二套锁文件。正式 runtime 的 `GET /api/health` 返回 `service="groupx"`、`protocol="groupx.runtime/1"` 和 `runtimeKey`；key 由 canonical config 与 canonical config path 做 SHA-256，只用于判断重复启动是否指向同一配置，不是 secret 或认证机制。
+
+CLI 在创建 Store、Adapter 和 native session 前先探测目标 origin：
+
+1. service/protocol/key 全部相同：打印现有 URL、按 `--no-open` 决定是否打开页面，然后以成功状态退出；
+2. GroupX key 不同、旧版/不兼容 GroupX 或其他 HTTP listener：明确提示冲突；
+3. listener 不可达：正常尝试 `listen`；若发生 `EADDRINUSE`，最多有界复查三次以收敛并发启动竞态；
+4. GroupX 永不自动杀掉占用进程，也不自动选择下一个端口，因为那可能创建两个 Broker 共用一份 SQLite 与 native session lineage。
+
+回滚边界：移除 CLI 预检只会恢复原始 `EADDRINUSE` UX；健康响应新增字段是向后兼容的 JSON 扩展，不改变 REST 写合同、数据库 schema 或 Agent 协议。
+
+## D-021：Agent 核心记忆与按日期记忆分层
+
+决定：每个 Agent 的私有记忆拆成两个不能互相冒充的数据层：
+
+- `core` 是少量、长期、显式维护的核心记忆。Structured Agent 通过绑定到自身的 `core_memory_remember` 工具主动写入；工具输入不接受 scope、subject、author 或 binding，Broker 一律从当前 session binding 固定为调用 Agent 自己。Web Agent 设置可以追加、替换和撤回同一 Agent 的 core；
+- `dated` 是成功 Turn 的自动工作记录。Broker 在成功 terminal transaction 内，从该 Turn 有界的当前 `message.created` 与最终 Agent response 构造一条 dated 记录，并追加对应 `memory.remembered` durable event。失败、取消、中断或终态不明的 Turn 不生成 dated；
+- dated 的日期来自记录 `created_at`，不是模型提供的正文或参数。自动记录不读取 reasoning、tool、stderr、native payload、公共记忆或完整历史；
+- Context Packet 分别投影 `[agent_core_memory]` 与 `[agent_dated_memory]`。core 在可选记忆区段中优先；dated 受字符预算约束，并在其来源回复已由当前消息、reply chain 或未读 transcript 表达时去重；
+- 公共房间记忆继续使用 room scope，和两个 Agent 层完全分离。普通聊天不会自动成为公共或 core MemoryRecord。
+
+持久化：schema v6 在 `memory_records` 增加仅对 `scope_type=agent` 有效的 `agent_memory_type=core|dated`。升级前已有 Agent 记忆保守迁移为 `core`；room/correlation 记录保持空值。supersede 必须保留原层，不能借替换把 dated 转成 core 或反向转换。
+
+原因：核心记忆需要 Agent 主动筛选，自动日期记忆需要保留连续工作事实；混为一类会让自动摘要稀释长期偏好，也会让 Web/工具误把系统生成记录当成 Agent 明确承诺。把自动写入放在 terminal transaction 内可避免成功响应与日期记忆部分提交，同时保持 Broker 唯一写者。
+
+回滚边界：停止生成新 dated 或隐藏 core tool 不会破坏已有记录。回滚代码仍必须把未知 `agent_memory_type` fail-closed，不能把 dated 无条件当 core 注入；若降级到 schema v5，需要显式导出/重建数据库，不做破坏性原地降级。
 
 ## 决策变更规则
 
