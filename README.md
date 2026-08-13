@@ -12,9 +12,9 @@
 ![Platform](https://img.shields.io/badge/platform-Windows%20%C2%B7%20macOS%20%C2%B7%20Linux-0078d6)
 ![Transport](https://img.shields.io/badge/transport-structured-9440c9)
 
-<img src="./docs/assets/groupx-demo.gif" width="100%" alt="GroupX 当前界面交互演示">
+<img src="./docs/assets/groupx-demo.gif" width="100%" alt="GroupX 多 Agent 协作演示：Codex 通过 groupx.ask 调用 Grok 和 Kimi 后汇总结论">
 
-<sub>演示数据由本地静态场景生成，不包含真实会话或 CLI 数据。</sub>
+<sub>演示 Codex 通过 <code>groupx.ask</code> 协调 Grok、Kimi 并汇总结论；数据由本地静态场景生成，不包含真实会话或 CLI 数据。</sub>
 
 </div>
 
@@ -41,6 +41,11 @@ GroupX 是一个只监听本机 loopback 的多 Agent 群聊 Broker。用户从�
 - **公共记忆**：用户显式固定给整个房间的事实、决定、偏好、指令、约束或备注。
 - **两层 Agent 记忆**：每个 Agent 拥有主动维护的核心记忆，以及成功回合后自动生成、按日期展示的私有记忆。
 - **会话恢复与故障收敛**：原生 session 支持 resume/load；可能已送达的业务 Prompt 不会自动重放。
+
+## 0.1.9 更新
+
+- 优化输入区上下文压缩状态与用量卡片的垂直居中对齐。
+- 更新 README 动图，完整展示 `Codex → Grok / Kimi → Codex 汇总` 的 MCP 协作链。
 
 ## 0.1.8 更新
 
