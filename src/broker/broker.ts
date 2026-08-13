@@ -78,6 +78,7 @@ interface ActiveDispatch {
   nativeTurnId?: string;
   lifecycleContext: ActiveBrokerTurnContext;
   lifecycleActive: boolean;
+  automaticRecoveryRequested: boolean;
 }
 
 function nowIso(): string {
@@ -1122,7 +1123,8 @@ export class GroupXBroker {
       cancelRequested: false,
       nativeTerminalInFlight: false,
       lifecycleContext,
-      lifecycleActive: false
+      lifecycleActive: false,
+      automaticRecoveryRequested: false
     };
     this.#active.set(claim.turn.turnId, active);
 
@@ -1227,6 +1229,40 @@ export class GroupXBroker {
     } finally {
       this.#deactivateTurnLifecycle(active);
       this.#active.delete(claim.turn.turnId);
+      if (active.automaticRecoveryRequested && !this.#closed) {
+        await this.#recoverAgentAfterProtocolFailure(active);
+      }
+    }
+  }
+
+  async #recoverAgentAfterProtocolFailure(active: ActiveDispatch): Promise<void> {
+    if (!this.#agentController) return;
+    const actorId = active.preparation.claim.turn.targetActorId;
+    try {
+      // The failed Turn is already terminal and is never replayed. Restarting
+      // only replaces the poisoned process/session for subsequent queued work.
+      await this.#agentController.restart(actorId);
+    } catch (error) {
+      this.#report(error, {
+        operation: "recovery",
+        actorId,
+        turnId: active.preparation.claim.turn.turnId
+      });
+    }
+  }
+
+  #requestAutomaticRecovery(
+    active: ActiveDispatch,
+    status: TurnStatus,
+    errorCode: string | undefined
+  ): void {
+    if (
+      status === "failed" &&
+      errorCode === "PROTOCOL_INVALID_MESSAGE" &&
+      this.#selectedTransport === "structured" &&
+      this.#agentController !== undefined
+    ) {
+      active.automaticRecoveryRequested = true;
     }
   }
 
@@ -1457,6 +1493,7 @@ export class GroupXBroker {
     }
     const current = this.#store.getTurn(active.preparation.claim.turn.turnId);
     if (current && TERMINAL_TURN_STATUSES.has(current.status)) {
+      this.#requestAutomaticRecovery(active, current.status, current.errorCode);
       active.terminal = true;
       active.durableStatus = current.status;
       this.#deactivateTurnLifecycle(active);
@@ -1485,6 +1522,7 @@ export class GroupXBroker {
         ...(input.eventBody === undefined ? {} : { eventBody: input.eventBody }),
         occurredAt: this.#clock.now()
       });
+      this.#requestAutomaticRecovery(active, terminal.turn.status, terminal.turn.errorCode);
       active.durableStatus = terminal.turn.status;
       this.#deactivateTurnLifecycle(active);
       this.#notifyTurnTerminal(terminal.turn.turnId);
@@ -1492,6 +1530,9 @@ export class GroupXBroker {
       await this.#publishStored(terminal.terminalEvent);
     } catch (error) {
       const after = this.#store.getTurn(active.preparation.claim.turn.turnId);
+      if (after && TERMINAL_TURN_STATUSES.has(after.status)) {
+        this.#requestAutomaticRecovery(active, after.status, after.errorCode);
+      }
       if (!after || !TERMINAL_TURN_STATUSES.has(after.status)) {
         active.terminal = false;
       }

@@ -362,7 +362,7 @@ GroupX 只承诺命令接收与派发记录幂等，不虚构模型执行的 exa
 
 每轮压缩按配置顺序逐一尝试健康 Agent；若整轮只遇到临时启动、握手、首事件、空闲中断或 session unavailable，最多进行 3 轮并指数退避。单个 Agent 失败后先切换下一个，不在同一轮反复占用它。空摘要、超长摘要、协议非法、native interaction、外部策略阻断与摘要持久化错误不重试。
 
-Structured session 的启动/恢复对明确的临时启动、握手、session unavailable 和未交付中断最多尝试 3 次并指数退避。resume 仍失败时可为**未来 Turn**创建新的同 transport session；任何可能已送达的业务 prompt 都不自动重放。Web 通过 transient `session.starting/retrying/ready/failed` 展示这一过程。
+Structured session 的启动/恢复对明确的临时启动、握手、`PROTOCOL_INVALID_MESSAGE`、session unavailable 和未交付中断最多尝试 3 次并指数退避。resume 仍失败时可为**未来 Turn**创建新的同 transport session。业务 Turn 已持久收敛为 `failed + PROTOCOL_INVALID_MESSAGE` 时，Broker 合并并发恢复请求、自动关闭或隔离旧实例，并优先 resume/load 原生 session；恢复只服务后续 queued Turn，不重放失败 Turn 的 prompt。Web 通过 transient `session.starting/retrying/ready/failed` 展示这一过程。
 
 ## 8. 并发、性能与背压
 

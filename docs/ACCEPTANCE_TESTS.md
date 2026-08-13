@@ -69,6 +69,7 @@ Structured release 合同：三 Agent 都能用 fixed argv/mode 握手、建立/
 | P-005 | Adapter 重启 | instance/binding 变化，稳定 actor 不变 |
 | P-006 | Direct runtime 入口 | 配置/factory/runtime 均拒绝，零 CLI child |
 | P-007 | UI badge | 只读 Envelope actor，不解析正文 |
+| P-008 | Structured Turn 返回 `PROTOCOL_INVALID_MESSAGE` | 原 Turn 只失败一次且 prompt 不重放；并发恢复合并为一次 Adapter 重建，下一 Turn 使用新 instance/binding 正常完成 |
 
 binding 是 provenance/correlation handle，不是 secret、token 或本机抗伪造认证机制。
 

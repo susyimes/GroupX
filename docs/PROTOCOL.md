@@ -171,7 +171,7 @@ Web API 和 MCP 工具都不接受调用方指定 `from`、`actor` 或 `provenan
 - Direct 一次性 invocation 或 App Server/ACP session 在原生派发前绑定一个 `bindingId`；Direct binding 可引用从前一 Turn 取得的 native session ID，但仍是新的进程/binding lineage；
 - 只为 Structured 且 capability 已验证可挂载 MCP 的会话建立独立 MCP binding，三个 CLI 不共用匿名入口；
 - `groupx.send/ask/remember` 根据 MCP binding 得到 actor；
-- Adapter 重启产生新 `instanceId/bindingId`，但可继续使用同一稳定 `actorId`。
+- Adapter 重启产生新 `instanceId/bindingId`，但可继续使用同一稳定 `actorId`。Structured 业务 Turn 持久收敛为 `failed + PROTOCOL_INVALID_MESSAGE` 后，Broker 可自动重建该 Adapter 的进程/session；原失败 Turn 保持 terminal，不进入新 binding，也不自动重放。
 
 ### 3.4 来源关联边界
 
@@ -223,6 +223,8 @@ dispatching | running -> cancelling -> completed | cancelled | failed | interrup
 `accepted` 是 REST/MCP 命令的接收结果，不是 Turn 状态。它只代表 Broker 已持久化消息和 queued Turn，不代表目标 CLI 已完成。`streaming` 是 running 期间的可选事件活动，不是持久状态；没有 delta 的 Adapter 也可以从 running 直接进入 terminal。
 
 Terminal 状态不可回到 running。若用户显式重试，创建新的 Turn，并用 `causationId` 指向旧 Turn。
+
+`PROTOCOL_INVALID_MESSAGE` 表示 GroupX 无法继续信任当前 Structured 进程/session 的 wire 状态。当前 Turn 必须先以一次 durable `failed` 收敛；随后允许自动替换 Adapter instance/binding，并优先 resume/load 同一 native session 以服务**后续** Turn。这个恢复动作不是 Turn retry，不创建第二个 native turn，也不改变原 Turn 的 terminal 状态。
 
 状态恢复必须结合 attempt 的 `dispatchPhase` 与 `deliveryCertainty`。`dispatching/running` 不是自动重试许可：只有状态不是 `cancelling` 且确认 `not_delivered` 才能重排；`cancelling + not_delivered` 收敛为 `cancelled`。已派发的 `cancelling` 保留取消意图并尝试对同一 native Turn 重发 cancel；若 native completion 已抢先成功，允许收敛为 `completed`。`delivered` 或 `unknown` 无法关联回同一 native Turn 时进入 `interrupted`，由用户显式继续或重试；已有 `delivered` 证据不能倒退成 `unknown`。
 

@@ -19,7 +19,7 @@ import {
   type ManagedAgentId,
   type SessionManagerOptions
 } from "../../src/app/session-manager.js";
-import { GroupXError } from "../../src/core/errors.js";
+import { GroupXError, type GroupXErrorCode } from "../../src/core/errors.js";
 import { McpBindingRegistry } from "../../src/mcp/binding-registry.js";
 import { SqliteGroupXStore } from "../../src/storage/sqlite-store.js";
 
@@ -29,8 +29,12 @@ class FakeAdapter implements CliAdapter {
   readonly closes: NativeSession[] = [];
   failStart = false;
   failStartsRemaining = 0;
+  failStartCode: GroupXErrorCode = "ADAPTER_START_FAILED";
   failResume = false;
   hangClose = false;
+  detachedClose = false;
+  healthStatus: AdapterHealth["status"] = "ready";
+  lastInstanceId?: string;
 
   constructor(
     readonly adapterId: ManagedAgentId,
@@ -50,7 +54,7 @@ class FakeAdapter implements CliAdapter {
     this.starts.push(input);
     if (this.failStartsRemaining > 0) {
       this.failStartsRemaining -= 1;
-      throw new GroupXError("ADAPTER_START_FAILED", "temporary fixture start failure");
+      throw new GroupXError(this.failStartCode, "temporary fixture start failure");
     }
     if (this.failStart) throw new GroupXError("ADAPTER_START_FAILED", "fixture start failed");
     return this.session(input, input.mcp ? `native:${this.adapterId}` : undefined);
@@ -77,19 +81,26 @@ class FakeAdapter implements CliAdapter {
 
   async close(session: NativeSession): Promise<void> {
     this.closes.push(session);
+    if (this.detachedClose) {
+      this.healthStatus = "failed";
+      throw new GroupXError("SESSION_NOT_AVAILABLE", "fixture process already exited");
+    }
     if (this.hangClose) await new Promise<void>(() => undefined);
   }
 
   health(): AdapterHealth {
     return {
       adapterId: this.adapterId,
-      status: "ready",
-      nativeSessionAvailable: true,
+      status: this.healthStatus,
+      ...(this.lastInstanceId === undefined ? {} : { instanceId: this.lastInstanceId }),
+      nativeSessionAvailable: this.healthStatus === "ready",
       updatedAt: new Date(0).toISOString()
     };
   }
 
   private session(input: LaunchProfile, nativeSessionId: string | undefined): NativeSession {
+    this.lastInstanceId = input.instanceId!;
+    this.healthStatus = "ready";
     return {
       adapterId: this.adapterId,
       actorId: this.actorId,
@@ -363,6 +374,7 @@ describe("AgentSessionManager lifecycle", () => {
       })()
     });
     adapters.codex.failStartsRemaining = 1;
+    adapters.codex.failStartCode = "PROTOCOL_INVALID_MESSAGE";
     try {
       manager.setStructuredMcpUrl("http://127.0.0.1:4310/mcp");
       await manager.startAll();
@@ -375,6 +387,34 @@ describe("AgentSessionManager lifecycle", () => {
     } finally {
       await manager.close().catch(() => undefined);
       store.close();
+    }
+  });
+
+  it("coalesces concurrent restarts and replaces an already-detached failed ACP process", async () => {
+    const f = fixture("structured");
+    try {
+      f.manager.setStructuredMcpUrl("http://127.0.0.1:4310/mcp");
+      await f.manager.startAll();
+      const previous = f.manager.get("agent:grok")!;
+      f.adapters.grok.detachedClose = true;
+
+      const first = f.manager.restart("agent:grok");
+      const second = f.manager.restart("agent:grok");
+      const [firstResult, secondResult] = await Promise.all([first, second]);
+
+      expect(firstResult.session.instanceId).toBe(secondResult.session.instanceId);
+      expect(firstResult.previousInstanceId).toBe(previous.instanceId);
+      expect(f.adapters.grok.closes).toHaveLength(1);
+      expect(f.adapters.grok.resumes).toHaveLength(1);
+      expect(f.store.getAgentInstance(previous.instanceId)?.status).toBe("interrupted");
+      expect(f.manager.resolve({ actorId: "agent:grok", adapterId: "grok" })).toMatchObject({
+        instanceId: firstResult.session.instanceId,
+        nativeSessionId: previous.nativeSessionId
+      });
+    } finally {
+      f.adapters.grok.detachedClose = false;
+      await f.manager.close().catch(() => undefined);
+      f.store.close();
     }
   });
 });

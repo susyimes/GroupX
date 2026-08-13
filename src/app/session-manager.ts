@@ -91,6 +91,7 @@ function isRetryableSessionFailure(error: unknown): boolean {
   return new Set([
     "ADAPTER_START_FAILED",
     "PROTOCOL_HANDSHAKE_TIMEOUT",
+    "PROTOCOL_INVALID_MESSAGE",
     "SESSION_NOT_AVAILABLE",
     "TURN_INTERRUPTED"
   ]).has(toGroupXError(error, "ADAPTER_START_FAILED").code);
@@ -121,6 +122,7 @@ export class AgentSessionManager {
   readonly #onProgress: SessionManagerOptions["onProgress"];
   readonly #sessions = new Map<string, ManagedSession>();
   readonly #sessionsByBinding = new Map<string, ManagedSession>();
+  readonly #restartFlights = new Map<string, Promise<RestartSessionResult>>();
   #mcpUrl: string | undefined;
   #state: SessionManagerState = "idle";
   #closePromise: Promise<void> | undefined;
@@ -291,19 +293,36 @@ export class AgentSessionManager {
     }
   }
 
-  async restart(actorId: string): Promise<RestartSessionResult> {
+  restart(actorId: string): Promise<RestartSessionResult> {
+    const existing = this.#restartFlights.get(actorId);
+    if (existing) return existing;
+
+    let flight!: Promise<RestartSessionResult>;
+    flight = this.#performRestart(actorId).finally(() => {
+      if (this.#restartFlights.get(actorId) === flight) {
+        this.#restartFlights.delete(actorId);
+      }
+    });
+    this.#restartFlights.set(actorId, flight);
+    return flight;
+  }
+
+  async #performRestart(actorId: string): Promise<RestartSessionResult> {
     if (this.#state !== "ready") {
       throw new GroupXError("SESSION_NOT_AVAILABLE", "Agent sessions are not ready");
     }
     const previous = this.#sessions.get(actorId);
-    if (!previous) {
-      throw new GroupXError("UNKNOWN_TARGET", `No managed Agent session: ${actorId}`);
-    }
-    const previousInstanceId = previous.session.instanceId;
-    const resumeNativeSessionId = previous.session.nativeSessionId;
-    await this.#stopManaged(previous);
-    const managed = await this.#startAgent(previous.agentId, resumeNativeSessionId);
-    return { actorId, previousInstanceId, session: managed.session };
+    const adapter = previous?.adapter ?? this.#adapters.getByActor(actorId);
+    const agentId = previous?.agentId ?? String(adapter.adapterId);
+    const previousInstanceId = previous?.session.instanceId;
+    const resumeNativeSessionId = previous?.session.nativeSessionId;
+    if (previous) await this.#stopManaged(previous);
+    const managed = await this.#startAgent(agentId, resumeNativeSessionId);
+    return {
+      actorId,
+      ...(previousInstanceId === undefined ? {} : { previousInstanceId }),
+      session: managed.session
+    };
   }
 
   close(): Promise<void> {
@@ -311,6 +330,7 @@ export class AgentSessionManager {
     if (this.#state === "closed") return Promise.resolve();
     this.#state = "closing";
     this.#closePromise = (async () => {
+      await Promise.allSettled([...this.#restartFlights.values()]);
       const managed = [...this.#sessions.values()].reverse();
       const results = await Promise.allSettled(
         managed.map(async (session) => this.#stopManaged(session))
@@ -580,7 +600,14 @@ export class AgentSessionManager {
         );
       }
     } catch (error) {
-      closeError = error;
+      const health = managed.adapter.health();
+      const normalized = toGroupXError(error, "TURN_INTERRUPTED");
+      const alreadyDetachedAfterFailure =
+        normalized.code === "SESSION_NOT_AVAILABLE" &&
+        health.status === "failed" &&
+        health.instanceId === managed.session.instanceId &&
+        !health.nativeSessionAvailable;
+      if (!alreadyDetachedAfterFailure) closeError = error;
     }
 
     if (managed.mcpRegistered) {
@@ -673,6 +700,7 @@ function canStartFreshAfterResumeFailure(error: unknown): boolean {
   return (
     code === "ADAPTER_START_FAILED" ||
     code === "NATIVE_RESUME_UNSUPPORTED" ||
+    code === "PROTOCOL_INVALID_MESSAGE" ||
     code === "SESSION_NOT_AVAILABLE"
   );
 }

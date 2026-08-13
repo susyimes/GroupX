@@ -26,10 +26,12 @@ class RuntimeAdapter implements CliAdapter {
   readonly adapterId = "codex" as const;
   readonly actorId = "agent:codex";
   readonly starts: LaunchProfile[] = [];
+  readonly resumes: Array<LaunchProfile & { nativeSessionId: string }> = [];
   readonly closes: NativeSession[] = [];
   readonly prompts: PromptInput[] = [];
   mcpReachableStatus: number | undefined;
   failStart = false;
+  failNextPromptWithProtocolError = false;
 
   async probe(): Promise<CapabilityReport> {
     return {
@@ -53,11 +55,27 @@ class RuntimeAdapter implements CliAdapter {
   }
 
   async resume(input: LaunchProfile & { nativeSessionId: string }): Promise<NativeSession> {
+    this.resumes.push(input);
     return { ...this.session(input), nativeSessionId: input.nativeSessionId };
   }
 
   async *prompt(_session: NativeSession, input: PromptInput): AsyncIterable<NativeEvent> {
     this.prompts.push(input);
+    if (this.failNextPromptWithProtocolError) {
+      this.failNextPromptWithProtocolError = false;
+      yield {
+        adapterId: this.adapterId,
+        type: "transport.error",
+        instanceId: _session.instanceId,
+        ...(_session.nativeSessionId === undefined
+          ? {}
+          : { nativeSessionId: _session.nativeSessionId }),
+        nativeTurnId: input.turnId,
+        payload: { errorCode: "PROTOCOL_INVALID_MESSAGE" },
+        occurredAt: "2026-08-11T00:00:01.000Z"
+      };
+      return;
+    }
     yield {
       adapterId: this.adapterId,
       type: "turn.completed",
@@ -207,6 +225,57 @@ describe("GroupXRuntime composition", () => {
       await vi.waitFor(() => expect(f.adapter.prompts).toHaveLength(1));
       expect(f.adapter.prompts[0]?.contextPacket).toContain("[configured_agent_identity]");
       expect(f.adapter.prompts[0]?.contextPacket).toContain("Stable Codex identity from settings");
+    } finally {
+      await f.runtime.close().catch(() => undefined);
+      f.store.close();
+    }
+  });
+
+  it("automatically resumes a fresh process after a structured protocol failure", async () => {
+    const f = fixture("structured");
+    try {
+      const started = await f.runtime.start();
+      f.adapter.failNextPromptWithProtocolError = true;
+
+      const firstResponse = await fetch(`${started.address.origin}/api/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clientCommandId: "runtime:auto-recover-protocol",
+          to: ["agent:codex"],
+          content: "fail once"
+        })
+      });
+      expect(firstResponse.status).toBe(202);
+      const first = (await firstResponse.json()) as { turns: Array<{ turnId: string }> };
+      await f.runtime.broker.waitForIdle();
+
+      expect(f.store.getTurn(first.turns[0]!.turnId)).toMatchObject({
+        status: "failed",
+        errorCode: "PROTOCOL_INVALID_MESSAGE"
+      });
+      expect(f.adapter.prompts.map((prompt) => prompt.content)).toEqual(["fail once"]);
+      expect(f.adapter.closes).toHaveLength(1);
+      expect(f.adapter.resumes).toHaveLength(1);
+
+      const nextResponse = await fetch(`${started.address.origin}/api/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clientCommandId: "runtime:after-auto-recover",
+          to: ["agent:codex"],
+          content: "continue"
+        })
+      });
+      expect(nextResponse.status).toBe(202);
+      const next = (await nextResponse.json()) as { turns: Array<{ turnId: string }> };
+      await f.runtime.broker.waitForIdle();
+
+      expect(f.store.getTurn(next.turns[0]!.turnId)?.status).toBe("completed");
+      expect(f.adapter.prompts.map((prompt) => prompt.content)).toEqual([
+        "fail once",
+        "continue"
+      ]);
     } finally {
       await f.runtime.close().catch(() => undefined);
       f.store.close();

@@ -17,6 +17,7 @@ import type {
 } from "../../../src/adapters/types.js";
 import { GroupXBroker } from "../../../src/broker/broker.js";
 import type {
+  BrokerAgentController,
   BrokerContextProvider,
   BrokerDependencies,
   BrokerTurnLifecycle
@@ -206,6 +207,7 @@ function createFixture(input: {
   publish?: (event: GroupXEnvelope) => void | Promise<void>;
   selectedTransport?: "direct" | "structured";
   acceptMessageLimits?: BrokerDependencies["acceptMessageLimits"];
+  agentController?: BrokerAgentController;
 } = {}): Fixture {
   const directory = mkdtempSync(join(tmpdir(), "groupx-broker-"));
   const store = new SqliteGroupXStore(join(directory, "groupx.db"));
@@ -251,6 +253,7 @@ function createFixture(input: {
       prepare: ({ sourceEvent }) => ({ contextThroughSeq: sourceEvent.seq })
     },
     ...(input.turnLifecycle === undefined ? {} : { turnLifecycle: input.turnLifecycle }),
+    ...(input.agentController === undefined ? {} : { agentController: input.agentController }),
     clock: { now: () => "2026-08-11T00:00:02.000Z" },
     idFactory: (() => {
       let sequence = 0;
@@ -924,6 +927,70 @@ describe.sequential("GroupXBroker acceptance, dispatch and terminal semantics", 
       errorCode: "PROTOCOL_INVALID_MESSAGE"
     });
     expect(fixture.store.listTurnAttempts(changedTurnId)[0]?.nativeTurnId).toBe("native:stable");
+  });
+
+  it("automatically replaces a poisoned structured session without replaying the failed prompt", async () => {
+    const restarts: string[] = [];
+    const fixture = createFixture({
+      agentController: {
+        restart: async (actorId) => {
+          restarts.push(actorId);
+        }
+      }
+    });
+    let promptNumber = 0;
+    fixture.adapters.grok.handler = async function* (_session, input) {
+      promptNumber += 1;
+      yield nativeEvent("grok", "turn.started", {}, `${input.turnId}:start`);
+      if (promptNumber === 1) {
+        yield nativeEvent(
+          "grok",
+          "transport.error",
+          { errorCode: "PROTOCOL_INVALID_MESSAGE" },
+          `${input.turnId}:protocol-error`
+        );
+        return;
+      }
+      yield nativeEvent(
+        "grok",
+        "turn.completed",
+        { content: "recovered" },
+        `${input.turnId}:completed`
+      );
+    };
+
+    const failed = await fixture.broker.acceptMessage({
+      bindingId: "binding:web",
+      request: {
+        clientCommandId: "grok-protocol-failure",
+        to: ["agent:grok"],
+        content: "first prompt"
+      }
+    });
+    await fixture.broker.waitForIdle();
+
+    expect(fixture.store.getTurn(failed.turns[0]!.turnId)).toMatchObject({
+      status: "failed",
+      errorCode: "PROTOCOL_INVALID_MESSAGE"
+    });
+    expect(restarts).toEqual(["agent:grok"]);
+    expect(fixture.adapters.grok.prompts.map((prompt) => prompt.content)).toEqual(["first prompt"]);
+
+    const recovered = await fixture.broker.acceptMessage({
+      bindingId: "binding:web",
+      request: {
+        clientCommandId: "grok-after-protocol-recovery",
+        to: ["agent:grok"],
+        content: "next prompt"
+      }
+    });
+    await fixture.broker.waitForIdle();
+
+    expect(fixture.store.getTurn(recovered.turns[0]!.turnId)?.status).toBe("completed");
+    expect(fixture.adapters.grok.prompts.map((prompt) => prompt.content)).toEqual([
+      "first prompt",
+      "next prompt"
+    ]);
   });
 });
 

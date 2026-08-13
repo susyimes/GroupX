@@ -203,6 +203,8 @@ GroupX 只按合同字段记录数据，不主动采集完整环境、CLI 配置
 
 Structured resume/load 不能自动重放不确定 Turn。历史 Direct attempt 保留原交付确定性和 terminal 记录用于审计，但不会由当前 runtime 恢复或重新派发。
 
+补充：当 Structured 业务 Turn 已经 durable 收敛为 `failed + PROTOCOL_INVALID_MESSAGE`，GroupX 可以自动替换已污染的 Adapter 进程/session，并优先 resume/load 原 native session 供后续 Turn 使用。并发的人工与自动恢复必须 single-flight。这个动作只恢复会话承载，不是失败 Turn 的 retry；原 prompt 永不自动重放。
+
 ## D-017：配置驱动的 Agent 名册与 npm CLI 分发
 
 决定：`agents` 配置从固定的 codex/grok/kimi 三键改为显式房间名册。键即 agent id(actor `agent:<id>`)，每个条目声明 `driver`(codex/grok/kimi 原生 CLI 家族)、可选显示名 `name`、`command`、`cwd`、`enabled`。内置 id 省略 `driver` 时默认同名；自定义 id 必须显式给出 driver。名册写谁启动谁；缺省整个 `agents` 字段仍等价于内置三 Agent。同一 driver 可挂多个实例，各自持有独立长驻 session。
