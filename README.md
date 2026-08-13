@@ -12,7 +12,7 @@
 ![Platform](https://img.shields.io/badge/platform-Windows%20%C2%B7%20macOS%20%C2%B7%20Linux-0078d6)
 ![Transport](https://img.shields.io/badge/transport-structured-9440c9)
 
-<img src="https://cdn.jsdelivr.net/npm/@susyimes/groupx@0.1.4/docs/assets/ui-light.png" width="49.4%" alt="GroupX · 浅色主题"> <img src="https://cdn.jsdelivr.net/npm/@susyimes/groupx@0.1.4/docs/assets/ui-dark.png" width="49.4%" alt="GroupX · 夜间模式">
+<img src="./docs/assets/ui-light.png" width="100%" alt="GroupX · 浅色主题">
 
 </div>
 
@@ -23,6 +23,27 @@ GroupX 是一个**只跑在本机的多 CLI 群聊 Broker**：你在 Web UI 里�
 Structured 模式下，它们还能通过 GroupX MCP 在当前回合**显式互调**（`send / ask / read`），不只是各说各话。
 
 > 当前唯一可运行的 transport 是 `structured`（Codex App Server / Grok ACP / Kimi ACP）。`direct` 已废弃并关闭入口，源码仅保留用于历史审计兼容。
+
+## 🖼️ 界面预览
+
+### 群组对话
+
+共享时间线会把用户消息、Agent 回复、实时推理流和折叠的工具进度收在同一个群聊窗口中。以下是同一段完整对话长图的四段浅色主题截图，点击可查看原图。
+
+<div align="center">
+  <a href="./docs/assets/transcript-light-01.png"><img src="./docs/assets/transcript-light-01.png" width="49%" alt="GroupX 群组对话长图 · 第 1 段"></a>
+  <a href="./docs/assets/transcript-light-02.png"><img src="./docs/assets/transcript-light-02.png" width="49%" alt="GroupX 群组对话长图 · 第 2 段"></a>
+  <a href="./docs/assets/transcript-light-03.png"><img src="./docs/assets/transcript-light-03.png" width="49%" alt="GroupX 群组对话长图 · 第 3 段"></a>
+  <a href="./docs/assets/transcript-light-04.png"><img src="./docs/assets/transcript-light-04.png" width="49%" alt="GroupX 群组对话长图 · 第 4 段"></a>
+</div>
+
+### Agent 设置
+
+在可视化名册中添加或禁用 Agent，配置 driver、稳定 ID、显示名、群内身份、工作目录和独立记忆。
+
+<div align="center">
+  <a href="./docs/assets/agent-settings-light.png"><img src="./docs/assets/agent-settings-light.png" width="100%" alt="GroupX Agent 设置 · 浅色主题"></a>
+</div>
 
 ## ✨ 0.1.4 更新
 
