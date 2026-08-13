@@ -25,6 +25,7 @@ import type {
   MemoryRecord,
   RecoveryResult,
   StoredEventRecord,
+  TerminalToolProgressInput,
   TerminalTurnStatus,
   TurnRecord,
   TurnStatus
@@ -66,6 +67,8 @@ interface ActiveDispatch {
   preparation: DispatchPreparation;
   controller: AbortController;
   partialText: string;
+  reasoningText: string;
+  toolProgress: TerminalToolProgressInput[];
   checkpointedLength: number;
   chunkIndex: number;
   started: boolean;
@@ -1116,6 +1119,8 @@ export class GroupXBroker {
       preparation,
       controller: new AbortController(),
       partialText: "",
+      reasoningText: "",
+      toolProgress: [],
       checkpointedLength: 0,
       chunkIndex: 0,
       started: false,
@@ -1374,6 +1379,7 @@ export class GroupXBroker {
       case "reasoning.delta": {
         const text = stringProperty(event.payload, "text", "content") ?? "";
         if (text !== "") {
+          active.reasoningText += text;
           await this.#publishTransient(active, "turn.reasoning.delta", event.occurredAt, {
             turnId: claim.turn.turnId,
             text
@@ -1382,14 +1388,26 @@ export class GroupXBroker {
         return;
       }
       case "tool.started":
-      case "tool.completed":
+      case "tool.completed": {
+        const progress: TerminalToolProgressInput = {
+          occurredAt: event.occurredAt,
+          nativeType: event.type,
+          ...(event.nativeEventId === undefined
+            ? {}
+            : { toolCallId: event.nativeEventId }),
+          details: event.payload
+        };
+        active.toolProgress.push(progress);
         await this.#publishTransient(active, "tool.progress", event.occurredAt, {
           turnId: claim.turn.turnId,
-          nativeType: event.type,
-          ...(event.nativeEventId === undefined ? {} : { toolCallId: event.nativeEventId }),
-          details: event.payload
+          nativeType: progress.nativeType,
+          ...(progress.toolCallId === undefined
+            ? {}
+            : { toolCallId: progress.toolCallId }),
+          details: progress.details
         });
         return;
+      }
       case "turn.completed":
         await this.#terminalOnce(active, "completed", {
           content: terminalContent(event, active.partialText)
@@ -1518,6 +1536,10 @@ export class GroupXBroker {
         attemptId: active.preparation.claim.attempt.attemptId,
         status,
         ...(input.content === undefined ? {} : { content: input.content }),
+        ...(active.reasoningText === "" ? {} : { reasoning: active.reasoningText }),
+        ...(active.toolProgress.length === 0
+          ? {}
+          : { toolProgress: active.toolProgress }),
         ...(input.errorCode === undefined ? {} : { errorCode: input.errorCode }),
         ...(input.eventBody === undefined ? {} : { eventBody: input.eventBody }),
         occurredAt: this.#clock.now()
@@ -1526,6 +1548,10 @@ export class GroupXBroker {
       active.durableStatus = terminal.turn.status;
       this.#deactivateTurnLifecycle(active);
       this.#notifyTurnTerminal(terminal.turn.turnId);
+      if (terminal.reasoningEvent) await this.#publishStored(terminal.reasoningEvent);
+      for (const toolProgressEvent of terminal.toolProgressEvents ?? []) {
+        await this.#publishStored(toolProgressEvent);
+      }
       if (terminal.responseEvent) await this.#publishStored(terminal.responseEvent);
       await this.#publishStored(terminal.terminalEvent);
     } catch (error) {

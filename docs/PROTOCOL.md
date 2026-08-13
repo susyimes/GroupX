@@ -137,9 +137,21 @@ tool.progress
 adapter.heartbeat
 ```
 
-`tool.progress.body` 至少携带 `turnId` 与 `nativeType`；原生事件提供稳定 id 时同时携带 `toolCallId`，`details` 只包含 Adapter 已投影的结构字段。Web UI 用 `turnId + toolCallId` 合并同一次工具调用，并将其折叠显示在对应 Agent 气泡内。transient 事件不在刷新后重放，durable transcript 仍以最终 response message 为准。
+`tool.progress.body` 至少携带 `turnId` 与 `nativeType`；原生事件提供稳定 id 时同时携带 `toolCallId`，`details` 只包含 Adapter 已投影的结构字段。Web UI 用 `turnId + toolCallId` 合并同一次工具调用，并将其折叠显示在对应 Agent 气泡内。transient 事件本身不在刷新后重放；terminal transaction 会为已观察到的工具 started/completed 投影按原顺序写入 durable `tool.progress.recorded`，其 body 与 live 投影同形，刷新时继续按相同 key 合并，不能退化成独立全量 JSON 卡片。
 
-每个 Turn 恰好有一个 durable terminal event。成功 response message、terminal event、Turn 与 attempt terminal 更新在同一事务提交。若崩溃发生在 final commit 前，可保存已合并的 partial text 并将 Turn 标记为 `interrupted`，但不能把 partial text 伪装成 completed message。
+`turn.reasoning.delta` 本身仍不落库。若 native Turn 实际产生过推理增量，Broker 在 terminal transaction 中把已观察到的增量按原顺序合并成最多一条 durable `turn.reasoning.recorded`：
+
+```json
+{
+  "turnId": "turn_...",
+  "content": "聚合后的推理文本",
+  "terminalStatus": "completed"
+}
+```
+
+该事件有 durable `seq`，可以随 SQLite cursor 在刷新或重连后回放。`turn.reasoning.recorded` 与 `tool.progress.recorded` 都只服务本地时间线与审计，不属于 message、memory、identity 或 summary；Context Packet、reply chain、房间压缩与自动记忆只能消费明确的 `message.created`/记忆数据，不得读取两类记录正文。
+
+每个 Turn 恰好有一个 durable terminal event。可选 reasoning record、tool progress records、成功 response message、terminal event、Turn 与 attempt terminal 更新在同一事务提交，durable 顺序固定为 reasoning → tool progress → response（仅成功）→ terminal。若崩溃发生在 final commit 前，可保存已合并的 partial text 并将 Turn 标记为 `interrupted`，但不能把 partial text 伪装成 completed message。
 
 ## 3. 发送者身份合同
 
@@ -466,12 +478,16 @@ transient delta：
 data: { "type":"turn.content.delta", "body":{ "turnId":"...", "chunkIndex":4, "text":"..." }, ... }
 ```
 
+回合结束后的聚合推理与工具进度分别使用普通 durable event `turn.reasoning.recorded` / `tool.progress.recorded`，带 SSE `id`，不是 delta 通道。
+
 规则：
 
 - 只提供 `afterSeq` 或 `Last-Event-ID` 时，它是该连接的 cursor；两者同时存在必须数值相同，不同时以 `INVALID_ENVELOPE` 拒绝，不猜测优先级；
 - 服务端不得使用有窗口的“查询历史，然后另行订阅 live”两步切换。SQLite-backed SSE 反复读取 `seq > cursor ORDER BY seq`；commit notification 只负责唤醒下一次查询，因此 replay/live cutover 不会漏 durable event；
 - 所有 Envelope 使用默认 SSE `message` 事件，业务类型只读取 Envelope `type`，新增类型无需预注册浏览器 listener；
 - transient delta 不使用 durable SSE id；
+- `turn.reasoning.recorded` 使用 durable seq/id 并可回放，但 Web 不把它注册为普通消息或发送目标；
+- `tool.progress.recorded` 使用 durable seq/id 并复用折叠工具 UI，但不注册为普通消息或发送目标；
 - 慢客户端的瞬时 delta 可以合并或丢弃，terminal event 不可丢；
 - 超出发送缓冲时关闭连接，客户端使用 `Last-Event-ID` 重连；
 - 服务器只绑定 loopback，这是 M0-M2 的产品范围，不是认证或安全保证；

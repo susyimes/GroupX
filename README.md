@@ -8,7 +8,7 @@
 
 ![npm](https://img.shields.io/npm/v/@susyimes/groupx?color=3370ff&label=npm)
 ![Node](https://img.shields.io/badge/node-24.14.x-3c873a)
-![Tests](https://img.shields.io/badge/tests-455%20passing-0d9f6e)
+![Tests](https://img.shields.io/badge/tests-462%20passing-0d9f6e)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%C2%B7%20macOS%20%C2%B7%20Linux-0078d6)
 ![Transport](https://img.shields.io/badge/transport-structured-9440c9)
 
@@ -28,7 +28,7 @@ Structured 模式下，它们还能通过 GroupX MCP 在当前回合**显式互�
 
 ### 群组对话
 
-共享时间线会把用户消息、Agent 回复、实时推理流和折叠的工具进度收在同一个群聊窗口中。以下是同一段完整对话长图的四段浅色主题截图，点击可查看原图。
+共享时间线会把用户消息、Agent 回复、实时推理流和折叠的工具进度收在同一个群聊窗口中。推理增量与工具进度在回合结束时写成本地持久记录，刷新页面仍可查看，但不会进入后续 Agent 上下文、回复链或房间压缩输入。以下是同一段完整对话长图的四段浅色主题截图，点击可查看原图。
 
 <div align="center">
   <a href="./docs/assets/transcript-light-01.png"><img src="./docs/assets/transcript-light-01.png" width="49%" alt="GroupX 群组对话长图 · 第 1 段"></a>
@@ -52,6 +52,7 @@ Structured 模式下，它们还能通过 GroupX MCP 在当前回合**显式互�
 - Agent 身份配置移入 Agent 设置，并为每个 Agent 增加按日期分隔的独立记忆；公共记忆继续保持独立。
 - 初始化向导与 Agent 名册支持任意数量和同类多实例，保存后直接进入群聊。
 - 收紧会话 UI、折叠工具进度和记忆编辑器，并移除 Agent 卡片上多余的单发入口。
+- 推理流与折叠工具进度在回合结束时形成 durable 记录，页面刷新后仍可回放；二者与公开消息、回复链、记忆和上下文严格隔离。
 
 ## 0.1.3 更新
 

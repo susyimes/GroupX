@@ -836,7 +836,7 @@ describe.sequential("SqliteGroupXStore transactions and idempotency", () => {
     expect(fixture.store.countTurns()).toBe(beforeTurns);
   });
 
-  it("D-008 never stores transient deltas and terminalizes response plus state exactly once", () => {
+  it("D-008 stores replayable reasoning/tool records without persisting transient deltas", () => {
     const fixture = createFixture();
     const accepted = fixture.store.acceptMessage(messageInput("D-008"));
     const turnId = accepted.turns[0]!.turnId;
@@ -867,18 +867,98 @@ describe.sequential("SqliteGroupXStore transactions and idempotency", () => {
         }),
       "INVALID_ENVELOPE"
     );
+    expectGroupXCode(
+      () =>
+        fixture.store.appendDurableEvent({
+          roomId: "room:main",
+          eventType: "turn.reasoning.delta",
+          actorId: "agent:codex",
+          correlationId: accepted.correlationId,
+          body: { text: "thinking token" }
+        }),
+      "INVALID_ENVELOPE"
+    );
+    expectGroupXCode(
+      () =>
+        fixture.store.appendDurableEvent({
+          roomId: "room:main",
+          eventType: "tool.progress",
+          actorId: "agent:codex",
+          correlationId: accepted.correlationId,
+          body: { nativeType: "tool.started" }
+        }),
+      "INVALID_ENVELOPE"
+    );
 
     const terminal = fixture.store.terminalizeTurn({
       turnId,
       attemptId: claim.attempt.attemptId,
       status: "completed",
-      content: "final"
+      content: "final",
+      reasoning: "first thought\nsecond thought",
+      toolProgress: [
+        {
+          occurredAt: "2026-08-11T00:00:01.000Z",
+          nativeType: "tool.started",
+          toolCallId: "call-1",
+          details: { server: "groupx", tool: "memory_search", status: "in_progress" }
+        },
+        {
+          occurredAt: "2026-08-11T00:00:02.000Z",
+          nativeType: "tool.completed",
+          toolCallId: "call-1",
+          details: { status: "completed" }
+        }
+      ]
     });
+    expect(terminal.reasoningEvent).toMatchObject({
+      eventType: "turn.reasoning.recorded",
+      actorId: "agent:codex",
+      instanceId: "instance:codex",
+      body: {
+        turnId,
+        content: "first thought\nsecond thought",
+        terminalStatus: "completed"
+      }
+    });
+    expect(terminal.toolProgressEvents).toHaveLength(2);
+    expect(terminal.toolProgressEvents).toEqual([
+      expect.objectContaining({
+        eventType: "tool.progress.recorded",
+        actorId: "agent:codex",
+        instanceId: "instance:codex",
+        body: {
+          turnId,
+          nativeType: "tool.started",
+          toolCallId: "call-1",
+          details: { server: "groupx", tool: "memory_search", status: "in_progress" }
+        }
+      }),
+      expect.objectContaining({
+        eventType: "tool.progress.recorded",
+        body: {
+          turnId,
+          nativeType: "tool.completed",
+          toolCallId: "call-1",
+          details: { status: "completed" }
+        }
+      })
+    ]);
     expect(terminal.responseEvent?.eventType).toBe("message.created");
     expect(terminal.terminalEvent.eventType).toBe("turn.completed");
+    expect(terminal.reasoningEvent!.seq).toBeLessThan(terminal.toolProgressEvents![0]!.seq);
+    expect(terminal.toolProgressEvents![0]!.seq).toBeLessThan(
+      terminal.toolProgressEvents![1]!.seq
+    );
+    expect(terminal.toolProgressEvents![1]!.seq).toBeLessThan(terminal.responseEvent!.seq);
+    expect(terminal.responseEvent!.seq).toBeLessThan(terminal.terminalEvent.seq);
+    expect(terminal.terminalEvent.body).toMatchObject({
+      reasoningEventId: terminal.reasoningEvent?.eventId,
+      toolProgressEventIds: terminal.toolProgressEvents?.map((event) => event.eventId)
+    });
     expect(terminal.turn.responseEventId).toBe(terminal.responseEvent?.eventId);
     expect(terminal.turn.terminalEventId).toBe(terminal.terminalEvent.eventId);
-    expect(fixture.store.countEvents()).toBe(beforeDeltas + 2);
+    expect(fixture.store.countEvents()).toBe(beforeDeltas + 5);
 
     expectGroupXCode(
       () =>
@@ -890,7 +970,7 @@ describe.sequential("SqliteGroupXStore transactions and idempotency", () => {
         }),
       "STORE_CONFLICT"
     );
-    expect(fixture.store.countEvents()).toBe(beforeDeltas + 2);
+    expect(fixture.store.countEvents()).toBe(beforeDeltas + 5);
   });
 
   it("claims only one FIFO lane head until its attempt reaches terminal state", () => {

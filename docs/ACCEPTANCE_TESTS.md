@@ -155,6 +155,8 @@ binding 是 provenance/correlation handle，不是 secret、token 或本机抗�
 | I-008 | durable publish | 按全局 seq 顺序，不按 callback 到达顺序 |
 | I-009 | `afterSeq` 与 `Last-Event-ID` 同时存在 | 值相同才接受；不同返回 `INVALID_ENVELOPE` |
 | I-010 | bootstrap 期间并发 durable event / 多房间 active Turn | 投影与 cursor 来自同一 DB snapshot；只返回当前房间的有界最近事件与最小公开 Turn 字段；随后 SSE 从 `seq > cursor` 无缺口追上 |
+| I-011 | native reasoning delta 后刷新/重连 | delta 不逐条落库；terminal transaction 生成最多一条 `turn.reasoning.recorded`，按 seq 在 response/terminal 前回放 |
+| I-012 | native tool started/completed 后刷新/重连 | live `tool.progress` 保持 transient；terminal transaction 生成 `tool.progress.recorded`，同一 `turnId + toolCallId` 仍合并为气泡内折叠记录 |
 
 ## 11. 公共记忆与身份记忆
 
@@ -172,6 +174,7 @@ binding 是 provenance/correlation handle，不是 secret、token 或本机抗�
 | M-010 | 长房间滚动压缩 | 默认在 256k 字符硬上限的约 75% 软目标处，若未压缩包将省略 unread transcript，则由配置顺序中第一个健康 Agent 生成累计检查点，近期消息仍逐条保留 |
 | M-011 | 摘要与 cursor 原子边界 | 只有已持久且嵌入 attempt 的摘要可写 `summary_through_seq`，native start 确认后才推进 `last_summary_seq` |
 | M-012 | 压缩失败 | 尝试后续健康 Agent；全失败则 Turn 明确失败，原 transcript、旧摘要和 cursor 不变 |
+| M-013 | durable reasoning/tool records | 时间线可回放，但 Context Packet、reply chain、压缩输入与自动记忆均不包含其正文 |
 
 ## 12. Web 与本地传输
 

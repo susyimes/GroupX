@@ -140,6 +140,61 @@ function seedContext(fixture: MemoryTestFixture) {
 afterEach(cleanupMemoryTestFixtures);
 
 describe("ContextPacketBuilder provenance and cursor semantics", () => {
+  it("keeps durable reasoning and tool progress records out of Agent context", () => {
+    const fixture = createMemoryTestFixture();
+    appendMessage(fixture, {
+      eventId: "evt_reasoning_history",
+      actorId: "user:web",
+      content: "public history"
+    });
+    fixture.store.appendDurableEvent({
+      eventId: "evt_reasoning_record",
+      roomId: "room:main",
+      eventType: "turn.reasoning.recorded",
+      actorId: "agent:codex",
+      correlationId: "corr_reasoning_context",
+      body: {
+        turnId: "turn_reasoning_context",
+        content: "PRIVATE_REASONING_MUST_NOT_ENTER_CONTEXT",
+        terminalStatus: "completed"
+      }
+    });
+    fixture.store.appendDurableEvent({
+      eventId: "evt_tool_progress_record",
+      roomId: "room:main",
+      eventType: "tool.progress.recorded",
+      actorId: "agent:codex",
+      correlationId: "corr_reasoning_context",
+      body: {
+        turnId: "turn_reasoning_context",
+        nativeType: "tool.completed",
+        toolCallId: "call-context",
+        details: { output: "PRIVATE_TOOL_PROGRESS_MUST_NOT_ENTER_CONTEXT" }
+      }
+    });
+    const current = appendMessage(fixture, {
+      eventId: "evt_reasoning_current",
+      actorId: "user:web",
+      content: "current request",
+      targets: ["agent:codex"]
+    });
+
+    const packet = new ContextPacketBuilder(fixture.store).buildContextPacket({
+      roomId: "room:main",
+      targetActorId: "agent:codex",
+      currentEvent: current,
+      throughSeq: current.seq,
+      maxChars: 100_000
+    });
+
+    expect(packet.text).toContain("public history");
+    expect(packet.text).not.toContain("PRIVATE_REASONING_MUST_NOT_ENTER_CONTEXT");
+    expect(packet.text).not.toContain("PRIVATE_TOOL_PROGRESS_MUST_NOT_ENTER_CONTEXT");
+    const unreadIds = packet.sections.unreadTranscript.map((entry) => entry.id);
+    expect(unreadIds).not.toContain("evt_reasoning_record");
+    expect(unreadIds).not.toContain("evt_tool_progress_record");
+  });
+
   it("builds current/reply/unread/memory/identity sections with explicit provenance", () => {
     const fixture = createMemoryTestFixture();
     const seeded = seedContext(fixture);

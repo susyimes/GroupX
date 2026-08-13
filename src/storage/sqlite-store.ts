@@ -2291,6 +2291,84 @@ export class SqliteGroupXStore implements GroupXStore {
     }
     const occurredAt = input.occurredAt ?? nowIso();
 
+    let reasoningEvent: StoredEventRecord | undefined;
+    if (input.reasoning !== undefined && input.reasoning.trim().length > 0) {
+      if (attempt === undefined) {
+        throw new GroupXError(
+          "STORE_CONFLICT",
+          "A durable reasoning record requires an active Turn attempt"
+        );
+      }
+      reasoningEvent = this.#insertEventUnsafe({
+        roomId: requiredString(source.room_id, "room_id"),
+        eventType: "turn.reasoning.recorded",
+        actorId: turn.targetActorId,
+        instanceId: attempt.instanceId,
+        targets: [],
+        replyToEventId: turn.sourceEventId,
+        causationId: turn.turnId,
+        correlationId: turn.rootCorrelationId,
+        occurredAt,
+        body: {
+          turnId: turn.turnId,
+          content: input.reasoning,
+          terminalStatus: input.status
+        },
+        provenance: {
+          sourceKind: "adapter",
+          authorActorId: turn.targetActorId,
+          sourceEventId: turn.sourceEventId
+        }
+      });
+    }
+
+    const toolProgressEvents: StoredEventRecord[] = [];
+    if ((input.toolProgress?.length ?? 0) > 0) {
+      if (attempt === undefined) {
+        throw new GroupXError(
+          "STORE_CONFLICT",
+          "A durable tool progress record requires an active Turn attempt"
+        );
+      }
+      for (const progress of input.toolProgress ?? []) {
+        if (
+          progress.nativeType !== "tool.started" &&
+          progress.nativeType !== "tool.completed"
+        ) {
+          throw new GroupXError(
+            "INVALID_ENVELOPE",
+            "A durable tool progress record has an invalid native type"
+          );
+        }
+        toolProgressEvents.push(
+          this.#insertEventUnsafe({
+            roomId: requiredString(source.room_id, "room_id"),
+            eventType: "tool.progress.recorded",
+            actorId: turn.targetActorId,
+            instanceId: attempt.instanceId,
+            targets: [],
+            replyToEventId: turn.sourceEventId,
+            causationId: turn.turnId,
+            correlationId: turn.rootCorrelationId,
+            occurredAt: progress.occurredAt,
+            body: {
+              turnId: turn.turnId,
+              nativeType: progress.nativeType,
+              ...(progress.toolCallId === undefined
+                ? {}
+                : { toolCallId: progress.toolCallId }),
+              details: progress.details ?? null
+            },
+            provenance: {
+              sourceKind: "adapter",
+              authorActorId: turn.targetActorId,
+              sourceEventId: turn.sourceEventId
+            }
+          })
+        );
+      }
+    }
+
     let responseEvent: StoredEventRecord | undefined;
     if (input.status === "completed") {
       responseEvent = this.#insertEventUnsafe({
@@ -2332,13 +2410,23 @@ export class SqliteGroupXStore implements GroupXStore {
       actorId: terminalActorId,
       targets: [],
       replyToEventId: turn.sourceEventId,
-      causationId: responseEvent?.eventId ?? turn.turnId,
+      causationId:
+        responseEvent?.eventId ??
+        toolProgressEvents.at(-1)?.eventId ??
+        reasoningEvent?.eventId ??
+        turn.turnId,
       correlationId: turn.rootCorrelationId,
       occurredAt,
       body: {
         ...(input.eventBody ?? {}),
         turnId: turn.turnId,
         status: input.status,
+        ...(reasoningEvent === undefined
+          ? {}
+          : { reasoningEventId: reasoningEvent.eventId }),
+        ...(toolProgressEvents.length === 0
+          ? {}
+          : { toolProgressEventIds: toolProgressEvents.map((event) => event.eventId) }),
         ...(responseEvent === undefined ? {} : { responseEventId: responseEvent.eventId }),
         ...(input.errorCode === undefined ? {} : { errorCode: input.errorCode })
       },
@@ -2386,6 +2474,8 @@ export class SqliteGroupXStore implements GroupXStore {
       turn: this.#getTurnUnsafe(turn.turnId)!,
       terminalEvent
     };
+    if (reasoningEvent !== undefined) result.reasoningEvent = reasoningEvent;
+    if (toolProgressEvents.length > 0) result.toolProgressEvents = toolProgressEvents;
     if (responseEvent !== undefined) result.responseEvent = responseEvent;
     return result;
   }

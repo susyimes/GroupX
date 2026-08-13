@@ -435,6 +435,12 @@ describe.sequential("GroupXBroker acceptance, dispatch and terminal semantics", 
       yield nativeEvent("codex", "content.delta", { text: "ab" }, `${input.turnId}:1`);
       yield nativeEvent(
         "codex",
+        "reasoning.delta",
+        { text: "first thought\n" },
+        `${input.turnId}:reasoning-1`
+      );
+      yield nativeEvent(
+        "codex",
         "tool.started",
         { server: "groupx", tool: "memory_search", status: "in_progress" },
         "tool-call-1"
@@ -444,6 +450,12 @@ describe.sequential("GroupXBroker acceptance, dispatch and terminal semantics", 
         "tool.completed",
         { status: "completed" },
         "tool-call-1"
+      );
+      yield nativeEvent(
+        "codex",
+        "reasoning.delta",
+        { text: "second thought" },
+        `${input.turnId}:reasoning-2`
       );
       yield nativeEvent("codex", "content.delta", { text: "cd" }, `${input.turnId}:2`);
       yield nativeEvent("codex", "turn.completed", {}, `${input.turnId}:done`);
@@ -458,6 +470,10 @@ describe.sequential("GroupXBroker acceptance, dispatch and terminal semantics", 
       (event) => event.type === "turn.content.delta" && event.durability === "transient"
     );
     expect(transient).toHaveLength(2);
+    const transientReasoning = fixture.published.filter(
+      (event) => event.type === "turn.reasoning.delta" && event.durability === "transient"
+    );
+    expect(transientReasoning).toHaveLength(2);
     const toolProgress = fixture.published.filter(
       (event) => event.type === "tool.progress" && event.durability === "transient"
     );
@@ -474,6 +490,36 @@ describe.sequential("GroupXBroker acceptance, dispatch and terminal semantics", 
       details: { status: "completed" }
     });
     const read = fixture.broker.readCorrelation({ correlationId: accepted.correlationId });
+    const reasoningRecords = read.events.filter(
+      (event) => event.type === "turn.reasoning.recorded"
+    );
+    expect(reasoningRecords).toHaveLength(1);
+    expect(reasoningRecords[0]).toMatchObject({
+      durability: "durable",
+      body: {
+        turnId: accepted.turns[0]?.turnId,
+        content: "first thought\nsecond thought",
+        terminalStatus: "completed"
+      }
+    });
+    const durableToolProgress = read.events.filter(
+      (event) => event.type === "tool.progress.recorded"
+    );
+    expect(durableToolProgress).toHaveLength(2);
+    expect(durableToolProgress[0]).toMatchObject({
+      durability: "durable",
+      body: {
+        turnId: accepted.turns[0]?.turnId,
+        nativeType: "tool.started",
+        toolCallId: "native-event:codex:tool-call-1",
+        details: { server: "groupx", tool: "memory_search", status: "in_progress" }
+      }
+    });
+    expect(durableToolProgress[1]?.body).toMatchObject({
+      nativeType: "tool.completed",
+      toolCallId: "native-event:codex:tool-call-1",
+      details: { status: "completed" }
+    });
     const responses = read.events.filter(
       (event) =>
         event.type === "message.created" &&
@@ -483,6 +529,8 @@ describe.sequential("GroupXBroker acceptance, dispatch and terminal semantics", 
     );
     expect(responses).toHaveLength(1);
     expect(responses[0]?.body).toMatchObject({ content: "abcd" });
+    expect(reasoningRecords[0]!.seq).toBeLessThan(durableToolProgress[0]!.seq!);
+    expect(durableToolProgress[1]!.seq).toBeLessThan(responses[0]!.seq!);
   });
 
   it("retries the new FIFO head when async context preparation observes a cancelled head", async () => {

@@ -25,6 +25,8 @@ SQLite/WAL 是 GroupX 唯一权威事实源。Broker 是唯一写入者。
 | adapter runs / bindings / capabilities | 是 | 是 | Direct invocation 或 Structured session、transport 快照及实测能力 |
 | final messages | 是 | 是 | 完成或明确 partial 的正文 |
 | token delta | 否 | 否 | 仅 live SSE，短时内存合并 |
+| aggregated reasoning record | 是 | 是 | 每个已产生推理的 terminal Turn 最多一条；仅供时间线回放，不进入上下文 |
+| tool progress records | 是 | 是 | terminal 时保存 Adapter 已投影的 started/completed；折叠回放，不进入上下文 |
 | public memory | 是 | 是 | 显式记忆、来源可追溯 |
 | per-Agent dated memory | 是 | 是 | `scope_type=agent`，按目标 actor 隔离，日期来自 `created_at` |
 | identity memory | 是 | 是 | 群组层身份记录，不替换 CLI 原生身份 |
@@ -341,15 +343,17 @@ summaries(
 
 Turn terminal transaction 先对 `terminal_event_id IS NULL` 和当前 non-terminal status 执行 CAS，只有唯一胜者可以提交：
 
-1. 成功时插入唯一 response `message.created`；失败时不伪造 response；
-2. 以统一 idempotency key `turn:<turnId>:terminal` 插入唯一 durable terminal event，不论 event type 为 completed/failed/cancelled/interrupted；
-3. 更新 Turn terminal 状态、错误码及 event 引用；
-4. 更新当前 attempt 的 `dispatch_phase=terminal`、delivery certainty 和 `terminal_at`；
-5. 仅在 confirmed delivered 时把 delivery cursor 最多推进到该 attempt 的 `context_through_seq`；若 attempt 带 `summary_through_seq`，同事务推进 `last_summary_seq`；
-6. commit；
-7. 唤醒 SQLite-backed SSE cursor tail，再由它按 durable seq 发布。
+1. 若本回合观察到推理增量，插入最多一条聚合 `turn.reasoning.recorded`；不逐 delta 写库；
+2. 为已观察到的工具 started/completed 写入有界 `tool.progress.recorded` 投影；不保存未建模 native payload；
+3. 成功时插入唯一 response `message.created`；失败时不伪造 response；
+4. 以统一 idempotency key `turn:<turnId>:terminal` 插入唯一 durable terminal event，不论 event type 为 completed/failed/cancelled/interrupted；
+5. 更新 Turn terminal 状态、错误码及 event 引用；
+6. 更新当前 attempt 的 `dispatch_phase=terminal`、delivery certainty 和 `terminal_at`；
+7. 仅在 confirmed delivered 时把 delivery cursor 最多推进到该 attempt 的 `context_through_seq`；若 attempt 带 `summary_through_seq`，同事务推进 `last_summary_seq`；
+8. commit；
+9. 唤醒 SQLite-backed SSE cursor tail，再由它按 reasoning → tool progress → response（仅成功）→ terminal 的 durable seq 发布。
 
-transient delta 可以在 commit 前实时广播，但 UI 必须把它显示为未完成状态。
+transient delta 可以在 commit 前实时广播，但 UI 必须把它显示为未完成状态。浏览器刷新时不会重放历史 delta；terminal commit 后由聚合 reasoning record 与 tool progress records 恢复推理和折叠工具展示。
 
 ### 4.3 Native interaction failure
 
@@ -464,6 +468,8 @@ IdentityRecord 没有以下专用字段：
 
 Agent 设置中的稳定身份、滚动摘要、当前消息和完整 reply chain 是强制区段。滚动摘要是已省略旧 transcript 的覆盖证明，因此不能先推进 cursor 再丢掉摘要。其余可选区段在预算内优先保留近期 room delta，再保留目标 Agent 独立记忆、公共记忆和兼容身份记录。
 
+`turn.reasoning.recorded` 与 `tool.progress.recorded` 是可回放的 UI/审计记录，不是 Context Packet 区段。未读 transcript、reply chain 与压缩输入都只从 `message.created` 投影；两类记录不得被摘要、自动记忆或再次发送给任一 Agent。
+
 `memory_records.scope_type=agent` 且 `scope_id=agent:<id>` 的记录只进入该目标 Agent 的 Context Packet。Web 在 Agent 设置的对应卡片中按 `created_at` 的本地日期分组展示；公共记忆仍使用 `scope_type=room` 并位于群聊左栏，两者不会相互提升或复制。Agent 稳定身份同样在 Agent 设置中写入配置，主界面不保留右侧记忆栏。
 
 默认硬上限为 `256,000` 字符，可配置；该值不是 token 数。Room Context Engine 在约 `75%` 的软目标（默认 `192,000` 字符）将省略 unread transcript 时触发，并以“旧检查点 + 有界旧消息块”滚动生成下一检查点，为原生 instructions、工具和回复保留余量。不可压缩的强制区段可以使用到硬上限。生成者是配置顺序中第一个健康 Agent；不可用或返回无效摘要时尝试下一个健康 Agent。
@@ -536,3 +542,6 @@ GroupX 诊断日志只记录实现合同需要的有界字段：
 15. schema 中不存在 approval table；native interaction request 只形成一次 terminal failure，重启后没有 pending approval 可恢复。
 16. 默认 transport 是 Structured；同一运行三个 Agent 的 Turn、binding、instance transport snapshot 一致，attempt 从 Turn 推导，不重复存列；请求不能覆盖 transport/access。
 17. SQLite-backed SSE cursor tail 在历史补齐与 commit 唤醒之间不丢 durable event。
+18. 推理 delta 不逐条落库；terminal transaction 最多生成一条聚合 `turn.reasoning.recorded`，刷新后可回放。
+19. live `tool.progress` 不直接落库；terminal transaction 保存其 started/completed 有界投影，刷新后仍合并为折叠记录。
+20. `turn.reasoning.recorded` 与 `tool.progress.recorded` 均不进入 Context Packet、reply chain、房间压缩或自动记忆。

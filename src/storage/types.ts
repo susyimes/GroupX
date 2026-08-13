@@ -301,11 +301,22 @@ export interface EnqueueTurnInput {
   queuedAt?: string;
 }
 
+export interface TerminalToolProgressInput {
+  occurredAt: string;
+  nativeType: "tool.started" | "tool.completed";
+  toolCallId?: string;
+  details: unknown;
+}
+
 export interface TerminalTurnInput {
   turnId: string;
   attemptId?: string;
   status: TerminalTurnStatus;
   content?: string;
+  /** Aggregated native reasoning for durable transcript replay; never a Context Packet input. */
+  reasoning?: string;
+  /** Bounded native tool projections for durable UI replay; never a Context Packet input. */
+  toolProgress?: readonly TerminalToolProgressInput[];
   errorCode?: string;
   eventType?: string;
   eventBody?: JsonObject;
@@ -314,6 +325,8 @@ export interface TerminalTurnInput {
 
 export interface TerminalTurnResult {
   turn: TurnRecord;
+  reasoningEvent?: StoredEventRecord;
+  toolProgressEvents?: StoredEventRecord[];
   responseEvent?: StoredEventRecord;
   terminalEvent: StoredEventRecord;
 }

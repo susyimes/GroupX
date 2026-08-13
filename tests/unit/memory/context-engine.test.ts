@@ -36,6 +36,78 @@ class RecordingSummarizer implements RoomContextSummarizer {
 afterEach(cleanupMemoryTestFixtures);
 
 describe("RoomContextEngine", () => {
+  it("does not send durable reasoning or tool progress records to the compaction Agent", async () => {
+    const fixture = createMemoryTestFixture();
+    for (let index = 0; index < 10; index += 1) {
+      appendMessage(fixture, {
+        eventId: `evt_reasoning_engine_${index}`,
+        actorId: index % 2 === 0 ? "user:web" : "agent:grok",
+        content: `history-${index} ${"h".repeat(180)}`
+      });
+    }
+    fixture.store.appendDurableEvent({
+      eventId: "evt_reasoning_engine_record",
+      roomId: "room:main",
+      eventType: "turn.reasoning.recorded",
+      actorId: "agent:grok",
+      correlationId: "corr_reasoning_engine",
+      body: {
+        turnId: "turn_reasoning_engine",
+        content: "PRIVATE_REASONING_MUST_NOT_BE_COMPACTED",
+        terminalStatus: "completed"
+      }
+    });
+    fixture.store.appendDurableEvent({
+      eventId: "evt_tool_progress_engine_record",
+      roomId: "room:main",
+      eventType: "tool.progress.recorded",
+      actorId: "agent:grok",
+      correlationId: "corr_reasoning_engine",
+      body: {
+        turnId: "turn_reasoning_engine",
+        nativeType: "tool.completed",
+        toolCallId: "call-engine",
+        details: { output: "PRIVATE_TOOL_PROGRESS_MUST_NOT_BE_COMPACTED" }
+      }
+    });
+    const current = appendMessage(fixture, {
+      eventId: "evt_reasoning_engine_current",
+      actorId: "user:web",
+      content: "current after reasoning",
+      targets: ["agent:codex"]
+    });
+    const summarizer = new RecordingSummarizer();
+    const engine = new RoomContextEngine({
+      store: fixture.store,
+      summarizer,
+      maxChars: 1_800,
+      maxCompactionInputChars: 2_000,
+      maxSummaryChars: 300
+    });
+
+    const packet = await engine.prepare({
+      roomId: "room:main",
+      targetActorId: "agent:codex",
+      throughSeq: current.seq,
+      currentEvent: current
+    });
+
+    expect(summarizer.calls.length).toBeGreaterThan(0);
+    const compactedEventIds = summarizer.calls
+      .flatMap((call) => call.messages)
+      .map((message) => message.eventId);
+    expect(compactedEventIds).not.toContain("evt_reasoning_engine_record");
+    expect(compactedEventIds).not.toContain("evt_tool_progress_engine_record");
+    expect(JSON.stringify(summarizer.calls)).not.toContain(
+      "PRIVATE_REASONING_MUST_NOT_BE_COMPACTED"
+    );
+    expect(JSON.stringify(summarizer.calls)).not.toContain(
+      "PRIVATE_TOOL_PROGRESS_MUST_NOT_BE_COMPACTED"
+    );
+    expect(packet.text).not.toContain("PRIVATE_REASONING_MUST_NOT_BE_COMPACTED");
+    expect(packet.text).not.toContain("PRIVATE_TOOL_PROGRESS_MUST_NOT_BE_COMPACTED");
+  });
+
   it("compacts omitted old messages and keeps recent verbatim context", async () => {
     const fixture = createMemoryTestFixture();
     const events = Array.from({ length: 10 }, (_, index) =>

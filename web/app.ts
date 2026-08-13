@@ -1,4 +1,5 @@
 import { collectCursorPages } from "./pagination.js";
+import { parseReasoningRecord } from "./reasoning-record.js";
 import { copyPlainText, flashButtonLabel, renderRichContent } from "./rich-text.js";
 import { describeToolProgress, mergeToolProgressSnapshot } from "./tool-progress.js";
 
@@ -149,8 +150,10 @@ const DOCUMENTED_EVENT_TYPES = [
   "turn.interrupted",
   "turn.content.delta",
   "turn.reasoning.delta",
+  "turn.reasoning.recorded",
   "turn.progress",
   "tool.progress",
+  "tool.progress.recorded",
   "context.compaction.started",
   "context.compaction.retrying",
   "context.compaction.completed",
@@ -1030,6 +1033,31 @@ function updateStreamingNode(bucket: DeltaBucket, text: string): void {
   }
 }
 
+function renderReasoningRecord(envelope: GroupXEnvelope): void {
+  if (eventNodes.has(envelope.eventId)) return;
+  const record = parseReasoningRecord(envelope.body);
+  if (!record) {
+    renderGeneric(envelope);
+    return;
+  }
+  const key = `turn:${record.turnId}:reasoning`;
+  deltaBuckets.delete(key);
+  state.transientText.delete(key);
+  closedStreamKeys.add(key);
+
+  const article = ensureStreamingNode(envelope, key, "reasoning");
+  article.classList.remove("is-streaming");
+  article.dataset.eventId = envelope.eventId;
+  const label = article.querySelector<HTMLElement>(".reply-reference");
+  if (label) label.textContent = "推理记录";
+  const content = article.querySelector<HTMLElement>(".event-content");
+  if (content) {
+    content.hidden = false;
+    renderRichContent(content, record.content);
+  }
+  eventNodes.set(envelope.eventId, article);
+}
+
 function toolProgressList(article: HTMLElement): HTMLElement {
   const existing = article.querySelector<HTMLElement>(".tool-progress-list");
   if (existing) {
@@ -1465,7 +1493,11 @@ function dispatchEnvelope(envelope: GroupXEnvelope): void {
     case "turn.reasoning.delta":
       queueDelta(envelope, "reasoning");
       return;
+    case "turn.reasoning.recorded":
+      renderReasoningRecord(envelope);
+      return;
     case "tool.progress":
+    case "tool.progress.recorded":
       renderToolProgress(envelope);
       return;
     case "context.compaction.started":

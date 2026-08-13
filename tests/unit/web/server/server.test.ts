@@ -298,6 +298,7 @@ describe("GroupXHttpServer", () => {
       writeFile(path.join(staticRoot, "index.html"), "<!doctype html><title>GroupX</title>"),
       writeFile(path.join(staticRoot, "app.js"), "document.body.dataset.ready = 'yes';"),
       writeFile(path.join(staticRoot, "pagination.js"), "export const paginationReady = true;"),
+      writeFile(path.join(staticRoot, "reasoning-record.js"), "export const reasoningRecordReady = true;"),
       writeFile(path.join(staticRoot, "rich-text.js"), "export const richTextReady = true;"),
       writeFile(path.join(staticRoot, "tool-progress.js"), "export const toolProgressReady = true;"),
       writeFile(path.join(staticRoot, "styles.css"), "body { color: black; }"),
@@ -334,6 +335,10 @@ describe("GroupXHttpServer", () => {
     const pagination = await fetch(`${origin}/pagination.js`);
     expect(pagination.status).toBe(200);
     expect(await pagination.text()).toContain("paginationReady");
+
+    const reasoningRecord = await fetch(`${origin}/reasoning-record.js`);
+    expect(reasoningRecord.status).toBe(200);
+    expect(await reasoningRecord.text()).toContain("reasoningRecordReady");
 
     const richText = await fetch(`${origin}/rich-text.js`);
     expect(richText.status).toBe(200);

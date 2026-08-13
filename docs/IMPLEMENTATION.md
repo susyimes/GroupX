@@ -283,7 +283,7 @@ M1 UI 使用原生 HTML/CSS/TypeScript，避免在首版引入大型框架。
 - 底部：composer，明确选择 `@codex/@grok/@kimi/@all`。
 
 UI 只根据 Envelope actor 渲染发送者，不解析正文决定头像或身份。
-`tool.progress` 按 `turnId + toolCallId` 归并到对应 Agent 的会话气泡，started/completed 更新同一条；默认只显示一行工具名与状态，用户点击“展开”后才显示受限长度的结构化详情。它不得回退成独立的全量 JSON 事件卡。
+`tool.progress` 按 `turnId + toolCallId` 归并到对应 Agent 的会话气泡，started/completed 更新同一条；默认只显示一行工具名与状态，用户点击“展开”后才显示受限长度的结构化详情。terminal 时同形投影写成 `tool.progress.recorded`，刷新后仍走同一归并/折叠路径。两种事件都不得回退成独立的全量 JSON 事件卡，也不得进入 Agent 上下文。
 首版将模型输出作为普通文本渲染，不执行其中的 HTML/脚本。服务器只绑定 loopback；GroupX 不在其上叠加认证、Origin 防护或浏览器安全策略。
 
 ## 6. 关键消息流程
@@ -381,9 +381,11 @@ Structured session 的启动/恢复对明确的临时启动、握手、`PROTOCOL
 
 - `content.delta` 是可选瞬时事件；CLI 提供时直接批量推送到 UI；
 - 默认按很短时间窗或字符阈值合并，避免逐 token JSON/DOM 操作；
-- durable store 只保存最终 message、turn terminal 和必要 tool summary；
+- durable store 不保存逐 token delta；若收到 native reasoning delta，则在 terminal transaction 中额外保存最多一条聚合 `turn.reasoning.recorded`；
+- live `tool.progress` 保持 transient；terminal transaction 另存已观察到的 started/completed 有界投影为 `tool.progress.recorded`；
+- 聚合 reasoning/tool records 只供页面刷新回放和本地审计，Context Packet、reply chain、房间压缩与自动记忆仍只消费 `message.created`；
 - 某个 selected Adapter 若只产生最终输出，也可以从 running 直接进入 final/terminal；能力报告必须如实标记无 delta；
-- 浏览器重连后从 durable seq 恢复，不能恢复未落库的历史 token delta，但能得到最终 message。
+- 浏览器重连后从 durable seq 恢复，不能恢复逐条历史 token delta，但能得到聚合 reasoning、折叠 tool progress 与最终 message。
 
 ### 8.3 初始性能目标
 

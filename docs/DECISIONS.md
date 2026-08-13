@@ -223,6 +223,26 @@ runtime 启动时把名册中的自定义/改名 agent upsert 进 actors 表，�
 
 变更条件：新增 driver 家族(非 codex/grok/kimi 的 CLI)需要新 Adapter 并走 release Gate;多房间/远程分发仍属 Deferred。
 
+## D-018：推理记录可回放但不进入上下文
+
+决定：`turn.reasoning.delta` 保持 transient，不逐 token 写库。Broker 在 native Turn 生命周期内按顺序聚合推理文本，并在 terminal transaction 中最多插入一条 durable `turn.reasoning.recorded`；它先于成功 response 和 terminal event 取得 seq，因此页面刷新、SSE 重连和历史回放都能恢复推理记录。
+
+隔离：`turn.reasoning.recorded` 只属于本地时间线与审计投影，不是 `message.created`、MemoryRecord、IdentityRecord 或 Summary。Context Packet、reply chain、Room Context Engine 压缩和自动记忆必须只消费明确的消息/记忆数据，绝不能读取推理记录正文。
+
+原因：逐 token 持久化会放大 SQLite 与 SSE 压力，而完全 transient 会让已展示的推理在刷新后消失。每 Turn 一条终态聚合记录同时保留可恢复 UX、事务顺序和上下文隔离。
+
+迁移与回滚：不新增表或列；旧 reader 将未知 durable event 当通用事件忽略。回滚只停止生成新记录，已存事件仍可安全读取，且不会因回滚进入上下文。
+
+## D-019：工具进度可回放但不进入上下文
+
+决定：live `tool.progress` 继续是 transient。Broker 在 Turn 内保留 Adapter 已经投影的 `tool.started/tool.completed` 更新，并在 terminal transaction 中按观察顺序写为 durable `tool.progress.recorded`。Web 对 live/durable 两种事件都使用 `turnId + toolCallId` 合并，同一次工具调用刷新后仍只显示为 Agent 回复气泡内的一条折叠记录。
+
+隔离：工具记录不是聊天消息、回复链、MemoryRecord、IdentityRecord 或 Summary。Context Packet、Room Context Engine 压缩和自动记忆只读取明确的 `message.created`/记忆输入，不读取工具名称、参数、状态或详情。
+
+原因：工具进度完全 transient 会在刷新后消失；直接把它拼进 reasoning 或最终回复会混淆数据类型并可能污染后续上下文。独立 durable event 保留 UI 与审计价值，同时维持语义隔离。
+
+迁移与回滚：不新增表或列。旧 reader 可忽略未知 event type；回滚停止生成新记录即可，既有事件仍不会成为上下文输入。
+
 ## 决策变更规则
 
 任何 Accepted 决策变更必须同时提供：
