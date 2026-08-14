@@ -309,7 +309,9 @@ export class ContextPacketBuilder {
         .filter(
           (memory) =>
             memory.agentMemoryType === "dated" &&
-            (memory.sourceEventId === undefined || !representedMessageIds.has(memory.sourceEventId))
+            (memory.sourceKind === "automatic_rollup" ||
+              memory.sourceEventId === undefined ||
+              !representedMessageIds.has(memory.sourceEventId))
         )
         .map(memoryEntry)
     );

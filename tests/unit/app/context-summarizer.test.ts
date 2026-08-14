@@ -13,7 +13,11 @@ import type {
   NativeSession,
   PromptInput
 } from "../../../src/adapters/types.js";
-import { FirstAvailableAgentSummarizer } from "../../../src/app/context-summarizer.js";
+import {
+  FirstAvailableAgentSummarizer,
+  OwningAgentDatedMemorySummarizer
+} from "../../../src/app/context-summarizer.js";
+import { AGENT_DATED_MEMORY_NO_CONTENT } from "../../../src/memory/dated-memory-engine.js";
 import { GroupXError } from "../../../src/core/errors.js";
 
 class SummaryAdapter implements CliAdapter {
@@ -325,5 +329,111 @@ describe("FirstAvailableAgentSummarizer", () => {
       { phase: "retrying", attempt: 1 },
       { phase: "started", attempt: 2 }
     ]);
+  });
+});
+
+describe("OwningAgentDatedMemorySummarizer", () => {
+  const config = {
+    agents: {
+      codex: {
+        driver: "codex" as const,
+        command: { executable: process.execPath, prefixArgs: [path.resolve("codex.mjs")] },
+        cwd: path.resolve("codex"),
+        enabled: true
+      },
+      grok: {
+        driver: "grok" as const,
+        command: { executable: process.execPath, prefixArgs: [path.resolve("grok.mjs")] },
+        cwd: path.resolve("grok"),
+        enabled: true
+      }
+    },
+    timeouts: {
+      handshakeMs: 100,
+      requestMs: 100,
+      firstEventMs: 100,
+      idleMs: 100,
+      cancelMs: 100,
+      closeMs: 100,
+      askMs: 100
+    }
+  };
+
+  it("uses only the owning Agent in a short-lived MCP-free session", async () => {
+    const primary = new AdapterRegistry();
+    primary.register(new SummaryAdapter("codex"));
+    primary.register(new SummaryAdapter("grok"));
+    const created: SummaryAdapter[] = [];
+    const summarizer = new OwningAgentDatedMemorySummarizer({
+      config,
+      primaryAdapters: primary,
+      adapterFactory: (agentId) => {
+        const adapter = new SummaryAdapter(agentId, "ready", "- durable daily fact");
+        created.push(adapter);
+        return adapter;
+      }
+    });
+
+    const result = await summarizer.summarize({
+      roomId: "room:main",
+      actorId: "agent:codex",
+      localDate: "2026-08-11",
+      sources: [
+        {
+          turnId: "turn:1",
+          roomId: "room:main",
+          actorId: "agent:codex",
+          localDate: "2026-08-11",
+          sourceEventId: "evt:user",
+          sourceSeq: 1,
+          responseEventId: "evt:response",
+          responseSeq: 2,
+          currentMessage: "ship the fix",
+          finalResponse: "the fix shipped",
+          sourceChars: 28,
+          terminalAt: "2026-08-11T12:00:00.000Z"
+        }
+      ],
+      maxOutputChars: 8_000,
+      noContentSentinel: AGENT_DATED_MEMORY_NO_CONTENT,
+      signal: new AbortController().signal
+    });
+
+    expect(result).toEqual({ content: "- durable daily fact", generatorActorId: "agent:codex" });
+    expect(created.map((adapter) => adapter.adapterId)).toEqual(["codex"]);
+    expect(created[0]!.starts[0]).not.toHaveProperty("mcp");
+    expect(created[0]!.prompts[0]!.content).toContain("your own private GroupX dated working memory");
+    expect(created[0]!.prompts[0]!.content).toContain(AGENT_DATED_MEMORY_NO_CONTENT);
+    expect(created[0]!.prompts[0]!.content).toContain("ship the fix");
+    expect(created[0]!.closes).toHaveLength(1);
+  });
+
+  it("defers when the owner is unavailable instead of falling back to another Agent", async () => {
+    const primary = new AdapterRegistry();
+    primary.register(new SummaryAdapter("codex", "failed"));
+    primary.register(new SummaryAdapter("grok", "ready"));
+    const created: SummaryAdapter[] = [];
+    const summarizer = new OwningAgentDatedMemorySummarizer({
+      config,
+      primaryAdapters: primary,
+      adapterFactory: (agentId) => {
+        const adapter = new SummaryAdapter(agentId);
+        created.push(adapter);
+        return adapter;
+      }
+    });
+
+    await expect(
+      summarizer.summarize({
+        roomId: "room:main",
+        actorId: "agent:codex",
+        localDate: "2026-08-11",
+        sources: [],
+        maxOutputChars: 8_000,
+        noContentSentinel: AGENT_DATED_MEMORY_NO_CONTENT,
+        signal: new AbortController().signal
+      })
+    ).rejects.toMatchObject({ code: "SESSION_NOT_AVAILABLE" });
+    expect(created).toEqual([]);
   });
 });

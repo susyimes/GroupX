@@ -157,6 +157,7 @@ export class GroupXBroker {
   readonly #agentController: BrokerDependencies["agentController"];
   readonly #contextProvider: BrokerDependencies["contextProvider"];
   readonly #contextController: BrokerDependencies["contextController"];
+  readonly #datedMemoryController: BrokerDependencies["datedMemoryController"];
   readonly #turnLifecycle: BrokerDependencies["turnLifecycle"];
   readonly #acceptMessageLimits: BrokerDependencies["acceptMessageLimits"];
   readonly #selectedTransport: BrokerDependencies["selectedTransport"];
@@ -190,6 +191,7 @@ export class GroupXBroker {
     this.#agentController = dependencies.agentController;
     this.#contextProvider = dependencies.contextProvider;
     this.#contextController = dependencies.contextController;
+    this.#datedMemoryController = dependencies.datedMemoryController;
     this.#turnLifecycle = dependencies.turnLifecycle;
     this.#acceptMessageLimits = dependencies.acceptMessageLimits;
     this.#selectedTransport = dependencies.selectedTransport;
@@ -1631,7 +1633,17 @@ export class GroupXBroker {
       }
       if (terminal.responseEvent) await this.#publishStored(terminal.responseEvent);
       await this.#publishStored(terminal.terminalEvent);
-      if (terminal.datedMemoryEvent) await this.#publishStored(terminal.datedMemoryEvent);
+      if (terminal.datedMemoryRollup !== undefined) {
+        try {
+          this.#datedMemoryController?.noteCompleted(terminal.datedMemoryRollup);
+        } catch (error) {
+          this.#report(error, {
+            operation: "memory",
+            actorId: terminal.turn.targetActorId,
+            turnId: terminal.turn.turnId
+          });
+        }
+      }
     } catch (error) {
       const after = this.#store.getTurn(active.preparation.claim.turn.turnId);
       if (after && TERMINAL_TURN_STATUSES.has(after.status)) {

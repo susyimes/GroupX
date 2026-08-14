@@ -1627,6 +1627,7 @@ input:disabled {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  margin-bottom: 10px;
 }
 
 .context-controls {
@@ -2253,26 +2254,49 @@ input:disabled {
   }
 
   .composer-topbar {
-    flex-wrap: wrap;
-    gap: 7px;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 8px;
   }
 
-  .target-picker,
-  .context-controls {
-    flex-basis: 100%;
+  .target-picker {
+    flex: 1 1 0;
+    min-width: 0;
+    padding-bottom: 0;
+    margin-bottom: 0;
   }
 
   .context-controls {
-    flex-wrap: wrap;
+    flex: 0 1 auto;
+    flex-wrap: nowrap;
+    max-width: 72%;
   }
 
   .runtime-progress {
-    flex-basis: 100%;
-    max-width: none;
+    flex: 0 1 220px;
+    min-width: 140px;
+    max-width: min(220px, 34vw);
   }
 
   .context-usage {
-    margin-left: auto;
+    min-width: 132px;
+    margin-left: 0;
+  }
+
+  .context-compact-button {
+    padding-right: 9px;
+    padding-left: 9px;
+  }
+
+  @media (max-width: 520px) {
+    .context-controls:has(.runtime-progress:not([hidden])) .context-usage,
+    .context-controls:has(.runtime-progress:not([hidden])) .context-compact-button {
+      display: none;
+    }
+
+    .runtime-progress {
+      max-width: min(220px, 52vw);
+    }
   }
 
 }

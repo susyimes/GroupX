@@ -20,6 +20,10 @@ import {
   type RoomCompactionProgress,
   type RoomContextSummarizer
 } from "../memory/context-engine.js";
+import {
+  AgentDatedMemoryEngine,
+  type AgentDatedMemorySummarizer
+} from "../memory/dated-memory-engine.js";
 import { McpBindingRegistry } from "../mcp/binding-registry.js";
 import {
   createGroupXMcpHttpHandler,
@@ -35,7 +39,11 @@ import {
 } from "../web/server/index.js";
 import { SseRuntime } from "../web/sse/index.js";
 import { createAdapterRegistry } from "./adapter-factory.js";
-import { FirstAvailableAgentSummarizer } from "./context-summarizer.js";
+import {
+  FirstAvailableAgentSummarizer,
+  OwningAgentDatedMemorySummarizer
+} from "./context-summarizer.js";
+import { toDurableEnvelope } from "./record-mappers.js";
 import { SequencedEventPublisher, SqliteSseEventReader } from "./event-stream.js";
 import { RuntimeReadiness } from "./readiness.js";
 import { RestartAgentCommandCoordinator } from "./restart-commands.js";
@@ -61,6 +69,8 @@ export interface GroupXRuntimeOptions {
   onError?: (error: unknown, context: BrokerErrorContext) => void;
   /** Test/custom injection. Runtime defaults to the first healthy configured Agent. */
   contextSummarizer?: RoomContextSummarizer;
+  /** Test/custom injection. Runtime otherwise uses the owning Agent only. */
+  datedMemorySummarizer?: AgentDatedMemorySummarizer;
   /** CLI-supplied identity; embedded/test runtimes derive one from resolved config. */
   runtimeIdentity?: GroupXRuntimeIdentity;
 }
@@ -142,6 +152,7 @@ export class GroupXRuntime {
   readonly sse: SseRuntime;
   readonly publisher: SequencedEventPublisher;
   readonly sessions: AgentSessionManager;
+  readonly datedMemoryEngine: AgentDatedMemoryEngine;
   readonly contextEngine: RoomContextEngine;
   readonly roomId: string;
   readonly runtimeIdentity: GroupXRuntimeIdentity;
@@ -216,6 +227,22 @@ export class GroupXRuntime {
         );
       }
     });
+    this.datedMemoryEngine = new AgentDatedMemoryEngine({
+      store: this.store,
+      summarizer:
+        options.datedMemorySummarizer ??
+        new OwningAgentDatedMemorySummarizer({
+          config,
+          primaryAdapters: this.adapters
+        }),
+      publish: async (event) => await this.publisher.publish(toDurableEnvelope(event)),
+      onError: (error, context) => {
+        this.#onError?.(error, {
+          operation: "memory",
+          actorId: context.actorId
+        });
+      }
+    });
     this.contextEngine = new RoomContextEngine({
       store: this.store,
       summarizer:
@@ -225,6 +252,8 @@ export class GroupXRuntime {
           primaryAdapters: this.adapters
         }),
       maxChars: config.limits.contextCharacters,
+      beforeCompaction: async ({ roomId, throughSeq, signal }) =>
+        await this.datedMemoryEngine.flushBeforeCompaction({ roomId, throughSeq, signal }),
       onProgress: async (progress) => await publishCompactionProgress(this.publisher, progress)
     });
     this.#registerConfiguredActors();
@@ -309,6 +338,7 @@ export class GroupXRuntime {
         },
         contextProvider: contextProvider(this.contextEngine, this.config),
         contextController: this.contextEngine,
+        datedMemoryController: this.datedMemoryEngine,
         turnLifecycle: turns,
         acceptMessageLimits: {
           rootTurns: this.config.limits.rootTurns,
@@ -384,6 +414,7 @@ export class GroupXRuntime {
       }
       await this.sessions.startAll({ nativeSessionIds: recovery.nativeSessionIds });
       await broker.recoverAfterRestart();
+      this.datedMemoryEngine.recover(this.roomId);
       this.readiness.markReady();
       const result = { address, recovery };
       this.#startResult = result;
@@ -454,6 +485,7 @@ export class GroupXRuntime {
     await settle(async () => await this.#http?.close());
     await settle(async () => await this.#mcpHandler?.close());
     await settle(() => this.contextEngine.close());
+    await settle(async () => await this.datedMemoryEngine.close());
     await settle(async () => await this.#broker?.close());
     await settle(async () => await this.sessions.close());
     await settle(async () => await this.publisher.close());

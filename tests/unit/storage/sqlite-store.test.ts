@@ -909,7 +909,8 @@ describe.sequential("SqliteGroupXStore transactions and idempotency", () => {
           toolCallId: "call-1",
           details: { status: "completed" }
         }
-      ]
+      ],
+      occurredAt: "2026-08-11T00:00:03.000Z"
     });
     expect(terminal.reasoningEvent).toMatchObject({
       eventType: "turn.reasoning.recorded",
@@ -946,38 +947,41 @@ describe.sequential("SqliteGroupXStore transactions and idempotency", () => {
     ]);
     expect(terminal.responseEvent?.eventType).toBe("message.created");
     expect(terminal.terminalEvent.eventType).toBe("turn.completed");
-    expect(terminal.datedMemory).toMatchObject({
-      scopeType: "agent",
-      scopeId: "agent:codex",
-      agentMemoryType: "dated",
-      authorActorId: "agent:codex",
-      subjectActorId: "agent:codex",
-      sourceEventId: terminal.responseEvent?.eventId,
-      sourceKind: "automatic_turn"
-    });
-    expect(terminal.datedMemory?.content).toContain("[current_message]");
-    expect(terminal.datedMemory?.content).toContain("[agent_response]\nfinal");
-    expect(terminal.datedMemory?.content).not.toContain("first thought");
-    expect(terminal.datedMemory?.content).not.toContain("memory_search");
-    expect(terminal.datedMemoryEvent).toMatchObject({
-      eventType: "memory.remembered",
+    expect(terminal.datedMemoryRollup).toMatchObject({
+      roomId: "room:main",
       actorId: "agent:codex",
-      body: { record: terminal.datedMemory }
+      localDate: "2026-08-11",
+      pendingTurns: 1,
+      pendingChars: "hello".length + "final".length
     });
+    const rollupSources = fixture.store.listAgentDatedMemorySources({
+      roomId: "room:main",
+      actorId: "agent:codex",
+      localDate: "2026-08-11"
+    });
+    expect(rollupSources).toEqual([
+      expect.objectContaining({
+        turnId,
+        currentMessage: "hello",
+        finalResponse: "final",
+        responseEventId: terminal.responseEvent?.eventId
+      })
+    ]);
+    expect(JSON.stringify(rollupSources)).not.toContain("first thought");
+    expect(JSON.stringify(rollupSources)).not.toContain("memory_search");
     expect(terminal.reasoningEvent!.seq).toBeLessThan(terminal.toolProgressEvents![0]!.seq);
     expect(terminal.toolProgressEvents![0]!.seq).toBeLessThan(
       terminal.toolProgressEvents![1]!.seq
     );
     expect(terminal.toolProgressEvents![1]!.seq).toBeLessThan(terminal.responseEvent!.seq);
     expect(terminal.responseEvent!.seq).toBeLessThan(terminal.terminalEvent.seq);
-    expect(terminal.terminalEvent.seq).toBeLessThan(terminal.datedMemoryEvent!.seq);
     expect(terminal.terminalEvent.body).toMatchObject({
       reasoningEventId: terminal.reasoningEvent?.eventId,
       toolProgressEventIds: terminal.toolProgressEvents?.map((event) => event.eventId)
     });
     expect(terminal.turn.responseEventId).toBe(terminal.responseEvent?.eventId);
     expect(terminal.turn.terminalEventId).toBe(terminal.terminalEvent.eventId);
-    expect(fixture.store.countEvents()).toBe(beforeDeltas + 6);
+    expect(fixture.store.countEvents()).toBe(beforeDeltas + 5);
 
     expectGroupXCode(
       () =>
@@ -989,10 +993,10 @@ describe.sequential("SqliteGroupXStore transactions and idempotency", () => {
         }),
       "STORE_CONFLICT"
     );
-    expect(fixture.store.countEvents()).toBe(beforeDeltas + 6);
+    expect(fixture.store.countEvents()).toBe(beforeDeltas + 5);
   });
 
-  it("bounds automatic dated memory while preserving both semantic sections", () => {
+  it("atomically rolls pending sources into one generated dated memory and checkpoints trivial batches", () => {
     const fixture = createFixture();
     const accepted = fixture.store.acceptMessage(
       messageInput("dated-memory-bounds", "u".repeat(32_768))
@@ -1014,13 +1018,112 @@ describe.sequential("SqliteGroupXStore transactions and idempotency", () => {
       turnId,
       attemptId: claim.attempt.attemptId,
       status: "completed",
-      content: "a".repeat(32_768)
+      content: "a".repeat(32_768),
+      occurredAt: "2026-08-11T12:00:00.000Z"
     });
 
-    expect(terminal.datedMemory?.content.length).toBeLessThanOrEqual(32_768);
-    expect(terminal.datedMemory?.content).toContain("[current_message]");
-    expect(terminal.datedMemory?.content).toContain("[agent_response]");
-    expect(terminal.datedMemory?.content).toContain("[…truncated by GroupX]");
+    reopen(fixture);
+    expect(fixture.store.searchMemory({ scopeType: "agent", scopeId: "agent:codex" })).toEqual([]);
+    const committed = fixture.store.commitAgentDatedMemoryRollup({
+      roomId: "room:main",
+      actorId: "agent:codex",
+      localDate: "2026-08-11",
+      selectedTurnIds: [turnId],
+      content: "- Preserved one material result",
+      generatedAt: "2026-08-11T12:05:00.000Z"
+    });
+    expect(committed.memory).toMatchObject({
+      scopeType: "agent",
+      scopeId: "agent:codex",
+      agentMemoryType: "dated",
+      kind: "summary",
+      sourceKind: "automatic_rollup",
+      content: "- Preserved one material result",
+      sourceEventId: terminal.responseEvent?.eventId
+    });
+    expect(committed.event).toMatchObject({
+      eventType: "memory.remembered",
+      actorId: "agent:codex",
+      body: { record: committed.memory }
+    });
+    expect(committed.rollup).toMatchObject({
+      memoryId: committed.memory?.memoryId,
+      pendingTurns: 0,
+      pendingChars: 0,
+      summarizedThroughSeq: terminal.responseEvent?.seq
+    });
+    expect(
+      fixture.store.listAgentDatedMemorySources({
+        roomId: "room:main",
+        actorId: "agent:codex",
+        localDate: "2026-08-11",
+        pendingOnly: false
+      })[0]
+    ).toMatchObject({ processedAt: "2026-08-11T12:05:00.000Z", memoryId: committed.memory?.memoryId });
+
+    const edited = fixture.store.supersedeMemory(committed.memory!.memoryId, {
+      scopeType: "agent",
+      scopeId: "agent:codex",
+      agentMemoryType: "dated",
+      kind: "summary",
+      authorActorId: "user:web",
+      subjectActorId: "agent:codex",
+      content: "- User corrected the daily rollup",
+      sourceKind: "web",
+      createdAt: "2026-08-11T12:06:00.000Z"
+    });
+    expect(
+      fixture.store.getAgentDatedMemoryRollup({
+        roomId: "room:main",
+        actorId: "agent:codex",
+        localDate: "2026-08-11"
+      })?.memoryId
+    ).toBe(edited.memoryId);
+
+    fixture.store.retractMemory(edited.memoryId, "2026-08-11T12:07:00.000Z");
+    expect(
+      fixture.store.getAgentDatedMemoryRollup({
+        roomId: "room:main",
+        actorId: "agent:codex",
+        localDate: "2026-08-11"
+      })?.memoryId
+    ).toBeUndefined();
+
+    const nextAccepted = fixture.store.acceptMessage(
+      messageInput("dated-memory-after-retract", "next source")
+    );
+    const nextTurnId = nextAccepted.turns[0]!.turnId;
+    const nextClaim = fixture.store.claimNextQueuedTurn({
+      targetActorId: "agent:codex",
+      bindingId: "binding:codex",
+      instanceId: "instance:codex",
+      contextThroughSeq: fixture.store.getEvent(nextAccepted.messageEventId)!.seq,
+      expectedTurnId: nextTurnId,
+      expectedTransport: "structured"
+    })!;
+    fixture.store.markPromptInvoked(nextClaim.attempt.attemptId);
+    fixture.store.markAttemptRunning(nextClaim.attempt.attemptId, "native-after-retract");
+    fixture.store.terminalizeTurn({
+      turnId: nextTurnId,
+      attemptId: nextClaim.attempt.attemptId,
+      status: "completed",
+      content: "next response",
+      occurredAt: "2026-08-11T12:08:00.000Z"
+    });
+    const regenerated = fixture.store.commitAgentDatedMemoryRollup({
+      roomId: "room:main",
+      actorId: "agent:codex",
+      localDate: "2026-08-11",
+      selectedTurnIds: [nextTurnId],
+      content: "- Fresh rollup after retraction",
+      generatedAt: "2026-08-11T12:09:00.000Z"
+    });
+    expect(regenerated.memory).toMatchObject({
+      status: "active",
+      content: "- Fresh rollup after retraction"
+    });
+    expect(regenerated.memory?.supersedesMemoryId).toBeUndefined();
+    expect(regenerated.rollup.memoryId).toBe(regenerated.memory?.memoryId);
   });
 
   it("claims only one FIFO lane head until its attempt reaches terminal state", () => {
@@ -1481,7 +1584,7 @@ describe.sequential("SqliteGroupXStore summaries and recovery", () => {
     });
     reopen(fixture);
 
-    expect(fixture.store.getSchemaVersion()).toBe(6);
+    expect(fixture.store.getSchemaVersion()).toBe(7);
     expect(fixture.store.getJournalMode()).toBe("wal");
     expect(fixture.store.getSessionBinding("binding:codex")?.capabilities).toEqual({
       prompt: true
@@ -1670,6 +1773,8 @@ describe.sequential("SqliteGroupXStore summaries and recovery", () => {
       DROP TRIGGER memory_records_agent_type_bu;
       DROP INDEX memory_agent_type_status_created_idx;
       ALTER TABLE memory_records DROP COLUMN agent_memory_type;
+      DROP TABLE agent_dated_memory_sources;
+      DROP TABLE agent_dated_memory_rollups;
       DELETE FROM schema_migrations WHERE version > 1;
       PRAGMA user_version = 1;
       COMMIT;
@@ -1677,7 +1782,7 @@ describe.sequential("SqliteGroupXStore summaries and recovery", () => {
     raw.close();
 
     fixture.store = new SqliteGroupXStore(fixture.databasePath);
-    expect(fixture.store.getSchemaVersion()).toBe(6);
+    expect(fixture.store.getSchemaVersion()).toBe(7);
     expect(fixture.store.getTurnAttempt(claim.attempt.attemptId)).toMatchObject({
       dispatchPhase: "prompt_invoked",
       deliveryCertainty: "unknown"
@@ -1698,7 +1803,10 @@ describe.sequential("SqliteGroupXStore summaries and recovery", () => {
       DROP TRIGGER memory_records_agent_type_bu;
       DROP INDEX memory_agent_type_status_created_idx;
       ALTER TABLE memory_records DROP COLUMN agent_memory_type;
+      DROP TABLE agent_dated_memory_sources;
+      DROP TABLE agent_dated_memory_rollups;
       DELETE FROM schema_migrations WHERE version = 6;
+      DELETE FROM schema_migrations WHERE version = 7;
       PRAGMA user_version = 5;
       INSERT INTO memory_records(
         memory_id, scope_type, scope_id, kind, author_actor_id, subject_actor_id,
@@ -1714,7 +1822,7 @@ describe.sequential("SqliteGroupXStore summaries and recovery", () => {
     raw.close();
 
     fixture.store = new SqliteGroupXStore(fixture.databasePath);
-    expect(fixture.store.getSchemaVersion()).toBe(6);
+    expect(fixture.store.getSchemaVersion()).toBe(7);
     expect(fixture.store.getMemory("memory:legacy-agent")).toMatchObject({
       scopeType: "agent",
       agentMemoryType: "core",
@@ -1732,10 +1840,10 @@ describe.sequential("SqliteGroupXStore summaries and recovery", () => {
     expectGroupXCode(() => new SqliteGroupXStore(fixture.databasePath), "STORE_UNAVAILABLE");
 
     const repair = new Database(fixture.databasePath);
-    repair.pragma("user_version = 6");
+    repair.pragma("user_version = 7");
     repair.close();
     fixture.store = new SqliteGroupXStore(fixture.databasePath);
-    expect(fixture.store.getSchemaVersion()).toBe(6);
+    expect(fixture.store.getSchemaVersion()).toBe(7);
     expect(fixture.store.integrityCheck()).toEqual({ ok: true, messages: ["ok"] });
   });
 

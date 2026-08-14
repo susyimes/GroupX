@@ -119,6 +119,12 @@ export interface RoomContextEngineOptions {
   compactionRetryBaseMs?: number;
   /** Recent message.created records left verbatim after an explicit compaction. */
   manualRetainMessages?: number;
+  /** Best-effort semantic archive hook before older raw messages leave the packet. */
+  beforeCompaction?: (input: {
+    roomId: string;
+    throughSeq: number;
+    signal: AbortSignal;
+  }) => void | Promise<void>;
   onProgress?: (progress: RoomCompactionProgress) => void | Promise<void>;
 }
 
@@ -185,6 +191,7 @@ export class RoomContextEngine {
   readonly #compactionAttempts: number;
   readonly #compactionRetryBaseMs: number;
   readonly #manualRetainMessages: number;
+  readonly #beforeCompaction: RoomContextEngineOptions["beforeCompaction"];
   readonly #onProgress: RoomContextEngineOptions["onProgress"];
   readonly #roomFlights = new Map<string, Promise<void>>();
   readonly #activeControllers = new Set<AbortController>();
@@ -212,6 +219,7 @@ export class RoomContextEngine {
     this.#compactionRetryBaseMs = options.compactionRetryBaseMs ?? 300;
     this.#manualRetainMessages =
       options.manualRetainMessages ?? DEFAULT_MANUAL_RETAIN_MESSAGES;
+    this.#beforeCompaction = options.beforeCompaction;
     this.#onProgress = options.onProgress;
     for (const [name, value] of [
       ["maxChars", this.#maxChars],
@@ -465,6 +473,17 @@ export class RoomContextEngine {
     let lastError: unknown;
     let completedAttempt = 1;
     try {
+      try {
+        await this.#beforeCompaction?.({
+          roomId,
+          throughSeq: selectedThroughSeq,
+          signal: controller.signal
+        });
+      } catch (error) {
+        if (controller.signal.aborted) throw error;
+        // Dated-memory generation is recoverable background work and must not
+        // decide whether room checkpoint compaction can continue.
+      }
       for (let attempt = 1; attempt <= this.#compactionAttempts; attempt += 1) {
         await this.#emitProgress({ phase: "started", ...progressBase, attempt });
         try {

@@ -32,6 +32,7 @@
 | D-020 | `groupx start` 复用同配置的现有 runtime | Accepted |
 | D-021 | Agent 记忆拆分为显式核心记忆与自动日期记忆 | Accepted |
 | D-022 | Hermes 作为独立 ACP driver 接入 Structured transport | Accepted |
+| D-023 | Agent 日期记忆由逐 Turn 原文改为可恢复的每日批量 rollup | Accepted |
 
 ## D-001：透明 Broker
 
@@ -269,14 +270,14 @@ CLI 在创建 Store、Adapter 和 native session 前先探测目标 origin：
 决定：每个 Agent 的私有记忆拆成两个不能互相冒充的数据层：
 
 - `core` 是少量、长期、显式维护的核心记忆。Structured Agent 通过绑定到自身的 `core_memory_remember` 工具主动写入；工具输入不接受 scope、subject、author 或 binding，Broker 一律从当前 session binding 固定为调用 Agent 自己。Web Agent 设置可以追加、替换和撤回同一 Agent 的 core；
-- `dated` 是成功 Turn 的自动工作记录。Broker 在成功 terminal transaction 内，从该 Turn 有界的当前 `message.created` 与最终 Agent response 构造一条 dated 记录，并追加对应 `memory.remembered` durable event。失败、取消、中断或终态不明的 Turn 不生成 dated；
-- dated 的日期来自记录 `created_at`，不是模型提供的正文或参数。自动记录不读取 reasoning、tool、stderr、native payload、公共记忆或完整历史；
-- Context Packet 分别投影 `[agent_core_memory]` 与 `[agent_dated_memory]`。core 在可选记忆区段中优先；dated 受字符预算约束，并在其来源回复已由当前消息、reply chain 或未读 transcript 表达时去重；
+- `dated` 是成功 Turn 的自动工作记录层；其生成频率和持久检查点由 D-023 取代原逐 Turn 方案。失败、取消、中断或终态不明的 Turn 不成为 dated source；
+- dated 的日期来自 Broker 持久化的本地日期，不是模型提供的正文或参数。自动记录不读取 reasoning、tool、stderr、native payload、公共记忆或完整历史；
+- Context Packet 分别投影 `[agent_core_memory]` 与 `[agent_dated_memory]`。core 在可选记忆区段中优先；dated 是有界每日语义 rollup，并受字符预算约束；
 - 公共房间记忆继续使用 room scope，和两个 Agent 层完全分离。普通聊天不会自动成为公共或 core MemoryRecord。
 
 持久化：schema v6 在 `memory_records` 增加仅对 `scope_type=agent` 有效的 `agent_memory_type=core|dated`。升级前已有 Agent 记忆保守迁移为 `core`；room/correlation 记录保持空值。supersede 必须保留原层，不能借替换把 dated 转成 core 或反向转换。
 
-原因：核心记忆需要 Agent 主动筛选，自动日期记忆需要保留连续工作事实；混为一类会让自动摘要稀释长期偏好，也会让 Web/工具误把系统生成记录当成 Agent 明确承诺。把自动写入放在 terminal transaction 内可避免成功响应与日期记忆部分提交，同时保持 Broker 唯一写者。
+原因：核心记忆需要 Agent 主动筛选，自动日期记忆需要保留连续工作事实；混为一类会让自动摘要稀释长期偏好，也会让 Web/工具误把系统生成记录当成 Agent 明确承诺。terminal transaction 只登记来源，MemoryRecord 的批量生成边界见 D-023。
 
 回滚边界：停止生成新 dated 或隐藏 core tool 不会破坏已有记录。回滚代码仍必须把未知 `agent_memory_type` fail-closed，不能把 dated 无条件当 core 注入；若降级到 schema v5，需要显式导出/重建数据库，不做破坏性原地降级。
 
@@ -287,6 +288,26 @@ CLI 在创建 Store、Adapter 和 native session 前先探测目标 origin：
 Hermes 0.20.1 的 initialize 当前未声明 `mcpCapabilities.http`，但官方实现明确接受 ACP `session/new`/`session/load` 中的 HTTP MCP descriptor。这个兼容例外只存在于 Hermes Adapter：共享 ACP kernel 对其他 driver 仍严格要求 capability advertisement；能力报告保留 raw initialize 事实，并把描述符接收标为 `documented/probed`，不能冒充模型实际 `tools/call` 已 verified。
 
 本次边界内已完成本机 `hermes acp --check`、ACP v1 initialize、session/new、`session/set_mode(dont_ask)` 和跨进程 session/load 的无模型 probe。Hermes native 模型回复、GroupX MCP 实调、取消中实际模型回合等仍需独立 live evidence 后才能写成 `verified`；现有 Codex/Grok/Kimi M0 矩阵不会自动替 Hermes 背书。
+
+## D-023：日期记忆使用可恢复的每日批量 rollup
+
+触发证据：逐 completed Turn 直接写一条 dated MemoryRecord 会把同一 `@all` 用户消息复制到每个 Agent，`memory.*` event 又复制整条正文；长期房间会产生大量低价值问候、确认和测试记录，并让 Context Packet 在 500 条候选中反复筛选原始回合片段。完整 transcript 已经是逐回合权威事实源，日期记忆应承担语义工作日志而不是第二份 transcript。
+
+决定：
+
+- terminal immediate transaction 仍只在 completed 时登记 source/response 外键、本地日期和字符计数；业务 response/terminal 不等待模型摘要，也不创建 dated MemoryRecord/event；
+- 每个 `room + Agent + local date` 最多一条 active 自动 dated rollup。达到 8 个待处理成功 Turn、约 16K 原始字符、日期切换，或 Room Context Engine 即将压缩越过 source 时触发；普通阈值需等待最后活动后的 5 分钟；
+- 使用该 dated 所属 Agent 的独立、短生命周期、无 MCP Structured session。其他 Agent 不 fallback 代写个人工作记忆；临时失败最多立即重试 3 次，随后持久记录退避时间并延后恢复；
+- 输入只从登记过的当前 `message.created` 和最终 response 回读。输出最多 8K，只保留重要进展、决定、偏好、约束和未完成事项；无语义价值批次只推进 checkpoint，不创建记录；
+- 同日更新把前一条 daily memory 作为输入，以 active memory id CAS/supersede。生成、版本替换、source processed 标记和 `memory.remembered|superseded` event 在一个 SQLite immediate transaction 提交；原 transcript 不删除。
+
+对原始需求的影响：公共群组记忆、Agent 身份、透明转发和 Structured CLI 通信边界不变；Agent 私有日期记忆更少、更稳定。core 仍只能由所属 Agent 工具或 Web 显式维护，不能被自动 rollup 冒充。
+
+迁移：schema v7 新增 `agent_dated_memory_rollups` 与 `agent_dated_memory_sources`。不回填升级前已完成 Turn，避免把旧 transcript 重复生成记忆；已有 `automatic_turn` dated 记录保持可读，之后的新记录使用 `source_kind=automatic_rollup`。v6 的 `agent_memory_type` 语义不变。
+
+复杂度与回滚：新增一个后台定时/single-flight 引擎、两个只保存外键/检查点的表和一个 compaction 前 best-effort hook。关闭引擎即可停止新 rollup；pending source 与 transcript 都可保留，不影响聊天恢复。降级 schema 需导出/重建，不做破坏性原地删除。
+
+完成标准：存储测试证明 completed 只登记来源、失败 Turn 不登记、同日 CAS/空批次/崩溃重开幂等；引擎测试证明 8 Turn/16K/日期/压缩触发、5 分钟 debounce、owner-only、8K 上限和失败重试；Context Packet 与 compactor 测试继续证明 reasoning/tool 不进入任何自动记忆。
 
 ## 决策变更规则
 

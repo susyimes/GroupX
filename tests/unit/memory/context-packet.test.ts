@@ -380,6 +380,37 @@ describe("ContextPacketBuilder provenance and cursor semantics", () => {
       "memory_dated_duplicate"
     );
   });
+
+  it("keeps a semantic daily rollup eligible even when its latest response is still unread", () => {
+    const fixture = createMemoryTestFixture();
+    const seeded = seedContext(fixture);
+    const memory = new GroupXMemoryService(fixture.store, fixedClock);
+    memory.remember({
+      memoryId: "memory_daily_rollup",
+      scopeType: "agent",
+      scopeId: "agent:codex",
+      agentMemoryType: "dated",
+      kind: "summary",
+      authorActorId: "agent:codex",
+      subjectActorId: "agent:codex",
+      content: "semantic facts from several successful Turns",
+      sourceEventId: "evt_unread_new",
+      sourceKind: "automatic_rollup"
+    });
+
+    const packet = new ContextPacketBuilder(fixture.store).buildContextPacket({
+      roomId: "room:main",
+      targetActorId: "agent:codex",
+      currentEvent: seeded.current,
+      throughSeq: seeded.current.seq,
+      maxChars: 100_000
+    });
+
+    expect(packet.sections.unreadTranscript.map((entry) => entry.id)).toContain("evt_unread_new");
+    expect(packet.sections.agentDatedMemory.map((entry) => entry.id)).toContain(
+      "memory_daily_rollup"
+    );
+  });
 });
 
 describe("ContextPacketBuilder deterministic budget", () => {

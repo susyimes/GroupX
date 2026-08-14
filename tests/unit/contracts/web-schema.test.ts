@@ -110,6 +110,14 @@ describe("Web/MCP JSON schema safety", () => {
         agentMemoryType: "dated"
       }).success
     ).toBe(false);
+    expect(
+      MemoryRecordSchema.safeParse({
+        ...base,
+        scope: { type: "agent", id: "agent:codex" },
+        agentMemoryType: "dated",
+        sourceKind: "automatic_rollup"
+      }).success
+    ).toBe(true);
   });
 
   it("makes the unified error body strict at both levels", () => {

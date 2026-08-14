@@ -170,7 +170,7 @@ binding 是 provenance/correlation handle，不是 secret、token 或本机抗�
 | ID | 用例 | 通过标准 |
 | --- | --- | --- |
 | M-001 | 用户固定公共记忆 | author/source 可追溯，重启后可检索 |
-| M-002 | 普通聊天 | 不自动升级公共/core MemoryRecord；仅成功 Agent Turn 自动形成自身 dated record |
+| M-002 | 普通聊天 | 不自动升级公共/core MemoryRecord；成功 Agent Turn 仅登记自身 dated rollup source，不同步写 MemoryRecord |
 | M-003 | Structured MCP memory.remember | author 来自 binding，不能冒充他人 |
 | M-004 | supersede/retract | 追加版本/tombstone，不原地抹除 |
 | M-005 | 用户身份记录 | subject 可选 Agent，author 固定 user:web |
@@ -183,8 +183,11 @@ binding 是 provenance/correlation handle，不是 secret、token 或本机抗�
 | M-012 | 压缩失败 | 尝试后续健康 Agent；全失败则 Turn 明确失败，原 transcript、旧摘要和 cursor 不变 |
 | M-013 | durable reasoning/tool records | 时间线可回放，但 Context Packet、reply chain、压缩输入与自动记忆均不包含其正文 |
 | M-014 | Structured `core_memory_remember` | wire 不含 scope/subject/author/binding；Broker 固定为调用 Agent 自己的 `agent_memory_type=core`，重试幂等 |
-| M-015 | 成功/失败 Turn 的日期记忆 | completed 的 response/terminal/dated memory 同事务且仅一份；failed/cancelled/interrupted 不写；dated 只含有界当前消息和最终回复 |
-| M-016 | Context Packet 两层记忆 | core 优先于其他可选区段；dated 按 actor 隔离，来源回复仍在 unread/reply chain 时不重复注入 |
+| M-015 | 成功/失败 Turn 的日期记忆来源 | completed 的 response/terminal 与一条 source checkpoint 同事务；failed/cancelled/interrupted 不登记；source 只能回读当前消息和最终回复 |
+| M-016 | Context Packet 两层记忆 | core 优先于其他可选区段；daily dated rollup 按 actor 隔离，在近期 transcript 后按剩余预算注入 |
+| M-017 | 日期记忆批量触发 | 8 个成功 Turn、约 16K 字符、日期切换或压缩边界触发；普通阈值遵守 5 分钟 debounce |
+| M-018 | 同日 rollup CAS | 同一 Agent/日期只有一条 active 自动 dated；后续批次 supersede，空语义批次只推进 checkpoint |
+| M-019 | 日期记忆失败恢复 | 只用所属 Agent、最多 8K 输出；临时失败有界重试并持久保留 pending，不能改变已完成业务 Turn |
 
 ## 12. Web 与本地传输
 

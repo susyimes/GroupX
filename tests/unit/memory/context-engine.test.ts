@@ -54,13 +54,17 @@ describe("RoomContextEngine", () => {
       body: { turnId: "turn:manual", details: { output: "not context" } }
     });
     const summarizer = new RecordingSummarizer();
+    const beforeCompaction: Array<{ roomId: string; throughSeq: number }> = [];
     const engine = new RoomContextEngine({
       store: fixture.store,
       summarizer,
       maxChars: 10_000,
       maxCompactionInputChars: 20_000,
       maxSummaryChars: 500,
-      manualRetainMessages: 4
+      manualRetainMessages: 4,
+      beforeCompaction(input) {
+        beforeCompaction.push({ roomId: input.roomId, throughSeq: input.throughSeq });
+      }
     });
 
     const before = engine.inspectUsage("room:main");
@@ -80,6 +84,9 @@ describe("RoomContextEngine", () => {
     expect(summarizer.calls).toHaveLength(1);
     expect(summarizer.calls[0]!.messages).toHaveLength(12);
     expect(summarizer.calls[0]!.messages.at(-1)?.eventId).toBe("evt_manual_context_11");
+    expect(beforeCompaction).toEqual([
+      { roomId: "room:main", throughSeq: summarizer.calls[0]!.throughSeq }
+    ]);
     expect(JSON.stringify(summarizer.calls)).not.toContain("not context");
     expect(result.usage).toMatchObject({
       throughSeq: 17,

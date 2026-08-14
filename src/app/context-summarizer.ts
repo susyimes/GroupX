@@ -4,6 +4,11 @@ import type { GroupXConfig } from "../config.js";
 import { createCorrelationId, createId } from "../core/envelope.js";
 import { GroupXError, toGroupXError } from "../core/errors.js";
 import type {
+  AgentDatedMemorySummarizer,
+  AgentDatedMemorySummaryRequest,
+  AgentDatedMemorySummaryResult
+} from "../memory/dated-memory-engine.js";
+import type {
   RoomCompactionRequest,
   RoomCompactionResult,
   RoomContextSummarizer
@@ -30,6 +35,12 @@ export interface FirstAvailableAgentSummarizerOptions {
     nextDelayMs?: number;
     errorCode?: string;
   }) => void | Promise<void>;
+}
+
+export interface OwningAgentDatedMemorySummarizerOptions {
+  config: Pick<GroupXConfig, "agents" | "timeouts">;
+  primaryAdapters: AdapterRegistry;
+  adapterFactory?: typeof createStructuredAgentAdapter;
 }
 
 function waitForRetry(delayMs: number, signal: AbortSignal): Promise<void> {
@@ -91,6 +102,41 @@ function deltaText(event: NativeEvent): string {
   if (typeof payload.text === "string") return payload.text;
   if (typeof payload.content === "string") return payload.content;
   return "";
+}
+
+function boundedMemoryPart(value: string, maxChars = 32_768): string {
+  if (value.length <= maxChars) return value;
+  const marker = "\n[…truncated by GroupX for dated-memory rollup]";
+  return `${value.slice(0, Math.max(0, maxChars - marker.length))}${marker}`;
+}
+
+function datedMemoryPrompt(input: AgentDatedMemorySummaryRequest): string {
+  const prior = input.previousMemory
+    ? `\n[existing_daily_memory id=${input.previousMemory.memoryId}]\n${input.previousMemory.content}\n[/existing_daily_memory]\n`
+    : "";
+  const turns = input.sources
+    .map(
+      (source) =>
+        `[successful_turn id=${source.turnId} at=${source.terminalAt}]\n[current_message]\n${boundedMemoryPart(source.currentMessage)}\n[/current_message]\n[final_response]\n${boundedMemoryPart(source.finalResponse)}\n[/final_response]\n[/successful_turn]`
+    )
+    .join("\n\n");
+  return `You are updating your own private GroupX dated working memory for ${input.localDate}.
+
+Produce a concise semantic rollup of only durable information worth carrying into your later work:
+- important events, progress, decisions, corrections, preferences, constraints, and open loops;
+- preserve concrete identifiers, paths, commands, errors, and who requested or decided them when material;
+- merge with the existing daily memory instead of repeating it.
+
+Ignore greetings, acknowledgements, trivial tests, duplicated wording, and routine chatter. Do not invent facts, answer the conversation, use tools, write core identity/persona memory, or mention this summarization instruction. The input contains only current messages and final responses; reasoning and tool records are intentionally absent.
+
+If the entire batch adds no durable semantic value, return exactly ${input.noContentSentinel}. Otherwise return only concise Markdown, at most ${input.maxOutputChars} characters.
+room=${input.roomId}
+owner=${input.actorId}
+date=${input.localDate}
+${prior}
+[new_successful_turns]
+${turns}
+[/new_successful_turns]`;
 }
 
 /** Uses a short-lived, MCP-free session from the first healthy configured Agent. */
@@ -244,6 +290,108 @@ export class FirstAvailableAgentSummarizer implements RoomContextSummarizer {
         throw new GroupXError("PROTOCOL_INVALID_MESSAGE", "Compactor returned no summary text");
       }
       return output.trim();
+    } catch (error) {
+      promptError = error;
+      throw toGroupXError(error, "TURN_INTERRUPTED");
+    } finally {
+      if (session !== undefined) {
+        try {
+          await adapter.close(session);
+        } catch (closeError) {
+          if (promptError === undefined) throw closeError;
+        }
+      }
+    }
+  }
+}
+
+/** Uses only the owning Agent; another Agent never impersonates its private daily history. */
+export class OwningAgentDatedMemorySummarizer implements AgentDatedMemorySummarizer {
+  readonly #config: OwningAgentDatedMemorySummarizerOptions["config"];
+  readonly #primaryAdapters: AdapterRegistry;
+  readonly #factory: NonNullable<OwningAgentDatedMemorySummarizerOptions["adapterFactory"]>;
+
+  constructor(options: OwningAgentDatedMemorySummarizerOptions) {
+    this.#config = options.config;
+    this.#primaryAdapters = options.primaryAdapters;
+    this.#factory = options.adapterFactory ?? createStructuredAgentAdapter;
+  }
+
+  async summarize(input: AgentDatedMemorySummaryRequest): Promise<AgentDatedMemorySummaryResult> {
+    input.signal.throwIfAborted();
+    if (!input.actorId.startsWith("agent:")) {
+      throw new GroupXError(
+        "PROTOCOL_INVALID_MESSAGE",
+        "Dated-memory owner must be an Agent actor"
+      );
+    }
+    const agentId = input.actorId.slice("agent:".length);
+    const configured = this.#config.agents[agentId];
+    if (!configured?.enabled) {
+      throw new GroupXError(
+        "SESSION_NOT_AVAILABLE",
+        "Dated-memory owner is not an enabled configured Agent"
+      );
+    }
+    const primary = this.#primaryAdapters.get(agentId);
+    const health = primary.health();
+    if (
+      !health.nativeSessionAvailable ||
+      (health.status !== "ready" && health.status !== "degraded")
+    ) {
+      throw new GroupXError(
+        "SESSION_NOT_AVAILABLE",
+        "Dated-memory owner is not currently available"
+      );
+    }
+
+    const adapter = this.#factory(agentId, configured.driver, this.#config.timeouts);
+    let session: NativeSession | undefined;
+    let terminal: NativeEvent["type"] | undefined;
+    let output = "";
+    let promptError: unknown;
+    try {
+      session = await adapter.start({
+        command: configured.command.executable,
+        prefixArgs: configured.command.prefixArgs,
+        cwd: configured.cwd,
+        instanceId: createId(`dated_memory_instance_${agentId}`),
+        bindingId: createId(`dated_memory_binding_${agentId}`)
+      });
+      for await (const event of adapter.prompt(session, {
+        turnId: createId("dated_memory_turn"),
+        content: datedMemoryPrompt(input),
+        correlationId: createCorrelationId(),
+        signal: input.signal
+      })) {
+        if (event.type === "content.delta") output += deltaText(event);
+        if (TERMINAL_TYPES.has(event.type)) {
+          terminal = event.type;
+          if (event.type === "turn.completed" && output.length === 0) {
+            output = deltaText(event);
+          }
+        }
+      }
+      if (terminal !== "turn.completed") {
+        throw new GroupXError(
+          "TURN_INTERRUPTED",
+          `Dated-memory rollup ended without completion (${terminal ?? "no terminal"})`
+        );
+      }
+      const content = output.trim();
+      if (content.length === 0) {
+        throw new GroupXError(
+          "PROTOCOL_INVALID_MESSAGE",
+          "Dated-memory owner returned no rollup result"
+        );
+      }
+      if (content.length > input.maxOutputChars) {
+        throw new GroupXError(
+          "PROTOCOL_INVALID_MESSAGE",
+          "Dated-memory owner exceeded the requested output budget"
+        );
+      }
+      return { content, generatorActorId: primary.actorId };
     } catch (error) {
       promptError = error;
       throw toGroupXError(error, "TURN_INTERRUPTED");

@@ -204,6 +204,7 @@ function createFixture(input: {
   nativeCancelTimeoutMs?: number;
   contextProvider?: BrokerContextProvider;
   contextController?: BrokerDependencies["contextController"];
+  datedMemoryController?: BrokerDependencies["datedMemoryController"];
   turnLifecycle?: BrokerTurnLifecycle;
   publish?: (event: GroupXEnvelope) => void | Promise<void>;
   selectedTransport?: "direct" | "structured";
@@ -256,6 +257,9 @@ function createFixture(input: {
     ...(input.contextController === undefined
       ? {}
       : { contextController: input.contextController }),
+    ...(input.datedMemoryController === undefined
+      ? {}
+      : { datedMemoryController: input.datedMemoryController }),
     ...(input.turnLifecycle === undefined ? {} : { turnLifecycle: input.turnLifecycle }),
     ...(input.agentController === undefined ? {} : { agentController: input.agentController }),
     clock: { now: () => "2026-08-11T00:00:02.000Z" },
@@ -469,7 +473,14 @@ describe.sequential("GroupXBroker acceptance, dispatch and terminal semantics", 
   });
 
   it("broadcasts deltas transiently and stores a single final semantic response", async () => {
-    const fixture = createFixture();
+    const datedRollups: unknown[] = [];
+    const fixture = createFixture({
+      datedMemoryController: {
+        noteCompleted(record) {
+          datedRollups.push(record);
+        }
+      }
+    });
     fixture.adapters.codex.handler = async function* (_session, input) {
       yield nativeEvent("codex", "turn.started", {}, `${input.turnId}:start`);
       yield nativeEvent("codex", "content.delta", { text: "ab" }, `${input.turnId}:1`);
@@ -569,6 +580,10 @@ describe.sequential("GroupXBroker acceptance, dispatch and terminal semantics", 
     );
     expect(responses).toHaveLength(1);
     expect(responses[0]?.body).toMatchObject({ content: "abcd" });
+    expect(datedRollups).toEqual([
+      expect.objectContaining({ actorId: "agent:codex", pendingTurns: 1 })
+    ]);
+    expect(read.events.filter((event) => event.type === "memory.remembered")).toHaveLength(0);
     expect(reasoningRecords[0]!.seq).toBeLessThan(durableToolProgress[0]!.seq!);
     expect(durableToolProgress[1]!.seq).toBeLessThan(responses[0]!.seq!);
   });

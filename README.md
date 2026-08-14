@@ -40,7 +40,7 @@ GroupX 是一个只监听本机 loopback 的多 Agent 群聊 Broker。用户从�
 - **Agent 主动互调**：Structured Agent 可通过 GroupX MCP 使用 `send`、`ask` 和 `read`。
 - **单房间上下文引擎**：输入区右上角显示当前字符预算，支持自动和手动滚动压缩；完整 transcript 不会被删除。
 - **公共记忆**：用户显式固定给整个房间的事实、决定、偏好、指令、约束或备注。
-- **两层 Agent 记忆**：每个 Agent 拥有主动维护的核心记忆，以及成功回合后自动生成、按日期展示的私有记忆。
+- **两层 Agent 记忆**：每个 Agent 拥有主动维护的核心记忆，以及把成功回合批量整理成每日一条的私有工作记忆。
 - **会话恢复与故障收敛**：原生 session 支持 resume/load；可能已送达的业务 Prompt 不会自动重放。
 
 ## 0.1.10 更新
@@ -58,9 +58,9 @@ GroupX 是一个只监听本机 loopback 的多 Agent 群聊 Broker。用户从�
 ## 0.1.8 更新
 
 - 把上下文用量与“压缩会话”入口移到输入框右上角；默认 Context Packet 上限为 `256,000` 字符，约 `75%` 时触发滚动摘要。
-- 新增 Agent `core | dated` 两层记忆，SQLite schema 升级到 v6；旧 Agent 记忆保守迁移为 core。
+- 新增 Agent `core | dated` 两层记忆；当前 SQLite schema v7 会把成功回合先登记为可恢复来源，再批量生成每日 rollup。
 - 新增 `core_memory_remember` MCP 工具，调用方只能写自己绑定身份的核心记忆。
-- 成功 Turn 自动生成日期记忆，内容只来自当前用户消息与最终回复，并限制在 32K 字符以内。
+- 日期记忆只消费成功 Turn 的当前消息与最终回复；达到 8 回合、约 16K 字符、日期切换或房间压缩边界时，在 5 分钟安静窗口后由所属 Agent 生成最多 8K 字符的同日 rollup。
 - 推理、工具、stderr 与原生 payload 不进入 Context Packet、回复链、房间压缩或自动记忆。
 - Agent 设置页现在分别管理核心记忆和按日期自动记忆；公共记忆继续位于房间左侧。
 
@@ -109,11 +109,13 @@ GroupX 当前保持单房间结构，房间 ID 为 `room:main`。
 | --- | --- | --- | --- |
 | 公共记忆 | 用户显式固定 | 是 | 对房间内所有 Agent 可见 |
 | Agent 核心记忆 | Agent 调用 `core_memory_remember`，或用户在 Agent 设置维护 | 仅对应 Agent | 少量、长期、主动筛选 |
-| Agent 日期记忆 | 成功 Turn 自动生成 | 仅对应 Agent | 当前消息 + 最终回复，按日期展示 |
+| Agent 日期记忆 | 成功 Turn 先登记，后台批量整理 | 仅对应 Agent | 每日一条语义 rollup；同日新批次原子替换旧版本 |
 | 房间滚动摘要 | 上下文引擎自动或用户手动压缩 | 是 | 替代较早 transcript 进入后续 Context Packet |
 | 推理与工具记录 | Adapter 事件聚合 | 否 | 只用于本地时间线回放和审计 |
 
 上下文用量是 **GroupX Context Packet 的字符估算**，不是模型 token 计数。压缩只改变后续输入的构造方式，完整消息和 durable 事件仍保留在 SQLite。
+
+日期记忆整理不阻塞正常回复。所属 Agent 暂时不可用或整理失败时，来源检查点会留在 SQLite 并延后重试；不会改写已完成 Turn，也不会让其他 Agent 代写其个人工作记忆。问候、确认和测试等没有长期价值的批次可以只推进检查点而不生成 MemoryRecord。
 
 ## Agent 配置
 

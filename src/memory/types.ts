@@ -105,7 +105,7 @@ export interface ContextPacketSections {
   observedIdentity: IdentityContextEntry[];
   /** Stable memory explicitly curated by the target Agent or user. */
   agentCoreMemory: ContextEntry[];
-  /** Automatic successful-Turn journal, isolated to the target Agent. */
+  /** Automatic per-day semantic rollups, isolated to the target Agent. */
   agentDatedMemory: ContextEntry[];
   publicMemory: ContextEntry[];
   /** At most one persisted cumulative room checkpoint. */

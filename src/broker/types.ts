@@ -7,6 +7,7 @@ import type {
 import type { GroupXEnvelope } from "../core/envelope.js";
 import type {
   AcceptMessageLimits,
+  AgentDatedMemoryRollupRecord,
   ClaimedTurn,
   CreateIdentityInput,
   CreateMemoryInput,
@@ -70,6 +71,11 @@ export interface BrokerContextController {
   compactNow(roomId: string): Promise<import("../memory/types.js").RoomContextCompactionResult>;
 }
 
+export interface BrokerDatedMemoryController {
+  /** Schedules best-effort rollup work after a successful terminal commit. */
+  noteCompleted(record: AgentDatedMemoryRollupRecord): void;
+}
+
 export interface BrokerEventPublisher {
   publish(envelope: GroupXEnvelope): void | Promise<void>;
 }
@@ -106,6 +112,7 @@ export interface BrokerErrorContext {
     | "publish"
     | "dispatch"
     | "context"
+    | "memory"
     | "restart"
     | "recovery";
   actorId?: string;
@@ -120,6 +127,7 @@ export interface BrokerDependencies {
   agentController?: BrokerAgentController;
   contextProvider?: BrokerContextProvider;
   contextController?: BrokerContextController;
+  datedMemoryController?: BrokerDatedMemoryController;
   turnLifecycle?: BrokerTurnLifecycle;
   acceptMessageLimits?: AcceptMessageLimits;
   selectedTransport: RuntimeTransport;

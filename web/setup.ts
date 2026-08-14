@@ -294,7 +294,7 @@ function renderAgentMemoryCard(card: HTMLElement, agent: AgentDraft): void {
   } else if (records.length === 0) {
     status.textContent = "还没有核心记忆或自动日期记忆。";
   } else {
-    status.textContent = "核心记忆长期保留；成功回合会自动生成日期记忆。两者都只进入这个 Agent 的上下文。";
+    status.textContent = "核心记忆长期保留；成功回合会在安静窗口后批量整理为每日记忆。两者都只进入这个 Agent 的上下文。";
   }
 
   const appendRecord = (

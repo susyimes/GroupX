@@ -328,9 +328,8 @@ export interface TerminalTurnResult {
   reasoningEvent?: StoredEventRecord;
   toolProgressEvents?: StoredEventRecord[];
   responseEvent?: StoredEventRecord;
-  /** Automatic per-Agent dated memory written in the same terminal transaction. */
-  datedMemory?: MemoryRecord;
-  datedMemoryEvent?: StoredEventRecord;
+  /** Durable rollup source/checkpoint registered without blocking the business Turn. */
+  datedMemoryRollup?: AgentDatedMemoryRollupRecord;
   terminalEvent: StoredEventRecord;
 }
 
@@ -495,6 +494,71 @@ export interface MemoryQuery {
   limit?: number;
 }
 
+/** One recoverable per-room/per-Agent/per-local-date rollup checkpoint. */
+export interface AgentDatedMemoryRollupRecord {
+  roomId: string;
+  actorId: string;
+  localDate: string;
+  memoryId?: string;
+  summarizedThroughSeq: number;
+  pendingThroughSeq?: number;
+  pendingTurns: number;
+  pendingChars: number;
+  firstPendingAt?: string;
+  lastPendingAt?: string;
+  failureCount: number;
+  lastAttemptAt?: string;
+  nextAttemptAt?: string;
+  lastErrorCode?: string;
+  updatedAt: string;
+}
+
+/** Bounded semantic input for one successful Turn; reasoning/tool records are never joined. */
+export interface AgentDatedMemorySourceRecord {
+  turnId: string;
+  roomId: string;
+  actorId: string;
+  localDate: string;
+  sourceEventId: string;
+  sourceSeq: number;
+  responseEventId: string;
+  responseSeq: number;
+  currentMessage: string;
+  finalResponse: string;
+  sourceChars: number;
+  terminalAt: string;
+  processedAt?: string;
+  memoryId?: string;
+}
+
+export interface CommitAgentDatedMemoryRollupInput {
+  roomId: string;
+  actorId: string;
+  localDate: string;
+  /** Omit only when the date has no generated memory yet. */
+  expectedMemoryId?: string;
+  selectedTurnIds: readonly string[];
+  /** Empty means the batch was intentionally checkpointed as semantically trivial. */
+  content: string;
+  generatedAt?: string;
+}
+
+export interface CommitAgentDatedMemoryRollupResult {
+  rollup: AgentDatedMemoryRollupRecord;
+  memory?: MemoryRecord;
+  event?: StoredEventRecord;
+}
+
+export interface RecordAgentDatedMemoryRollupFailureInput {
+  roomId: string;
+  actorId: string;
+  localDate: string;
+  expectedMemoryId?: string;
+  errorCode: string;
+  attemptedAt?: string;
+  nextAttemptAt: string;
+}
+
 export interface IdentityRecord {
   identityId: string;
   subjectActorId: string;
@@ -646,6 +710,29 @@ export interface GroupXStore {
   ): TerminalTurnResult;
   saveTurnPartialText(turnId: string, partialText: string): TurnRecord;
   terminalizeTurn(input: TerminalTurnInput): TerminalTurnResult;
+  getAgentDatedMemoryRollup(input: {
+    roomId: string;
+    actorId: string;
+    localDate: string;
+  }): AgentDatedMemoryRollupRecord | undefined;
+  listAgentDatedMemoryRollups(input?: {
+    roomId?: string;
+    actorId?: string;
+    pendingOnly?: boolean;
+  }): AgentDatedMemoryRollupRecord[];
+  listAgentDatedMemorySources(input: {
+    roomId: string;
+    actorId: string;
+    localDate: string;
+    pendingOnly?: boolean;
+    limit?: number;
+  }): AgentDatedMemorySourceRecord[];
+  commitAgentDatedMemoryRollup(
+    input: CommitAgentDatedMemoryRollupInput
+  ): CommitAgentDatedMemoryRollupResult;
+  recordAgentDatedMemoryRollupFailure(
+    input: RecordAgentDatedMemoryRollupFailureInput
+  ): AgentDatedMemoryRollupRecord;
   getDeliveryCursor(actorId: string, roomId: string): DeliveryCursorRecord | undefined;
   getActiveSummary(roomId: string, throughSeq?: number): SummaryRecord | undefined;
   listSummaries(input: {

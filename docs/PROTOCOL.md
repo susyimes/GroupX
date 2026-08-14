@@ -151,7 +151,7 @@ adapter.heartbeat
 
 该事件有 durable `seq`，可以随 SQLite cursor 在刷新或重连后回放。`turn.reasoning.recorded` 与 `tool.progress.recorded` 都只服务本地时间线与审计，不属于 message、memory、identity 或 summary；Context Packet、reply chain、房间压缩与自动记忆只能消费明确的 `message.created`/记忆数据，不得读取两类记录正文。
 
-每个 Turn 恰好有一个 durable terminal event。可选 reasoning record、tool progress records、成功 response message、terminal event、成功 Turn 的 Agent dated memory，以及 Turn/attempt terminal 更新在同一事务提交，durable 顺序固定为 reasoning → tool progress → response（仅成功）→ terminal → dated memory（仅成功）。dated memory 只投影当前消息与最终回复，不读取 reasoning/tool。若崩溃发生在 final commit 前，可保存已合并的 partial text 并将 Turn 标记为 `interrupted`，但不能把 partial text 伪装成 completed message。
+每个 Turn 恰好有一个 durable terminal event。可选 reasoning record、tool progress records、成功 response message、terminal event、Turn/attempt terminal 更新，以及一条很小的 dated-memory source/checkpoint 登记在同一事务提交；durable 事件顺序固定为 reasoning → tool progress → response（仅成功）→ terminal。checkpoint 只引用当前消息与最终回复，不产生 MemoryRecord/event，也不读取 reasoning/tool。后台 rollup 成功后才另行提交 `memory.remembered|superseded`。若崩溃发生在 final commit 前，可保存已合并的 partial text 并将 Turn 标记为 `interrupted`，但不能把 partial text 伪装成 completed message。
 
 ## 3. 发送者身份合同
 
@@ -449,7 +449,7 @@ POST /api/identity/:identityId/retract
 
 Web identity 写入请求包含 `clientCommandId`、`subjectActorId`、`kind`、`content` 和可选 `sourceEventId`；author 固定为 `user:web`。supersede 追加新版本并引用旧 identity ID，retract 写 tombstone。任何请求都不能指定 author/from。
 
-Web UI 不再暴露 identity 写入面板；稳定 Agent 身份由 `/setup` 写入对应 Agent 配置。`/api/identity` 与 MCP identity 工具仅作为兼容接口保留。`/api/memory` 同时承载 room scope 的公共记忆与 agent scope 的两层记忆；`agentMemoryType=core|dated` 只允许出现在 Agent scope。Agent 设置把 core 独立展示并允许维护，把 dated 按 `createdAt` 日期分组展示。成功 Turn 自动写 dated；其他状态不写。
+Web UI 不再暴露 identity 写入面板；稳定 Agent 身份由 `/setup` 写入对应 Agent 配置。`/api/identity` 与 MCP identity 工具仅作为兼容接口保留。`/api/memory` 同时承载 room scope 的公共记忆与 agent scope 的两层记忆；`agentMemoryType=core|dated` 只允许出现在 Agent scope。Agent 设置把 core 独立展示并允许维护，把 dated 按 `createdAt` 日期分组展示。成功 Turn 只登记 rollup source；达到批次、日期或压缩边界后由所属 Agent 生成 dated，其他 Turn 状态不登记。
 
 ### 10.5 单房间上下文用量与显式压缩
 

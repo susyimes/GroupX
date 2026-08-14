@@ -1,4 +1,4 @@
-export const CURRENT_SCHEMA_VERSION = 6;
+export const CURRENT_SCHEMA_VERSION = 7;
 
 export interface Migration {
   version: number;
@@ -370,6 +370,62 @@ export const MIGRATIONS: readonly Migration[] = [
       BEGIN
         SELECT RAISE(ABORT, 'agent_memory_type must match agent scope');
       END;
+    `
+  },
+  {
+    version: 7,
+    name: "batch_agent_dated_memory",
+    sql: `
+      CREATE TABLE agent_dated_memory_rollups (
+        room_id TEXT NOT NULL,
+        actor_id TEXT NOT NULL REFERENCES actors(actor_id),
+        local_date TEXT NOT NULL,
+        memory_id TEXT REFERENCES memory_records(memory_id),
+        summarized_through_seq INTEGER NOT NULL DEFAULT 0
+          CHECK (summarized_through_seq >= 0),
+        pending_through_seq INTEGER CHECK (
+          pending_through_seq IS NULL OR pending_through_seq >= 0
+        ),
+        pending_turns INTEGER NOT NULL DEFAULT 0 CHECK (pending_turns >= 0),
+        pending_chars INTEGER NOT NULL DEFAULT 0 CHECK (pending_chars >= 0),
+        first_pending_at TEXT,
+        last_pending_at TEXT,
+        failure_count INTEGER NOT NULL DEFAULT 0 CHECK (failure_count >= 0),
+        last_attempt_at TEXT,
+        next_attempt_at TEXT,
+        last_error_code TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(room_id, actor_id, local_date),
+        CHECK (
+          (pending_turns = 0 AND pending_chars = 0 AND pending_through_seq IS NULL
+            AND first_pending_at IS NULL AND last_pending_at IS NULL)
+          OR
+          (pending_turns > 0 AND pending_through_seq IS NOT NULL
+            AND first_pending_at IS NOT NULL AND last_pending_at IS NOT NULL)
+        )
+      );
+
+      CREATE TABLE agent_dated_memory_sources (
+        turn_id TEXT PRIMARY KEY REFERENCES turns(turn_id),
+        room_id TEXT NOT NULL,
+        actor_id TEXT NOT NULL REFERENCES actors(actor_id),
+        local_date TEXT NOT NULL,
+        source_event_id TEXT NOT NULL REFERENCES events(event_id),
+        source_seq INTEGER NOT NULL CHECK (source_seq >= 0),
+        response_event_id TEXT NOT NULL UNIQUE REFERENCES events(event_id),
+        response_seq INTEGER NOT NULL CHECK (response_seq >= 0),
+        source_chars INTEGER NOT NULL CHECK (source_chars >= 0),
+        terminal_at TEXT NOT NULL,
+        processed_at TEXT,
+        memory_id TEXT REFERENCES memory_records(memory_id),
+        FOREIGN KEY(room_id, actor_id, local_date)
+          REFERENCES agent_dated_memory_rollups(room_id, actor_id, local_date)
+      );
+
+      CREATE INDEX agent_dated_memory_rollups_pending_idx
+        ON agent_dated_memory_rollups(room_id, pending_turns, next_attempt_at, local_date);
+      CREATE INDEX agent_dated_memory_sources_pending_idx
+        ON agent_dated_memory_sources(room_id, actor_id, local_date, processed_at, response_seq);
     `
   }
 ];

@@ -19,11 +19,15 @@ import type {
   AcceptMessageOutcome,
   AcceptMessageResult,
   ActorRecord,
+  AgentDatedMemoryRollupRecord,
+  AgentDatedMemorySourceRecord,
   AgentInstanceRecord,
   BeginClientCommandInput,
   BeginClientCommandOutcome,
   ClaimedTurn,
   ClientCommandRecord,
+  CommitAgentDatedMemoryRollupInput,
+  CommitAgentDatedMemoryRollupResult,
   CompleteClientCommandInput,
   CreateAgentInstanceInput,
   CreateIdentityInput,
@@ -47,6 +51,7 @@ import type {
   MutateIdentityInput,
   MutateMemoryInput,
   RecoveryResult,
+  RecordAgentDatedMemoryRollupFailureInput,
   ReplaceRoomSummaryInput,
   RoomBootstrapSnapshot,
   RuntimeRecoveryResult,
@@ -80,30 +85,21 @@ const TRANSIENT_EVENT_TYPES = new Set([
   "adapter.heartbeat"
 ]);
 const WAITS_FOR_CHILDREN_COMMAND_TYPES = new Set(["mcp.ask"]);
-const MAX_DATED_MEMORY_CHARS = 32_768;
-const MAX_DATED_MEMORY_INPUT_CHARS = 8_192;
-
-function truncateDatedMemoryPart(value: string, maxChars: number): string {
-  if (value.length <= maxChars) return value;
-  const marker = "\n[…truncated by GroupX]";
-  return `${value.slice(0, Math.max(0, maxChars - marker.length))}${marker}`;
-}
-
-function datedMemoryContent(input: string, response: string): string {
-  const inputText = truncateDatedMemoryPart(input, MAX_DATED_MEMORY_INPUT_CHARS);
-  const framing = "[current_message]\n\n\n[agent_response]\n";
-  const responseBudget = Math.max(
-    0,
-    MAX_DATED_MEMORY_CHARS - framing.length - inputText.length
-  );
-  return `[current_message]\n${inputText}\n\n[agent_response]\n${truncateDatedMemoryPart(
-    response,
-    responseBudget
-  )}`;
-}
+const MAX_AGENT_DATED_MEMORY_CHARS = 8_000;
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function localDateKey(occurredAt: string): string {
+  const date = new Date(occurredAt);
+  if (Number.isNaN(date.getTime())) {
+    throw new GroupXError("INVALID_ENVELOPE", "occurredAt must be a valid timestamp");
+  }
+  const year = String(date.getFullYear()).padStart(4, "0");
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function jsonText(value: unknown): string {
@@ -412,6 +408,65 @@ function mapMemory(row: Row): MemoryRecord {
   for (const [key, value] of Object.entries(optionalFields)) {
     if (value !== undefined) Object.assign(record, { [key]: value });
   }
+  return record;
+}
+
+function mapAgentDatedMemoryRollup(row: Row): AgentDatedMemoryRollupRecord {
+  const record: AgentDatedMemoryRollupRecord = {
+    roomId: requiredString(row.room_id, "room_id"),
+    actorId: requiredString(row.actor_id, "actor_id"),
+    localDate: requiredString(row.local_date, "local_date"),
+    summarizedThroughSeq: requiredNumber(row.summarized_through_seq, "summarized_through_seq"),
+    pendingTurns: requiredNumber(row.pending_turns, "pending_turns"),
+    pendingChars: requiredNumber(row.pending_chars, "pending_chars"),
+    failureCount: requiredNumber(row.failure_count, "failure_count"),
+    updatedAt: requiredString(row.updated_at, "updated_at")
+  };
+  const memoryId = optionalString(row.memory_id);
+  const pendingThroughSeq =
+    typeof row.pending_through_seq === "number" ? row.pending_through_seq : undefined;
+  const firstPendingAt = optionalString(row.first_pending_at);
+  const lastPendingAt = optionalString(row.last_pending_at);
+  const lastAttemptAt = optionalString(row.last_attempt_at);
+  const nextAttemptAt = optionalString(row.next_attempt_at);
+  const lastErrorCode = optionalString(row.last_error_code);
+  if (memoryId !== undefined) record.memoryId = memoryId;
+  if (pendingThroughSeq !== undefined) record.pendingThroughSeq = pendingThroughSeq;
+  if (firstPendingAt !== undefined) record.firstPendingAt = firstPendingAt;
+  if (lastPendingAt !== undefined) record.lastPendingAt = lastPendingAt;
+  if (lastAttemptAt !== undefined) record.lastAttemptAt = lastAttemptAt;
+  if (nextAttemptAt !== undefined) record.nextAttemptAt = nextAttemptAt;
+  if (lastErrorCode !== undefined) record.lastErrorCode = lastErrorCode;
+  return record;
+}
+
+function mapAgentDatedMemorySource(row: Row): AgentDatedMemorySourceRecord {
+  const sourceBody = parseJson<Record<string, unknown>>(row.source_body_json, {});
+  const responseBody = parseJson<Record<string, unknown>>(row.response_body_json, {});
+  if (typeof sourceBody.content !== "string" || typeof responseBody.content !== "string") {
+    throw new GroupXError(
+      "STORE_UNAVAILABLE",
+      "A dated-memory source is missing its message content"
+    );
+  }
+  const record: AgentDatedMemorySourceRecord = {
+    turnId: requiredString(row.turn_id, "turn_id"),
+    roomId: requiredString(row.room_id, "room_id"),
+    actorId: requiredString(row.actor_id, "actor_id"),
+    localDate: requiredString(row.local_date, "local_date"),
+    sourceEventId: requiredString(row.source_event_id, "source_event_id"),
+    sourceSeq: requiredNumber(row.source_seq, "source_seq"),
+    responseEventId: requiredString(row.response_event_id, "response_event_id"),
+    responseSeq: requiredNumber(row.response_seq, "response_seq"),
+    currentMessage: sourceBody.content,
+    finalResponse: responseBody.content,
+    sourceChars: requiredNumber(row.source_chars, "source_chars"),
+    terminalAt: requiredString(row.terminal_at, "terminal_at")
+  };
+  const processedAt = optionalString(row.processed_at);
+  const memoryId = optionalString(row.memory_id);
+  if (processedAt !== undefined) record.processedAt = processedAt;
+  if (memoryId !== undefined) record.memoryId = memoryId;
   return record;
 }
 
@@ -2459,8 +2514,7 @@ export class SqliteGroupXStore implements GroupXStore {
       }
     });
 
-    let datedMemory: MemoryRecord | undefined;
-    let datedMemoryEvent: StoredEventRecord | undefined;
+    let datedMemoryRollup: AgentDatedMemoryRollupRecord | undefined;
     if (input.status === "completed" && responseEvent !== undefined && attempt !== undefined) {
       const sourceBody = parseJson<Record<string, unknown>>(source.body_json, {});
       if (typeof sourceBody.content !== "string") {
@@ -2469,35 +2523,70 @@ export class SqliteGroupXStore implements GroupXStore {
           "Completed Turn source message has no string content"
         );
       }
-      datedMemory = this.#insertMemoryUnsafe({
-        scopeType: "agent",
-        scopeId: turn.targetActorId,
-        agentMemoryType: "dated",
-        kind: "note",
-        authorActorId: turn.targetActorId,
-        subjectActorId: turn.targetActorId,
-        content: datedMemoryContent(sourceBody.content, input.content ?? ""),
-        sourceEventId: responseEvent.eventId,
-        sourceKind: "automatic_turn",
-        createdAt: occurredAt
-      });
-      datedMemoryEvent = this.#insertEventUnsafe({
-        roomId: requiredString(source.room_id, "room_id"),
-        eventType: "memory.remembered",
+      const roomId = requiredString(source.room_id, "room_id");
+      const localDate = localDateKey(occurredAt);
+      const sourceSeq = requiredNumber(source.seq, "seq");
+      const sourceChars = sourceBody.content.length + (input.content ?? "").length;
+      this.#database
+        .prepare(`
+          INSERT INTO agent_dated_memory_rollups(
+            room_id, actor_id, local_date, memory_id, summarized_through_seq,
+            pending_through_seq, pending_turns, pending_chars, first_pending_at,
+            last_pending_at, failure_count, last_attempt_at, next_attempt_at,
+            last_error_code, updated_at
+          ) VALUES (?, ?, ?, NULL, 0, ?, 1, ?, ?, ?, 0, NULL, NULL, NULL, ?)
+          ON CONFLICT(room_id, actor_id, local_date) DO UPDATE SET
+            pending_through_seq = MAX(
+              COALESCE(agent_dated_memory_rollups.pending_through_seq, 0),
+              excluded.pending_through_seq
+            ),
+            pending_turns = agent_dated_memory_rollups.pending_turns + 1,
+            pending_chars = agent_dated_memory_rollups.pending_chars + excluded.pending_chars,
+            first_pending_at = COALESCE(
+              agent_dated_memory_rollups.first_pending_at,
+              excluded.first_pending_at
+            ),
+            last_pending_at = excluded.last_pending_at,
+            failure_count = 0,
+            last_attempt_at = NULL,
+            next_attempt_at = NULL,
+            last_error_code = NULL,
+            updated_at = excluded.updated_at
+        `)
+        .run(
+          roomId,
+          turn.targetActorId,
+          localDate,
+          responseEvent.seq,
+          sourceChars,
+          occurredAt,
+          occurredAt,
+          occurredAt
+        );
+      this.#database
+        .prepare(`
+          INSERT INTO agent_dated_memory_sources(
+            turn_id, room_id, actor_id, local_date, source_event_id, source_seq,
+            response_event_id, response_seq, source_chars, terminal_at,
+            processed_at, memory_id
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
+        `)
+        .run(
+          turn.turnId,
+          roomId,
+          turn.targetActorId,
+          localDate,
+          turn.sourceEventId,
+          sourceSeq,
+          responseEvent.eventId,
+          responseEvent.seq,
+          sourceChars,
+          occurredAt
+        );
+      datedMemoryRollup = this.#getAgentDatedMemoryRollupUnsafe({
+        roomId,
         actorId: turn.targetActorId,
-        instanceId: attempt.instanceId,
-        targets: [turn.targetActorId],
-        replyToEventId: responseEvent.eventId,
-        causationId: responseEvent.eventId,
-        correlationId: turn.rootCorrelationId,
-        occurredAt,
-        body: { record: datedMemory },
-        provenance: {
-          sourceKind: "adapter",
-          authorActorId: turn.targetActorId,
-          subjectActorId: turn.targetActorId,
-          sourceEventId: responseEvent.eventId
-        }
+        localDate
       });
     }
 
@@ -2541,9 +2630,302 @@ export class SqliteGroupXStore implements GroupXStore {
     if (reasoningEvent !== undefined) result.reasoningEvent = reasoningEvent;
     if (toolProgressEvents.length > 0) result.toolProgressEvents = toolProgressEvents;
     if (responseEvent !== undefined) result.responseEvent = responseEvent;
-    if (datedMemory !== undefined) result.datedMemory = datedMemory;
-    if (datedMemoryEvent !== undefined) result.datedMemoryEvent = datedMemoryEvent;
+    if (datedMemoryRollup !== undefined) result.datedMemoryRollup = datedMemoryRollup;
     return result;
+  }
+
+  #getAgentDatedMemoryRollupUnsafe(input: {
+    roomId: string;
+    actorId: string;
+    localDate: string;
+  }): AgentDatedMemoryRollupRecord | undefined {
+    const row = this.#database
+      .prepare(`
+        SELECT * FROM agent_dated_memory_rollups
+        WHERE room_id = ? AND actor_id = ? AND local_date = ?
+      `)
+      .get(input.roomId, input.actorId, input.localDate) as Row | undefined;
+    return row ? mapAgentDatedMemoryRollup(row) : undefined;
+  }
+
+  getAgentDatedMemoryRollup(input: {
+    roomId: string;
+    actorId: string;
+    localDate: string;
+  }): AgentDatedMemoryRollupRecord | undefined {
+    this.#assertOpen();
+    return this.#getAgentDatedMemoryRollupUnsafe(input);
+  }
+
+  listAgentDatedMemoryRollups(
+    input: { roomId?: string; actorId?: string; pendingOnly?: boolean } = {}
+  ): AgentDatedMemoryRollupRecord[] {
+    this.#assertOpen();
+    const clauses: string[] = [];
+    const parameters: unknown[] = [];
+    if (input.roomId !== undefined) {
+      clauses.push("room_id = ?");
+      parameters.push(input.roomId);
+    }
+    if (input.actorId !== undefined) {
+      clauses.push("actor_id = ?");
+      parameters.push(input.actorId);
+    }
+    if (input.pendingOnly === true) clauses.push("pending_turns > 0");
+    const rows = this.#database
+      .prepare(`
+        SELECT * FROM agent_dated_memory_rollups
+        ${clauses.length === 0 ? "" : `WHERE ${clauses.join(" AND ")}`}
+        ORDER BY local_date, actor_id, room_id
+      `)
+      .all(...parameters) as Row[];
+    return rows.map(mapAgentDatedMemoryRollup);
+  }
+
+  listAgentDatedMemorySources(input: {
+    roomId: string;
+    actorId: string;
+    localDate: string;
+    pendingOnly?: boolean;
+    limit?: number;
+  }): AgentDatedMemorySourceRecord[] {
+    this.#assertOpen();
+    const limit = boundedLimit(input.limit, 100);
+    const rows = this.#database
+      .prepare(`
+        SELECT source.*, source_event.body_json AS source_body_json,
+               response_event.body_json AS response_body_json
+        FROM agent_dated_memory_sources AS source
+        JOIN events AS source_event ON source_event.event_id = source.source_event_id
+        JOIN events AS response_event ON response_event.event_id = source.response_event_id
+        WHERE source.room_id = ? AND source.actor_id = ? AND source.local_date = ?
+          ${input.pendingOnly === false ? "" : "AND source.processed_at IS NULL"}
+        ORDER BY source.response_seq, source.turn_id
+        LIMIT ?
+      `)
+      .all(input.roomId, input.actorId, input.localDate, limit) as Row[];
+    return rows.map(mapAgentDatedMemorySource);
+  }
+
+  commitAgentDatedMemoryRollup(
+    input: CommitAgentDatedMemoryRollupInput
+  ): CommitAgentDatedMemoryRollupResult {
+    this.#assertOpen();
+    const selectedTurnIds = [...new Set(input.selectedTurnIds)];
+    if (
+      selectedTurnIds.length === 0 ||
+      selectedTurnIds.length !== input.selectedTurnIds.length ||
+      selectedTurnIds.some((turnId) => turnId.trim().length === 0)
+    ) {
+      throw new GroupXError(
+        "INVALID_ENVELOPE",
+        "A dated-memory rollup requires unique non-blank selected Turn ids"
+      );
+    }
+    const content = input.content.trim();
+    if (content.length > MAX_AGENT_DATED_MEMORY_CHARS) {
+      throw new GroupXError(
+        "INVALID_ENVELOPE",
+        `A dated-memory rollup exceeds ${MAX_AGENT_DATED_MEMORY_CHARS} characters`
+      );
+    }
+    const generatedAt = input.generatedAt ?? nowIso();
+    try {
+      return this.#withImmediateTransaction(() => {
+        const current = this.#getAgentDatedMemoryRollupUnsafe(input);
+        if (!current || current.pendingTurns === 0) {
+          throw new GroupXError("STORE_CONFLICT", "Dated-memory rollup has no pending Turns");
+        }
+        if (current.memoryId !== input.expectedMemoryId) {
+          throw new GroupXError(
+            "STORE_CONFLICT",
+            "Dated-memory rollup memory compare-and-set failed"
+          );
+        }
+
+        const placeholders = selectedTurnIds.map(() => "?").join(", ");
+        const rows = this.#database
+          .prepare(`
+            SELECT source.*, source_event.body_json AS source_body_json,
+                   response_event.body_json AS response_body_json
+            FROM agent_dated_memory_sources AS source
+            JOIN events AS source_event ON source_event.event_id = source.source_event_id
+            JOIN events AS response_event ON response_event.event_id = source.response_event_id
+            WHERE source.turn_id IN (${placeholders})
+              AND source.room_id = ? AND source.actor_id = ? AND source.local_date = ?
+              AND source.processed_at IS NULL
+            ORDER BY source.response_seq, source.turn_id
+          `)
+          .all(...selectedTurnIds, input.roomId, input.actorId, input.localDate) as Row[];
+        if (rows.length !== selectedTurnIds.length) {
+          throw new GroupXError(
+            "STORE_CONFLICT",
+            "Dated-memory rollup sources changed before commit"
+          );
+        }
+        const sources = rows.map(mapAgentDatedMemorySource);
+        const lastSource = sources.at(-1)!;
+
+        let memory: MemoryRecord | undefined;
+        let event: StoredEventRecord | undefined;
+        if (content.length > 0) {
+          const replacement: CreateMemoryInput = {
+            scopeType: "agent",
+            scopeId: input.actorId,
+            agentMemoryType: "dated",
+            kind: "summary",
+            authorActorId: input.actorId,
+            subjectActorId: input.actorId,
+            content,
+            sourceEventId: lastSource.responseEventId,
+            sourceKind: "automatic_rollup",
+            createdAt: lastSource.terminalAt
+          };
+          if (current.memoryId === undefined) {
+            memory = this.#insertMemoryUnsafe(replacement);
+          } else {
+            const previous = this.#getMemoryUnsafe(current.memoryId);
+            if (
+              previous?.status !== "active" ||
+              previous.scopeType !== "agent" ||
+              previous.scopeId !== input.actorId ||
+              previous.agentMemoryType !== "dated"
+            ) {
+              throw new GroupXError(
+                "STORE_CONFLICT",
+                "The active dated-memory rollup record changed before commit"
+              );
+            }
+            memory = this.#supersedeMemoryUnsafe(current.memoryId, replacement);
+          }
+          event = this.#insertEventUnsafe({
+            roomId: input.roomId,
+            eventType: current.memoryId === undefined ? "memory.remembered" : "memory.superseded",
+            actorId: input.actorId,
+            targets: [input.actorId],
+            replyToEventId: lastSource.responseEventId,
+            causationId: lastSource.responseEventId,
+            correlationId: createCorrelationId(),
+            occurredAt: generatedAt,
+            body: { record: memory },
+            provenance: {
+              sourceKind: "generated_summary",
+              authorActorId: input.actorId,
+              subjectActorId: input.actorId,
+              sourceEventId: lastSource.responseEventId,
+              labels: ["agent-dated-memory", input.localDate]
+            }
+          });
+        }
+
+        const processed = this.#database
+          .prepare(`
+            UPDATE agent_dated_memory_sources
+            SET processed_at = ?, memory_id = ?
+            WHERE turn_id IN (${placeholders}) AND processed_at IS NULL
+          `)
+          .run(generatedAt, memory?.memoryId ?? null, ...selectedTurnIds);
+        if (processed.changes !== selectedTurnIds.length) {
+          throw new GroupXError(
+            "STORE_CONFLICT",
+            "Dated-memory source checkpoint compare-and-set failed"
+          );
+        }
+
+        const pending = this.#database
+          .prepare(`
+            SELECT COUNT(*) AS pending_turns,
+                   COALESCE(SUM(source_chars), 0) AS pending_chars,
+                   MAX(response_seq) AS pending_through_seq,
+                   MIN(terminal_at) AS first_pending_at,
+                   MAX(terminal_at) AS last_pending_at
+            FROM agent_dated_memory_sources
+            WHERE room_id = ? AND actor_id = ? AND local_date = ?
+              AND processed_at IS NULL
+          `)
+          .get(input.roomId, input.actorId, input.localDate) as Row;
+        const pendingTurns = requiredNumber(pending.pending_turns, "pending_turns");
+        const pendingChars = requiredNumber(pending.pending_chars, "pending_chars");
+        const updated = this.#database
+          .prepare(`
+            UPDATE agent_dated_memory_rollups
+            SET memory_id = ?, summarized_through_seq = ?,
+                pending_through_seq = ?, pending_turns = ?, pending_chars = ?,
+                first_pending_at = ?, last_pending_at = ?, failure_count = 0,
+                last_attempt_at = ?, next_attempt_at = NULL, last_error_code = NULL,
+                updated_at = ?
+            WHERE room_id = ? AND actor_id = ? AND local_date = ?
+          `)
+          .run(
+            memory?.memoryId ?? current.memoryId ?? null,
+            Math.max(current.summarizedThroughSeq, lastSource.responseSeq),
+            pendingTurns === 0 ? null : pending.pending_through_seq,
+            pendingTurns,
+            pendingChars,
+            pendingTurns === 0 ? null : pending.first_pending_at,
+            pendingTurns === 0 ? null : pending.last_pending_at,
+            generatedAt,
+            generatedAt,
+            input.roomId,
+            input.actorId,
+            input.localDate
+          );
+        if (updated.changes !== 1) {
+          throw new GroupXError("STORE_CONFLICT", "Dated-memory rollup update failed");
+        }
+        const result: CommitAgentDatedMemoryRollupResult = {
+          rollup: this.#getAgentDatedMemoryRollupUnsafe(input)!
+        };
+        if (memory !== undefined) result.memory = memory;
+        if (event !== undefined) result.event = event;
+        return result;
+      });
+    } catch (error) {
+      this.#mapConstraint(error);
+    }
+  }
+
+  recordAgentDatedMemoryRollupFailure(
+    input: RecordAgentDatedMemoryRollupFailureInput
+  ): AgentDatedMemoryRollupRecord {
+    this.#assertOpen();
+    const attemptedAt = input.attemptedAt ?? nowIso();
+    try {
+      return this.#withImmediateTransaction(() => {
+        const current = this.#getAgentDatedMemoryRollupUnsafe(input);
+        if (!current || current.pendingTurns === 0) {
+          throw new GroupXError("STORE_CONFLICT", "Dated-memory rollup has no pending Turns");
+        }
+        if (current.memoryId !== input.expectedMemoryId) {
+          throw new GroupXError(
+            "STORE_CONFLICT",
+            "Dated-memory rollup failure checkpoint compare-and-set failed"
+          );
+        }
+        const updated = this.#database
+          .prepare(`
+            UPDATE agent_dated_memory_rollups
+            SET failure_count = failure_count + 1, last_attempt_at = ?,
+                next_attempt_at = ?, last_error_code = ?, updated_at = ?
+            WHERE room_id = ? AND actor_id = ? AND local_date = ?
+          `)
+          .run(
+            attemptedAt,
+            input.nextAttemptAt,
+            input.errorCode.slice(0, 128),
+            attemptedAt,
+            input.roomId,
+            input.actorId,
+            input.localDate
+          );
+        if (updated.changes !== 1) {
+          throw new GroupXError("STORE_CONFLICT", "Dated-memory failure checkpoint update failed");
+        }
+        return this.#getAgentDatedMemoryRollupUnsafe(input)!;
+      });
+    } catch (error) {
+      this.#mapConstraint(error);
+    }
   }
 
   getDeliveryCursor(actorId: string, roomId: string): DeliveryCursorRecord | undefined {
@@ -3146,6 +3528,13 @@ export class SqliteGroupXStore implements GroupXStore {
     if (updated.changes !== 1) {
       throw new GroupXError("STORE_CONFLICT", "Memory supersede compare-and-set failed");
     }
+    this.#database
+      .prepare(`
+        UPDATE agent_dated_memory_rollups
+        SET memory_id = ?, updated_at = ?
+        WHERE memory_id = ?
+      `)
+      .run(next.memoryId, next.createdAt, memoryId);
     return next;
   }
 
@@ -3171,6 +3560,13 @@ export class SqliteGroupXStore implements GroupXStore {
     if (result.changes !== 1) {
       throw new GroupXError("STORE_CONFLICT", "Memory retract compare-and-set failed");
     }
+    this.#database
+      .prepare(`
+        UPDATE agent_dated_memory_rollups
+        SET memory_id = NULL, updated_at = ?
+        WHERE memory_id = ?
+      `)
+      .run(retractedAt, memoryId);
     return this.#getMemoryUnsafe(memoryId)!;
   }
 

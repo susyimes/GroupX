@@ -60,7 +60,8 @@ export function toMemoryRecordContract(record: MemoryRecord): MemoryRecordContra
     record.sourceKind !== "web" &&
     record.sourceKind !== "mcp" &&
     record.sourceKind !== "generated_summary" &&
-    record.sourceKind !== "automatic_turn"
+    record.sourceKind !== "automatic_turn" &&
+    record.sourceKind !== "automatic_rollup"
   ) {
     throw new GroupXError("STORE_UNAVAILABLE", "Memory record has an invalid source kind");
   }

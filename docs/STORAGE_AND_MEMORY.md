@@ -29,7 +29,7 @@ SQLite/WAL 是 GroupX 唯一权威事实源。Broker 是唯一写入者。
 | tool progress records | 是 | 是 | terminal 时保存 Adapter 已投影的 started/completed；折叠回放，不进入上下文 |
 | public memory | 是 | 是 | 显式记忆、来源可追溯 |
 | per-Agent core memory | 是 | 是 | `scope_type=agent, agent_memory_type=core`；Agent 通过绑定工具主动写自己，Web 可维护 |
-| per-Agent dated memory | 是 | 是 | `scope_type=agent, agent_memory_type=dated`；成功 Turn 自动写，日期来自 `created_at` |
+| per-Agent dated memory | 是 | 是 | `scope_type=agent, agent_memory_type=dated`；成功 Turn 先登记，所属 Agent 批量生成每日 rollup |
 | identity memory | 是 | 是 | 群组层身份记录，不替换 CLI 原生身份 |
 | configured Agent identity | 配置 | 是 | 存在 `groupx.json`，每轮注入，不写入 memory 表 |
 | generated summary | 派生 | 是 | 标记 summary，可重新生成 |
@@ -328,6 +328,15 @@ summaries(
 
 摘要永远是派生数据。每个房间最多一条 active 累计摘要；滚动更新以 compare-and-set 把旧摘要标为 superseded 后再写入新摘要。删除/失效摘要不能删除原事件。
 
+### 3.12 agent_dated_memory_rollups / sources
+
+schema v7 新增两张内部派生状态表：
+
+- `agent_dated_memory_sources`：每个 completed Turn 一行，只引用该 Turn 的 source `message.created`、最终 response、两者字符数和本地日期；reasoning/tool/stderr/native payload 没有列，也不参与查询；
+- `agent_dated_memory_rollups`：按 `room_id + actor_id + local_date` 保存 active memory id、已覆盖 response seq、待处理回合/字符数、最后活动时间和重试检查点。
+
+这两张表不是第二份聊天正文。正文仍以 events 为事实源；sources 只保存外键和计数，rollup 可在崩溃后从外键重新构造。每个日期最多一条由引擎管理的 active dated MemoryRecord，同日后续批次通过 CAS/supersede 替换它。
+
 ## 4. 事务不变量
 
 ### 4.1 接受消息
@@ -351,12 +360,12 @@ Turn terminal transaction 先对 `terminal_event_id IS NULL` 和当前 non-termi
 2. 为已观察到的工具 started/completed 写入有界 `tool.progress.recorded` 投影；不保存未建模 native payload；
 3. 成功时插入唯一 response `message.created`；失败时不伪造 response；
 4. 以统一 idempotency key `turn:<turnId>:terminal` 插入唯一 durable terminal event，不论 event type 为 completed/failed/cancelled/interrupted；
-5. 成功时从 source `message.created` 和最终 response 构造一条有界 `agent_memory_type=dated` 记录，并追加 `memory.remembered`；不读取 reasoning/tool 记录；
+5. 成功时只在 `agent_dated_memory_sources/rollups` 登记该 source/response 外键、日期和计数；不生成 MemoryRecord/event，不读取 reasoning/tool 记录；
 6. 更新 Turn terminal 状态、错误码及 event 引用；
 7. 更新当前 attempt 的 `dispatch_phase=terminal`、delivery certainty 和 `terminal_at`；
 8. 仅在 confirmed delivered 时把 delivery cursor 最多推进到该 attempt 的 `context_through_seq`；若 attempt 带 `summary_through_seq`，同事务推进 `last_summary_seq`；
 9. commit；
-10. 唤醒 SQLite-backed SSE cursor tail，再由它按 reasoning → tool progress → response（仅成功）→ terminal → dated memory 的 durable seq 发布。
+10. 唤醒 SQLite-backed SSE cursor tail，再由它按 reasoning → tool progress → response（仅成功）→ terminal 的 durable seq 发布。
 
 transient delta 可以在 commit 前实时广播，但 UI 必须把它显示为未完成状态。浏览器刷新时不会重放历史 delta；terminal commit 后由聚合 reasoning record 与 tool progress records 恢复推理和折叠工具展示。
 
@@ -409,14 +418,17 @@ Broker 启动时先枚举非终态 attempt，不先写 terminal：
 - Structured Agent 通过 GroupX MCP 显式调用 `groupx.memory.remember`；
 - 系统生成滚动摘要，且 `kind=summary/source_kind=generated_summary`。
 
-普通聊天内容不会自动成为公共 MemoryRecord；成功 Agent Turn 会按第 6.3 节自动形成该 Agent 自己的 dated memory。
+普通聊天内容不会自动成为公共 MemoryRecord；成功 Agent Turn 只会成为第 6.3 节所属 Agent dated rollup 的候选来源。
 
 ### 6.3 Agent 核心记忆与日期记忆
 
 - `core`：长期、少量、显式维护。`core_memory_remember` 的 wire input 不含 scope、subject、author 或 binding，Broker 始终从当前 Structured binding 固定为调用 Agent 自己；Web Agent 设置也可追加、替换或撤回 core。
-- `dated`：每个成功 Turn 自动追加一条 episodic 记录，包含有界的当前 `message.created` 与最终 response。失败、取消或 interrupted Turn 不写 dated；reasoning、tool progress、stderr 与 native payload 永不进入。
-- 自动记录与 response/terminal 在同一个 SQLite immediate transaction 中提交；terminal CAS 保证重试不会生成第二条日期记忆。
-- dated 记录在其 response 仍已由 unread transcript/reply chain 表示时不重复注入 Context Packet；跨过 delivery cursor 或房间摘要边界后才作为该 Agent 的私有日期记忆参与预算。
+- `dated`：completed Turn 在 terminal transaction 中只登记一个可恢复 source；失败、取消或 interrupted Turn 不登记。后台只读取这些 source 对应的当前 `message.created` 与最终 response，reasoning、tool progress、stderr 与 native payload 永不进入。
+- 每个 Agent、每个本地日期最多维护一条 active rollup。待处理批次达到 8 个成功 Turn、约 16K 原始字符、跨过日期边界，或房间压缩即将越过其 source seq 时触发；普通阈值触发需经过最后活动后的 5 分钟安静窗口。
+- rollup 使用独立、短生命周期、无 GroupX MCP 的所属 Agent session。其他 Agent 不代写；所属 Agent 不可用时保留 pending checkpoint 并有界退避重试，聊天 Turn 已完成状态不受影响。
+- 输出最多 8K 字符，只保留重要进展、决定、偏好、约束与未完成事项。若一批只有问候、确认或测试，Agent 可返回空语义结果；引擎只推进 source checkpoint，不创建 MemoryRecord。
+- 同日后续批次把旧 daily rollup 作为输入，并以 memory id CAS 在一个 immediate transaction 中 supersede 旧记录、写新记录和 `memory.superseded` event。首次生成使用 `memory.remembered`。原 transcript 永不删除。
+- 新 daily rollup 是语义摘要，不因最后一个 source response 仍在 unread transcript/reply chain 中而整体隐藏；Context Packet 仍先放近期 transcript，再在剩余预算内选择 dated。
 
 ### 6.2 冲突与纠正
 
@@ -479,7 +491,7 @@ IdentityRecord 没有以下专用字段：
 [current_message]
 ```
 
-Agent 设置中的稳定身份、滚动摘要、当前消息和完整 reply chain 是强制区段。滚动摘要是已省略旧 transcript 的覆盖证明，因此不能先推进 cursor 再丢掉摘要。其余可选区段优先保留 Agent core，再保留近期 room delta、Agent dated、公共记忆和兼容身份记录。
+Agent 设置中的稳定身份、滚动摘要、当前消息和完整 reply chain 是强制区段。滚动摘要是已省略旧 transcript 的覆盖证明，因此不能先推进 cursor 再丢掉摘要。其余可选区段优先保留 Agent core，再保留近期 room delta、Agent daily dated rollup、公共记忆和兼容身份记录。
 
 `turn.reasoning.recorded` 与 `tool.progress.recorded` 是可回放的 UI/审计记录，不是 Context Packet 区段。未读 transcript、reply chain 与压缩输入都只从 `message.created` 投影；两类记录不得被摘要、自动记忆或再次发送给任一 Agent。
 

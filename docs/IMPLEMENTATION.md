@@ -222,7 +222,7 @@ Memory Service 提供：
 
 - 显式记忆写入；
 - 绑定到调用 Agent 自身的核心记忆写入；
-- 成功 Turn 的自动日期记忆归档；
+- 成功 Turn 来源的可恢复登记，以及由所属 Agent 批量生成的每日日期记忆 rollup；
 - 作用域与来源校验；
 - supersede/retract；
 - 按 scope/kind/text/cursor 检索；
@@ -358,7 +358,7 @@ GroupX 只承诺命令接收与派发记录幂等，不虚构模型执行的 exa
 2. 当前目标消息、完整 reply chain 与必要的持久滚动摘要检查点；
 3. 当前 Agent 的核心记忆（`agent_memory_type=core`，可选区段中最高优先级）；
 4. 自上次投递后的相关消息增量；
-5. 当前 Agent 的自动日期记忆（`agent_memory_type=dated`；若来源回复已在增量/reply chain 中则去重）；
+5. 当前 Agent 的每日语义日期记忆（`agent_memory_type=dated`；同日只有一个 active rollup）；
 6. 当前有效的固定公共记忆；
 7. 与当前 actor 相关的兼容身份记录。
 

@@ -259,7 +259,13 @@ export const MemoryRecordSchema = z
     subjectActorId: AgentActorIdSchema.optional(),
     content: z.string().max(MAX_MESSAGE_CONTENT_LENGTH),
     sourceEventId: ReferenceIdSchema.optional(),
-    sourceKind: z.enum(["web", "mcp", "generated_summary", "automatic_turn"]),
+    sourceKind: z.enum([
+      "web",
+      "mcp",
+      "generated_summary",
+      "automatic_turn",
+      "automatic_rollup"
+    ]),
     status: z.enum(["active", "superseded", "retracted"]),
     supersedesMemoryId: ReferenceIdSchema.optional(),
     createdAt: z.string().min(1).max(64),
