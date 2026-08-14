@@ -1,0 +1,40 @@
+{
+  "projectName": "GroupX Pages",
+  "root": ".",
+  "type": "static-html",
+  "installCommand": null,
+  "startCommand": null,
+  "baseUrl": "http://127.0.0.1:4178",
+  "outputDir": "docs/assets/showcase",
+  "readme": "README.md",
+  "waitMs": 800,
+  "timeoutMs": 30000,
+  "disableAnimations": true,
+  "viewports": {
+    "desktop": { "width": 1280, "height": 720 }
+  },
+  "screenshots": [
+    {
+      "id": "groupx-orbit",
+      "title": "GroupX broker and CLI agents",
+      "path": "/",
+      "viewport": "desktop",
+      "waitFor": ".orbit",
+      "waitMs": 500,
+      "fullPage": false,
+      "selector": ".orbit",
+      "steps": []
+    },
+    {
+      "id": "pages-home",
+      "title": "GroupX GitHub Pages home",
+      "path": "/",
+      "viewport": "desktop",
+      "waitFor": ".hero",
+      "waitMs": 500,
+      "fullPage": false,
+      "selector": null,
+      "steps": []
+    }
+  ]
+}

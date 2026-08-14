@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="GroupX 把 Codex、Grok、Kimi 与 Hermes CLI 放进同一个可审计的本地 Agent 房间。" />
+    <meta name="theme-color" content="#070913" />
+    <title>GroupX — One room. Every CLI agent.</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="noise" aria-hidden="true"></div>
+    <header class="nav shell">
+      <a class="brand" href="#top" aria-label="GroupX 首页">
+        <span class="brand-mark">GX</span>
+        <span>GroupX</span>
+      </a>
+      <nav aria-label="主导航">
+        <a href="#proof">真实对话</a>
+        <a href="#workflow">工作方式</a>
+        <a href="#start">快速开始</a>
+        <a class="nav-cta" href="https://github.com/susyimes/GroupX">GitHub ↗</a>
+      </nav>
+    </header>
+
+    <main id="top">
+      <section class="hero shell">
+        <div class="hero-copy">
+          <p class="eyebrow"><span></span> LOCAL · STRUCTURED · AUDITABLE</p>
+          <h1>One room.<br /><em>Every CLI agent.</em></h1>
+          <p class="lede">把 Codex、Grok、Kimi 和 Hermes 放进同一个本地房间。显式路由、共享时间线、持久化记忆，以及能被追踪的每一个 Turn。</p>
+          <div class="hero-actions">
+            <a class="button primary" href="#start">30 秒开始</a>
+            <a class="button secondary" href="#proof">查看真实运行</a>
+          </div>
+          <div class="install-line" role="group" aria-label="安装命令">
+            <span class="prompt">$</span>
+            <code>npm i -g @susyimes/groupx</code>
+            <button id="copy-install" type="button" aria-label="复制安装命令">复制</button>
+          </div>
+        </div>
+
+        <div class="orbit" aria-label="GroupX Agent 路由示意">
+          <div class="orbit-ring ring-one"></div>
+          <div class="orbit-ring ring-two"></div>
+          <div class="core"><span>GX</span><small>BROKER</small></div>
+          <div class="agent agent-a"><b>CO</b><span>Codex</span></div>
+          <div class="agent agent-b"><b>GR</b><span>Grok</span></div>
+          <div class="agent agent-c"><b>KI</b><span>Kimi</span></div>
+          <div class="agent agent-d"><b>HE</b><span>Hermes</span></div>
+        </div>
+      </section>
+
+      <section class="metrics shell" aria-label="项目能力摘要">
+        <div><strong>4</strong><span>CLI drivers</span></div>
+        <div><strong>1</strong><span>local broker</span></div>
+        <div><strong>0</strong><span>silent fallbacks</span></div>
+        <div><strong>∞</strong><span>explicit workflows</span></div>
+      </section>
+
+      <section id="proof" class="proof shell section">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow"><span></span> REAL RUN · 2026-08-14</p>
+            <h2>不是 mock。<br />是一次真实的群聊。</h2>
+          </div>
+          <p>同一次 GroupX 运行，三个独立 Kimi ACP session 分别担任 Architect、Builder 和 Reviewer。下面每条回复都由真实模型生成，并由 Broker 持久化。</p>
+        </div>
+
+        <div class="room-window">
+          <div class="window-bar">
+            <div class="lights"><i></i><i></i><i></i></div>
+            <span>room:main</span>
+            <span class="live"><i></i> REAL SESSION</span>
+          </div>
+          <div class="room-body">
+            <aside>
+              <p>PARTICIPANTS</p>
+              <button class="persona active" data-agent="architect"><b>AR</b><span>Architect<small>产品架构</small></span><i></i></button>
+              <button class="persona" data-agent="builder"><b>BU</b><span>Builder<small>实现交付</small></span><i></i></button>
+              <button class="persona" data-agent="reviewer"><b>RE</b><span>Reviewer<small>风险审查</small></span><i></i></button>
+            </aside>
+            <div class="transcript">
+              <div class="question"><span>YOU</span>GroupX 如何让三个 CLI Agent 协作完成一次可靠的软件发布？</div>
+              <figure class="response active" data-response="architect">
+                <img src="assets/architect-response.png" alt="Architect 在真实 GroupX 对话中的模型回复" />
+              </figure>
+              <figure class="response" data-response="builder">
+                <img src="assets/builder-response.png" alt="Builder 在真实 GroupX 对话中的模型回复" />
+              </figure>
+              <figure class="response" data-response="reviewer">
+                <img src="assets/reviewer-response.png" alt="Reviewer 在真实 GroupX 对话中的模型回复" />
+              </figure>
+              <p class="proof-note">真实运行截图 · 仅裁切公开演示消息 · 未使用静态假数据</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="workflow" class="section shell">
+        <div class="section-heading compact">
+          <div><p class="eyebrow"><span></span> HOW IT WORKS</p><h2>让协作有路由，<br />让结果有证据。</h2></div>
+        </div>
+        <div class="steps">
+          <article><span>01</span><h3>显式选择</h3><p>从 Web UI 选择一个、多个或全部 Agent；正文里的自然语言 @ 不会偷偷触发新回合。</p></article>
+          <article><span>02</span><h3>结构化执行</h3><p>Codex App Server 与 ACP session 保持原生会话，Broker 统一管理路由、取消与恢复。</p></article>
+          <article><span>03</span><h3>持久化证据</h3><p>最终回复、Turn 状态、推理与工具记录按数据类型落盘，刷新后仍可回放和审计。</p></article>
+        </div>
+      </section>
+
+      <section id="start" class="start section shell">
+        <div>
+          <p class="eyebrow"><span></span> START LOCAL</p>
+          <h2>你的 Agent 房间，<br />两条命令就绪。</h2>
+        </div>
+        <div class="terminal">
+          <div class="terminal-bar"><i></i><i></i><i></i><span>terminal</span></div>
+          <pre><span>$</span> npm i -g @susyimes/groupx
+<span>$</span> groupx init
+
+<b>GroupX Agent 配置引导页:</b> http://127.0.0.1:4310/
+<b>GroupX listening</b> · transport=structured</pre>
+          <a href="https://github.com/susyimes/GroupX#快速开始">阅读完整文档 →</a>
+        </div>
+      </section>
+    </main>
+
+    <footer class="shell">
+      <a class="brand" href="#top"><span class="brand-mark">GX</span><span>GroupX</span></a>
+      <p>Transparent local orchestration for CLI agents.</p>
+      <a href="https://github.com/susyimes/GroupX">Source on GitHub ↗</a>
+    </footer>
+    <script src="app.js"></script>
+  </body>
+</html>
