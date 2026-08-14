@@ -8,7 +8,7 @@
 
 ![npm](https://img.shields.io/npm/v/@susyimes/groupx?color=3370ff&label=npm)
 ![Node](https://img.shields.io/badge/node-24.14.x-3c873a)
-![Tests](https://img.shields.io/badge/tests-502%20passing-0d9f6e)
+![Tests](https://img.shields.io/badge/tests-503%20passing-0d9f6e)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%C2%B7%20macOS%20%C2%B7%20Linux-0078d6)
 ![Transport](https://img.shields.io/badge/transport-structured-9440c9)
 
@@ -47,6 +47,7 @@ GroupX 是一个只监听本机 loopback 的多 Agent 群聊 Broker。用户从�
 
 - 输入区在宽屏和窄屏下统一保持“目标选择在左、上下文与运行状态在右”的布局；目标过多时可横向滚动。
 - 修正目标选择栏残留的底部外边距，让目标按钮、上下文用量、压缩按钮及重启/压缩进度垂直居中。
+- 修复通过 npm 符号链接入口启动时 CLI 静默退出的问题，并覆盖无需管理员权限的跨平台链接回归测试。
 
 ## 0.1.10 更新
 

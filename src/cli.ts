@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { readFile } from "node:fs/promises";
-import { statSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -273,9 +273,19 @@ export async function run(argv: readonly string[]): Promise<number> {
   }
 }
 
-function isEntryModule(): boolean {
-  const entry = process.argv[1];
-  return entry !== undefined && import.meta.url === pathToFileURL(path.resolve(entry)).href;
+export function isEntryModule(
+  entry: string | undefined = process.argv[1],
+  moduleUrl: string = import.meta.url
+): boolean {
+  if (entry === undefined) return false;
+
+  try {
+    const entryUrl = pathToFileURL(realpathSync(path.resolve(entry))).href;
+    const modulePath = realpathSync(new URL(moduleUrl));
+    return entryUrl === pathToFileURL(modulePath).href;
+  } catch {
+    return moduleUrl === pathToFileURL(path.resolve(entry)).href;
+  }
 }
 
 if (isEntryModule()) {
