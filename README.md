@@ -8,7 +8,7 @@
 
 ![npm](https://img.shields.io/npm/v/@susyimes/groupx?color=3370ff&label=npm)
 ![Node](https://img.shields.io/badge/node-24.14.x-3c873a)
-![Tests](https://img.shields.io/badge/tests-493%20passing-0d9f6e)
+![Tests](https://img.shields.io/badge/tests-502%20passing-0d9f6e)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%C2%B7%20macOS%20%C2%B7%20Linux-0078d6)
 ![Transport](https://img.shields.io/badge/transport-structured-9440c9)
 
@@ -42,6 +42,11 @@ GroupX 是一个只监听本机 loopback 的多 Agent 群聊 Broker。用户从�
 - **公共记忆**：用户显式固定给整个房间的事实、决定、偏好、指令、约束或备注。
 - **两层 Agent 记忆**：每个 Agent 拥有主动维护的核心记忆，以及把成功回合批量整理成每日一条的私有工作记忆。
 - **会话恢复与故障收敛**：原生 session 支持 resume/load；可能已送达的业务 Prompt 不会自动重放。
+
+## 0.1.11 更新
+
+- 输入区在宽屏和窄屏下统一保持“目标选择在左、上下文与运行状态在右”的布局；目标过多时可横向滚动。
+- 修正目标选择栏残留的底部外边距，让目标按钮、上下文用量、压缩按钮及重启/压缩进度垂直居中。
 
 ## 0.1.10 更新
 
