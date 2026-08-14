@@ -744,7 +744,7 @@ async function saveSetup(): Promise<void> {
     savedPath.textContent = result.configPath;
     savedPath.title = result.configPath;
     if (result.restartRequired) {
-      successCopy.textContent = `已保存 ${result.agentCount} 个 Agent（${result.enabledAgentCount} 个启用）。重启 GroupX 后应用新名册。`;
+      successCopy.textContent = `已保存 ${result.agentCount} 个 Agent（${result.enabledAgentCount} 个启用）。返回群聊会立即显示新名册；新增 Agent 将标记为等待重启。`;
       editAgain.hidden = false;
     } else {
       successMark.textContent = "";

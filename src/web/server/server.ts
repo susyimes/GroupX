@@ -60,6 +60,7 @@ interface StaticAsset {
   readonly fileName:
     | "index.html"
     | "app.js"
+    | "agent-roster.js"
     | "pagination.js"
     | "reasoning-record.js"
     | "rich-text.js"
@@ -74,6 +75,7 @@ interface StaticAsset {
 const STATIC_ASSETS = new Map<string, StaticAsset>([
   ["/", { fileName: "index.html", contentType: "text/html; charset=utf-8" }],
   ["/app.js", { fileName: "app.js", contentType: "application/javascript; charset=utf-8" }],
+  ["/agent-roster.js", { fileName: "agent-roster.js", contentType: "application/javascript; charset=utf-8" }],
   ["/pagination.js", { fileName: "pagination.js", contentType: "application/javascript; charset=utf-8" }],
   ["/reasoning-record.js", { fileName: "reasoning-record.js", contentType: "application/javascript; charset=utf-8" }],
   ["/rich-text.js", { fileName: "rich-text.js", contentType: "application/javascript; charset=utf-8" }],

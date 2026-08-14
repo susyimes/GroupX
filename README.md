@@ -8,13 +8,13 @@
 
 ![npm](https://img.shields.io/npm/v/@susyimes/groupx?color=3370ff&label=npm)
 ![Node](https://img.shields.io/badge/node-24.14.x-3c873a)
-![Tests](https://img.shields.io/badge/tests-503%20passing-0d9f6e)
+![Tests](https://img.shields.io/badge/tests-506%20passing-0d9f6e)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%C2%B7%20macOS%20%C2%B7%20Linux-0078d6)
 ![Transport](https://img.shields.io/badge/transport-structured-9440c9)
 
-<img src="./docs/assets/groupx-demo.gif" width="100%" alt="GroupX 多 Agent 协作演示：Codex 通过 groupx.ask 调用 Grok 和 Kimi 后汇总结论">
+<img src="./docs/assets/groupx-demo.gif" width="100%" alt="GroupX 本机实录：Codex 通过 groupx.ask 调用 Grok 和 Kimi 后汇总结论">
 
-<sub>演示 Codex 通过 <code>groupx.ask</code> 协调 Grok、Kimi 并汇总结论；数据由本地静态场景生成，不包含真实会话或 CLI 数据。</sub>
+<sub>本机实录：Codex App Server 通过 <code>groupx.ask</code> 调用 Grok ACP 与 Kimi ACP，并在真实 GroupX 房间中汇总结果；仅对本机工作目录做了隐私遮罩。</sub>
 
 </div>
 
@@ -42,6 +42,11 @@ GroupX 是一个只监听本机 loopback 的多 Agent 群聊 Broker。用户从�
 - **公共记忆**：用户显式固定给整个房间的事实、决定、偏好、指令、约束或备注。
 - **两层 Agent 记忆**：每个 Agent 拥有主动维护的核心记忆，以及把成功回合批量整理成每日一条的私有工作记忆。
 - **会话恢复与故障收敛**：原生 session 支持 resume/load；可能已送达的业务 Prompt 不会自动重放。
+
+## 0.1.12 更新
+
+- Agent 设置保存后，主房间会立即合并最新名册并刷新参与者数量；新增但尚未启动的 Agent 显示为“等待重启”。
+- README 协作动图改为真实本机录制：Codex App Server 通过 `groupx.ask` 调用 Grok ACP 与 Kimi ACP 后汇总结论。
 
 ## 0.1.11 更新
 
@@ -96,7 +101,7 @@ groupx update --check          # 只检查 npm 更新
 groupx update                  # 更新当前全局安装
 ```
 
-运行中的 Agent 名册可以从右上角“Agent 设置”修改，保存后重启 GroupX 生效。`Ctrl+C` 会有界关闭当前进程，不会删除 SQLite 数据。
+运行中的 Agent 名册可以从右上角“Agent 设置”修改。保存后主房间会立即显示新数量；尚未启动的 Agent 标记为“等待重启”且不能接收消息，重启 GroupX 后才会建立原生 session。`Ctrl+C` 会有界关闭当前进程，不会删除 SQLite 数据。
 
 > 全局命令是 `groupx`，不是 `group`。安装后如果仍提示找不到命令，请重新打开终端，并确认 npm 全局 bin 目录已经加入 `PATH`。
 
@@ -160,7 +165,7 @@ GroupX 当前保持单房间结构，房间 ID 为 `room:main`。
 }
 ```
 
-每个启用的 Agent 拥有独立原生 process/session。修改名册不会热替换正在运行的 session，需要重启 GroupX。
+每个启用的 Agent 拥有独立原生 process/session。修改名册不会热替换正在运行的 session；主房间会把新增项显示为“等待重启”，重启 GroupX 后才转为可用。
 
 Hermes 使用固定的 `hermes --yolo acp` 启动形状，并在每次 `session/new` 或 `session/load` 后、首个 prompt 前设置 ACP mode 为 `dont_ask`。可先运行 `hermes acp --check` 检查本机 ACP 安装。GroupX 不修改 Hermes 的全局配置。
 

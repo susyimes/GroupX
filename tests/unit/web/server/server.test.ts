@@ -336,6 +336,7 @@ describe("GroupXHttpServer", () => {
     await Promise.all([
       writeFile(path.join(staticRoot, "index.html"), "<!doctype html><title>GroupX</title>"),
       writeFile(path.join(staticRoot, "app.js"), "document.body.dataset.ready = 'yes';"),
+      writeFile(path.join(staticRoot, "agent-roster.js"), "export const rosterReady = true;"),
       writeFile(path.join(staticRoot, "pagination.js"), "export const paginationReady = true;"),
       writeFile(path.join(staticRoot, "reasoning-record.js"), "export const reasoningRecordReady = true;"),
       writeFile(path.join(staticRoot, "rich-text.js"), "export const richTextReady = true;"),
@@ -370,6 +371,10 @@ describe("GroupXHttpServer", () => {
     const script = await fetch(`${origin}/app.js`);
     expect(script.status).toBe(200);
     expect(await script.text()).toContain("dataset.ready");
+
+    const roster = await fetch(`${origin}/agent-roster.js`);
+    expect(roster.status).toBe(200);
+    expect(await roster.text()).toContain("rosterReady");
 
     const pagination = await fetch(`${origin}/pagination.js`);
     expect(pagination.status).toBe(200);

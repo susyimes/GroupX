@@ -202,7 +202,7 @@ binding 是 provenance/correlation handle，不是 secret、token 或本机抗�
 | W-007 | 未知 event type | 非保留类型 generic render，不导致 SSE 断流；`approval.*`/`permission.*`/`user_input.*` 拒绝且不渲染 |
 | W-008 | 首次 init/start | 无配置时打开 loopback 引导页；添加并保存后生成严格 groupx.json，再启动主 UI |
 | W-009 | 多实例名册 | 可添加两个以上 Codex App Server，稳定 id 唯一，name/cwd 独立；保存后 runtime 各有独立 actor/binding/session |
-| W-010 | 运行中 Agent 设置 | `/setup` 载入现有名册，保存返回 restartRequired；不热换当前 session，不出现 access/approval/sandbox 控件 |
+| W-010 | 运行中 Agent 设置 | `/setup` 载入现有名册，保存返回 restartRequired；主房间立即把新增启用项计入总数并显示 `pending_restart`，不可作为消息目标；不热换当前 session，不出现 access/approval/sandbox 控件 |
 | W-011 | `groupx update` | 查询 npm latest；已最新/本地更高不安装，`--check` 无副作用，有更新时锁定精确版本并通过 shell-free npm 入口全局安装 |
 | W-012 | 单房间上下文控件 | 输入窗口右上角显示明确标注的字符估算；手动压缩经 Broker/clientCommandId 单飞，保留最近消息与完整 transcript，reasoning/tool 记录不进入摘要 |
 | W-013 | Agent 设置两层记忆 | core 独立展示并可维护；dated 只读按本地日期分组并允许显式移除；公共记忆仍在群聊左栏 |

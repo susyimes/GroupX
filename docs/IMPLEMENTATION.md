@@ -468,7 +468,7 @@ CONTEXT_BUDGET_EXCEEDED
 
 Agent `enabled` 默认 true;`enabled: false` 的 agent 不建 Adapter、不进名册 UI。Kimi driver enabled 时不读取或要求修改全局 permission/plan 默认值；ACP process 建立 session 后用 `session/set_mode(auto)` 固定当前 session。Hermes driver 使用 `--yolo acp`，建立或加载 session 后用 `session/set_mode(dont_ask)` 固定当前 session。若 mode RPC 的明确 native policy 拒绝成立，则返回 `NATIVE_POLICY_BLOCKED`;其他协议/启动错误按对应 Adapter 错误收敛，不自动禁用 Agent、不切 transport、不写配置。
 
-`groupx init` 启动一个临时 loopback 引导服务并打开浏览器；首次 `groupx start` 没有配置时复用同一流程。引导页可创建多个相同 driver 实例并填写 id/name/cwd/command；保存严格配置后，CLI 启动正式 runtime，临时服务通过同源 launch 状态通知当前页面，并在正式服务 ready 后自动跳转到群聊。运行中的 `/setup` 使用同一合同编辑名册；保存只更新配置文件并提示重启，不自动跳转，也不在运行时热增删 Adapter/session。setup API 不暴露 transport、access、approval 或 sandbox 字段。
+`groupx init` 启动一个临时 loopback 引导服务并打开浏览器；首次 `groupx start` 没有配置时复用同一流程。引导页可创建多个相同 driver 实例并填写 id/name/cwd/command；保存严格配置后，CLI 启动正式 runtime，临时服务通过同源 launch 状态通知当前页面，并在正式服务 ready 后自动跳转到群聊。运行中的 `/setup` 使用同一合同编辑名册；保存只更新配置文件，不在运行时热增删 Adapter/session。主房间同时读取 setup snapshot，把已保存但当前 bootstrap 不存在的启用 Agent 投影为 `pending_restart`，计入名册总数但禁止路由；重启后由真实 Adapter 状态替换。setup API 不暴露 transport、access、approval 或 sandbox 字段。
 
 正式 runtime 必须先成功绑定配置的 loopback HTTP 端口，才能执行 stale Agent instance/session recovery。该监听是单 runtime 启动租约。`GET /api/health` 同时返回固定 `service=groupx`、协议版本和由 canonical config + canonical config path 生成的非秘密 `runtimeKey`。CLI 在构造 SQLite/Adapter 前探测该身份：相同 key 直接复用现有页面并成功退出；不同 key、旧版 GroupX 或非 GroupX listener 明确报冲突，不杀进程、不自动换端口。预检与 bind 之间仍可能竞态，因此实际 `EADDRINUSE` 后最多有界复查三次；若竞态赢家是同一 key，同样按复用成功收敛。失败进程不得把现有 runtime 的 ready binding 标成 interrupted，也不得留下永久 queued Turn。
 

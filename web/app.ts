@@ -1,4 +1,5 @@
 import { collectCursorPages } from "./pagination.js";
+import { pendingConfiguredAgents } from "./agent-roster.js";
 import { parseReasoningRecord } from "./reasoning-record.js";
 import { copyPlainText, flashButtonLabel, renderRichContent } from "./rich-text.js";
 import { describeToolProgress, mergeToolProgressSnapshot } from "./tool-progress.js";
@@ -606,6 +607,7 @@ function humanStatus(status: string): string {
     online: "在线",
     offline: "离线",
     restarting: "正在重启",
+    pending_restart: "等待重启",
     stopped: "已停止",
     failed: "失败",
     queued: "排队中",
@@ -1816,15 +1818,19 @@ function renderAgents(): void {
     cwd.textContent = agent.cwd || "cwd 未报告";
     const capabilities = document.createElement("span");
     capabilities.className = "agent-capabilities";
-    capabilities.textContent =
-      agent.capabilities.length > 0 ? agent.capabilities.map(humanCapability).join(" · ") : "能力待现场确认";
+    capabilities.textContent = agent.status === "pending_restart"
+      ? "配置已保存 · 重启 GroupX 后加入房间"
+      : agent.capabilities.length > 0
+        ? agent.capabilities.map(humanCapability).join(" · ")
+        : "能力待现场确认";
     details.append(cwd, capabilities);
 
     const restart = document.createElement("button");
     restart.type = "button";
     restart.className = "restart-button";
     restart.textContent = "重启";
-    restart.disabled = !agent.enabled || agent.status === "restarting";
+    restart.disabled =
+      !agent.enabled || agent.status === "restarting" || agent.status === "pending_restart";
     restart.addEventListener("click", () => {
       void restartAgent(agent.actorId);
     });
@@ -1832,7 +1838,10 @@ function renderAgents(): void {
 
     item.append(top, meta);
     agentList.append(item);
-    if (agent.enabled && !["failed", "offline", "stopped", "unknown"].includes(agent.status)) {
+    if (
+      agent.enabled &&
+      !["failed", "offline", "stopped", "unknown", "pending_restart"].includes(agent.status)
+    ) {
       available += 1;
     }
   }
@@ -1844,7 +1853,7 @@ function renderAgents(): void {
 function syncTargetAvailability(): void {
   for (const input of targetInputs()) {
     const agent = state.agents.get(input.value);
-    const unavailable = agent?.enabled === false;
+    const unavailable = agent?.enabled === false || agent?.status === "pending_restart";
     input.disabled = state.submitting || unavailable;
     if (unavailable) {
       input.checked = false;
@@ -1866,7 +1875,12 @@ function setComposerBusy(busy: boolean): void {
 
 async function restartAgent(actorId: string): Promise<void> {
   const agent = state.agents.get(actorId);
-  if (!agent || !agent.enabled || agent.status === "restarting") {
+  if (
+    !agent ||
+    !agent.enabled ||
+    agent.status === "restarting" ||
+    agent.status === "pending_restart"
+  ) {
     return;
   }
   const retryKey = `restart:${actorId}`;
@@ -2274,7 +2288,7 @@ async function refreshHealth(): Promise<void> {
   try {
     const health = await requestJson<unknown>("/api/health");
     if (!isRecord(health)) {
-      return;
+      throw new Error("Health response is not an object");
     }
     const store = isRecord(health.store) ? health.store : null;
     const available = store ? readBooleanField(store, true, "available") : true;
@@ -2290,6 +2304,42 @@ async function refreshHealth(): Promise<void> {
     connectionStatus.dataset.health = "unknown";
     connectionStatus.title = "健康检查失败";
   }
+  await refreshConfiguredRoster();
+}
+
+async function requestSetupSnapshot(): Promise<unknown | undefined> {
+  try {
+    return await requestJson<unknown>("/api/setup");
+  } catch {
+    // The room can be embedded without the optional setup surface.
+    return undefined;
+  }
+}
+
+function applyPendingConfiguredRoster(snapshot: unknown): boolean {
+  const activeActorIds = new Set(
+    [...state.agents.values()]
+      .filter((agent) => agent.status !== "pending_restart")
+      .map((agent) => agent.actorId)
+  );
+  const next = pendingConfiguredAgents(snapshot, activeActorIds);
+  const previousIds = [...state.agents.values()]
+    .filter((agent) => agent.status === "pending_restart")
+    .map((agent) => agent.actorId)
+    .sort();
+  const nextIds = next.map((agent) => agent.actorId);
+  const changed = previousIds.join("\u0000") !== nextIds.join("\u0000") || next.some((agent) => {
+    const previous = state.agents.get(agent.actorId);
+    return previous?.displayName !== agent.displayName || previous.cwd !== agent.cwd;
+  });
+  for (const actorId of previousIds) state.agents.delete(actorId);
+  for (const agent of next) state.agents.set(agent.actorId, agent);
+  return changed;
+}
+
+async function refreshConfiguredRoster(): Promise<void> {
+  const snapshot = await requestSetupSnapshot();
+  if (snapshot !== undefined && applyPendingConfiguredRoster(snapshot)) renderAgents();
 }
 
 function connectEventSource(extraTypes: string[] = []): void {
@@ -2326,7 +2376,10 @@ async function bootstrap(): Promise<void> {
   renderAgents();
   renderPublicMemoryRecords();
   try {
-    const decoded = await requestJson<unknown>("/api/bootstrap");
+    const [decoded, setupSnapshot] = await Promise.all([
+      requestJson<unknown>("/api/bootstrap"),
+      requestSetupSnapshot()
+    ]);
     if (!isRecord(decoded)) {
       throw new ApiFailure("INVALID_BOOTSTRAP", "bootstrap 响应不是对象", 500);
     }
@@ -2341,6 +2394,7 @@ async function bootstrap(): Promise<void> {
         state.agents.set(agent.actorId, agent);
       }
     }
+    if (setupSnapshot !== undefined) applyPendingConfiguredRoster(setupSnapshot);
     renderAgents();
 
     const recentEvents = extractCollection(decoded, ["recentEvents", "events"])

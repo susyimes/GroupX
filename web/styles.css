@@ -685,6 +685,7 @@ input:disabled {
 .agent-status[data-status="starting"]::before,
 .agent-status[data-status="retrying"]::before,
 .agent-status[data-status="restarting"]::before,
+.agent-status[data-status="pending_restart"]::before,
 .agent-status[data-status="queued"]::before {
   background: var(--warning);
 }
