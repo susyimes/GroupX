@@ -31,8 +31,8 @@ GroupX 按定义字段记录诊断数据，不主动采集完整环境、CLI 配
 
 | ID | 用户需求 | 实现合同 | 主要验收 |
 | --- | --- | --- | --- |
-| R1 | 本地 Web UI 与三套 CLI 群聊 | REST 命令、SSE 事件、Structured 三 Agent Adapter | Structured UI 可定向发送并看到已启用 Agent 回复 |
-| R2 | CLI 可以互相沟通 | Structured 使用 GroupX MCP `send/ask/read` 做当前回合主动互调 | 三套 Structured Adapter 分别完成 native MCP actual call |
+| R1 | 本地 Web UI 与多套 CLI 群聊 | REST 命令、SSE 事件、Structured Agent Adapter | Structured UI 可定向发送并看到已启用 Agent 回复 |
+| R2 | CLI 可以互相沟通 | Structured 使用 GroupX MCP `send/ask/read` 做当前回合主动互调 | 声称支持的 Structured driver 分别完成 native MCP actual call |
 | R3 | GroupX 不负责安全，首版完全放开 | access 固定 unrestricted；按 CLI 使用原生最大放开 argv/mode；没有 GroupX 审批子系统 | 精确 argv/session config；任何 native interaction request 失败 Turn；外部阻断正确归类 |
 | R4 | 公共群组记忆、身份记忆 | 版本化 MemoryRecord、IdentityRecord、来源引用 | 重启后可检索且来源可追溯 |
 | R5 | 简单、方便扩展 | 单 Broker、统一 Adapter、统一 Envelope、单数据库 | 新增 Adapter 不修改核心路由和存储合同 |
@@ -48,8 +48,9 @@ GroupX 按定义字段记录诊断数据，不主动采集完整环境、CLI 配
 | Codex | 新会话：`codex --yolo --dangerously-bypass-hook-trust exec --json -`；续会话：同一前缀后 `exec resume --json <sessionId> -` | `codex --dangerously-bypass-hook-trust app-server --listen stdio://`；thread start/resume 固定 `approvalPolicy="never"`、`sandbox="danger-full-access"` | 长驻 thread、语义化 interrupt、GroupX MCP |
 | Grok | `grok --no-auto-update --permission-mode bypassPermissions --sandbox off --no-plan [--resume <sessionId>] --output-format streaming-json --single <prompt>`（`-p` 是短别名） | 相同全局前缀后追加 `agent stdio` | 长驻 ACP、语义化 cancel、GroupX MCP |
 | Kimi | deprecated Direct 参考实现保留只读配置预检后使用 `kimi [--session <id>] --prompt <prompt> --output-format stream-json` | 直接启动 `kimi acp`，不要求全局默认 yolo/auto；session new/load（含 Adapter resume）后、首 prompt 前 `session/set_mode(modeId="auto")`；mode 不持久化 | Structured 长驻 ACP、语义化 cancel、GroupX MCP |
+| Hermes | 无 Direct 产品入口 | `hermes --yolo acp`；session new/load 后、首 prompt 前 `session/set_mode(modeId="dont_ask")` | Structured 长驻 ACP、语义化 cancel、GroupX MCP descriptor |
 
-Direct 的 one-shot、resume 与 Kimi preflight 逻辑只为兼容旧配置/记录保留，不再成为里程碑、M0 Gate 或新功能落点。Structured 维持长驻 session，是唯一完整三 Agent 路径。任何 Structured 失败都在本 transport 内收敛，不自动 fallback 到 Direct。
+Direct 的 one-shot、resume 与 Kimi preflight 逻辑只为兼容旧配置/记录保留，不再成为里程碑、M0 Gate 或新功能落点。Structured 维持长驻 session，是唯一 active 路径。任何 Structured 失败都在本 transport 内收敛，不自动 fallback 到 Direct。
 
 Codex 0.147 的 thread-level `sandbox` 值是 kebab-case `danger-full-access`。`dangerFullAccess` 是 `turn/start.sandboxPolicy.type` 的另一种字段形态，在 `thread/start`/`thread/resume` 中会被拒绝。Codex child 使用 Agent 配置的 OS cwd，thread params 省略 cwd；启动前发送 `configRequirements/read {}`：requirements 为 null/缺失表示无约束；若显式 allowlist 不含 `never` 或 `danger-full-access`，启动以 `NATIVE_POLICY_BLOCKED` 失败。
 
@@ -79,12 +80,15 @@ flowchart LR
     Broker --> CodexAdapter["Codex App Server Adapter"]
     Broker --> GrokAdapter["Grok ACP Adapter"]
     Broker --> KimiAdapter["Kimi ACP Adapter"]
+    Broker --> HermesAdapter["Hermes ACP Adapter"]
     CodexAdapter --> CodexNative["codex app-server"]
     GrokAdapter --> GrokNative["grok agent stdio"]
     KimiAdapter --> KimiNative["kimi acp"]
+    HermesAdapter --> HermesNative["hermes --yolo acp"]
     CodexNative -.-> GroupXMCP["GroupX MCP<br/>send / ask / read"]
     GrokNative -. "Structured only" .-> GroupXMCP
     KimiNative -. "Structured only" .-> GroupXMCP
+    HermesNative -. "Structured only" .-> GroupXMCP
     GroupXMCP --> Broker
 ```
 
@@ -103,7 +107,7 @@ CLI 退出不会使 Broker 退出；数据库异常属于 Broker 级故障，应
 
 ### 4.2 为什么不是物理 P2P
 
-三套 CLI 的 App Server/ACP 接口都面向宿主客户端，而不是彼此可直接发现的同构 Agent-to-Agent Server。强行 P2P 仍需给每个 CLI 增加代理服务，还会引入 N² 连接、记忆复制和冲突处理。
+各 CLI 的 App Server/ACP 接口都面向宿主客户端，而不是彼此可直接发现的同构 Agent-to-Agent Server。强行 P2P 仍需给每个 CLI 增加代理服务，还会引入 N² 连接、记忆复制和冲突处理。
 
 透明 Broker 的额外成本是一次本地协议解析和一次持久化提交。模型网络与推理通常是主耗时。GroupX 通过并行派发、单写者数据库、delta 批量推送和增量上下文控制本地开销。
 
@@ -316,7 +320,7 @@ sequenceDiagram
 
 ### 6.2 CLI 之间继续对话
 
-1. Structured 模式下，Codex、Grok 或 Kimi 在自己的长驻会话中调用 `groupx.send` 或 `groupx.ask`。
+1. Structured 模式下，任一已配置且支持 MCP 的 Agent 在自己的长驻会话中调用 `groupx.send` 或 `groupx.ask`。
 2. GroupX MCP 根据该会话 binding 固定调用方，先持久化公共 message 和目标 Turn，再由 Broker 派发。
 3. `send` 立即返回持久化标识；`ask` 等待目标 terminal response，并把结果带回调用者当前原生回合。
 4. 问题、回复和失败状态同时进入公共 transcript；整个过程不建立物理 P2P。
@@ -458,11 +462,11 @@ CONTEXT_BUDGET_EXCEEDED
 }
 ```
 
-`agents` map 是显式房间名册：键即 agent id(actor 为 `agent:<id>`),写了哪些就启动哪些，缺省整个 `agents` 字段时等价于 codex/grok/kimi 三个内置 Agent。内置 id 的 `driver` 默认同名；自定义 id 必须显式声明 `driver: codex | grok | kimi`,driver 决定 native CLI 家族、固定 argv/session 合同与命令解析方式。同一 driver 允许挂多个 agent 实例(各自独立长驻 session)。`name` 是可选显示名:runtime 启动时把它 upsert 进 actors 表，Web UI 的目标 chips、Agent 卡片与身份记忆下拉都按名册动态渲染;内置 id 未配 `name` 时沿用内置种子名。agent id 只允许字母数字开头结尾的 `A-Za-z0-9._-`(≤64 字符),名册至少一个 agent。
+`agents` map 是显式房间名册：键即 agent id(actor 为 `agent:<id>`),写了哪些就启动哪些。兼容缺省配置仍只启用 codex/grok/kimi 三个原有内置 Agent；Hermes 由引导页或显式配置加入。内置 id 的 `driver` 默认同名；自定义 id 必须显式声明 `driver: codex | grok | kimi | hermes`,driver 决定 native CLI 家族、固定 argv/session 合同与命令解析方式。同一 driver 允许挂多个 agent 实例(各自独立长驻 session)。`name` 是可选显示名:runtime 启动时把它 upsert 进 actors 表，Web UI 的目标 chips、Agent 卡片与身份记忆下拉都按名册动态渲染;内置 id 未配 `name` 时沿用内置种子名。agent id 只允许字母数字开头结尾的 `A-Za-z0-9._-`(≤64 字符),名册至少一个 agent。
 
 公开 `transport` 配置只接受 `structured`;`direct` 会在解析和 runtime construction 阶段明确失败。message/Turn API 不允许覆盖。运行态公开 Structured、版本、健康状态和 capability snapshot。
 
-Agent `enabled` 默认 true;`enabled: false` 的 agent 不建 Adapter、不进名册 UI。Kimi driver enabled 时不读取或要求修改全局 permission/plan 默认值；ACP process 建立 session 后用 `session/set_mode(auto)` 固定当前 session。若 mode RPC 的明确 native policy 拒绝成立，则返回 `NATIVE_POLICY_BLOCKED`;其他协议/启动错误按对应 Adapter 错误收敛，不自动禁用 Kimi、不切 transport、不写配置。
+Agent `enabled` 默认 true;`enabled: false` 的 agent 不建 Adapter、不进名册 UI。Kimi driver enabled 时不读取或要求修改全局 permission/plan 默认值；ACP process 建立 session 后用 `session/set_mode(auto)` 固定当前 session。Hermes driver 使用 `--yolo acp`，建立或加载 session 后用 `session/set_mode(dont_ask)` 固定当前 session。若 mode RPC 的明确 native policy 拒绝成立，则返回 `NATIVE_POLICY_BLOCKED`;其他协议/启动错误按对应 Adapter 错误收敛，不自动禁用 Agent、不切 transport、不写配置。
 
 `groupx init` 启动一个临时 loopback 引导服务并打开浏览器；首次 `groupx start` 没有配置时复用同一流程。引导页可创建多个相同 driver 实例并填写 id/name/cwd/command；保存严格配置后，CLI 启动正式 runtime，临时服务通过同源 launch 状态通知当前页面，并在正式服务 ready 后自动跳转到群聊。运行中的 `/setup` 使用同一合同编辑名册；保存只更新配置文件并提示重启，不自动跳转，也不在运行时热增删 Adapter/session。setup API 不暴露 transport、access、approval 或 sandbox 字段。
 
@@ -505,7 +509,7 @@ D:\GroupX
 │  ├─ core                       # envelope / dispatcher / identity-binding / errors
 │  ├─ launch                     # command-spec:跨平台 shell-free 命令解析
 │  ├─ app                        # runtime / session-manager / adapter-factory / doctor / init-config / update
-│  ├─ adapters                   # codex app-server、acp(grok/kimi)、direct(deprecated)
+│  ├─ adapters                   # codex app-server、acp(grok/kimi/hermes)、direct(deprecated)
 │  ├─ broker
 │  ├─ storage                    # sqlite-store(WAL)
 │  ├─ memory                     # 公共/Agent 独立记忆、兼容身份记录与 context packet
@@ -577,22 +581,22 @@ D:\GroupX
 
 GroupX v0.1 完成必须同时满足：
 
-1. Structured 下 Codex App Server、Grok ACP、Kimi ACP 都通过 unrestricted release Gate；任一缺失、握手失败或 native interaction request 都明确失败，不自动切换 transport。Direct 配置、factory 与 runtime 入口保持关闭。
-2. 三个 Structured Adapter 的回复进入同一公共 transcript，用户可通过 Web/REST 明确选择下一目标继续群聊；普通模型文本不自动触发其他 CLI。
-3. 三个 Agent 在正常流程内的 sender 归属由 Structured session binding 决定，正文自称不会改变 UI 归属。
-4. 同一 Agent 顺序稳定，不同 Agent 并行；一个失败不阻塞其他两个。
+1. Structured 核心 Codex App Server、Grok ACP、Kimi ACP 继续满足既有 unrestricted release Gate；新增 Hermes driver 的能力声明只按它自己的 fixture/no-model/live evidence 分级。任一缺失、握手失败或 native interaction request 都明确失败，不自动切换 transport。Direct 配置、factory 与 runtime 入口保持关闭。
+2. 全部已配置 Structured Adapter 的回复进入同一公共 transcript，用户可通过 Web/REST 明确选择下一目标继续群聊；普通模型文本不自动触发其他 CLI。
+3. 每个 Agent 在正常流程内的 sender 归属由 Structured session binding 决定，正文自称不会改变 UI 归属。
+4. 同一 Agent 顺序稳定，不同 Agent 并行；一个失败不阻塞其他 Agent。
 5. 重复 `clientCommandId` 不重复创建 Turn。
 6. Broker 重启后恢复消息、公共记忆、身份记忆和 Structured capability；仅 Structured 且 `prepared + not_delivered` 的 Turn 可自动重新排队，历史 Direct、已派发或不确定 Turn 不自动重放。
-7. GroupX 对三 CLI 精确应用本文固定的 native unrestricted argv/session mode，不提供 access 配置、不写全局 CLI 配置；外部强制阻断显示 `native_policy_blocked`。
+7. GroupX 对每个已支持 driver 精确应用本文固定的 native unrestricted argv/session mode，不提供 access 配置、不写全局 CLI 配置；外部强制阻断显示 `native_policy_blocked`。
 8. 日志、数据库和测试证据只包含合同定义的有界字段，不主动收集完整环境、CLI 配置或原始 stderr。
-9. GroupX MCP `send/ask/read` 工具服务通过测试；三个 Structured Agent 都完成本机真实 native `tools/call` 与 binding provenance 才可宣称三 Agent 全向当前回合主动互调。
+9. GroupX MCP `send/ask/read` 工具服务通过测试；只有完成本机真实 native `tools/call` 与 binding provenance 的 driver 才可宣称当前回合主动互调已 verified。
 10. 代码、schema、REST、SSE 与 UI 均无 ApprovalService/table/API/UI/event；任何 native approval、permission、`requestUserInput`、question 或 elicitation 都进行有界 teardown，并且一律使当前 Turn 以 `UNEXPECTED_NATIVE_INTERACTION` 失败。`NATIVE_POLICY_BLOCKED/native_policy_blocked` 只由独立的外部策略 preflight 或 native 启动/session 拒绝 evidence 产生。不 relay、代选、fallback 或重放。
 11. Broker 本地延迟、10,000 事件投影和三路 fan-out 达到记录的性能门槛。
 
 ## 14. 当前未决但不阻塞架构的问题
 
 - SQLite 稳定驱动的具体包与版本：M0 安装/性能 smoke 后锁定；不直接依赖本机仍标 experimental 的 `node:sqlite`。
-- Grok/Kimi 对 `session/load` 与 MCP server 的真实支持程度：由 M0/M2 capability matrix 逐版本固定，不能根据产品名推断。
+- Grok/Kimi/Hermes 对 `session/load` 与 MCP server 的真实支持程度：由 driver-specific capability evidence 逐版本固定，不能根据产品名推断。
 - Codex GroupX MCP 的会话级注入方式：优先使用 App Server 已验证的 thread/session 配置，不依赖未验证的动态工具机制。
 - 各 CLI 如何报告企业/服务端/static deny：用 fixture 与有界 live evidence 固定 `NATIVE_POLICY_BLOCKED` 识别条件；不能从任意失败文本猜测。
 - Agent 显式 MCP 互发形成长链时的 hop/root-turn/queue 限制具体默认值：M2 根据真实运行证据固定；不把自然语言解析当作解决方案。

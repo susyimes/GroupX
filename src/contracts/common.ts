@@ -80,7 +80,12 @@ export const OptionalReplyToEventIdSchema = ReferenceIdSchema.nullable().optiona
   (value) => value ?? undefined
 );
 
-export const DEFAULT_KNOWN_TARGETS = ["agent:codex", "agent:grok", "agent:kimi"] as const;
+export const DEFAULT_KNOWN_TARGETS = [
+  "agent:codex",
+  "agent:grok",
+  "agent:kimi",
+  "agent:hermes"
+] as const;
 
 export type ClientCommandId = z.infer<typeof ClientCommandIdSchema>;
 export type AgentActorId = z.infer<typeof AgentActorIdSchema>;

@@ -2,13 +2,13 @@
 
 # ⚡ GroupX
 
-**把 Codex App Server、Grok ACP 和 Kimi ACP 放进同一个本地 Agent 房间。**
+**把 Codex App Server、Grok ACP、Kimi ACP 和 Hermes ACP 放进同一个本地 Agent 房间。**
 
 一个 Web UI，统一完成群聊路由、会话恢复、上下文压缩与本地记忆。
 
 ![npm](https://img.shields.io/npm/v/@susyimes/groupx?color=3370ff&label=npm)
 ![Node](https://img.shields.io/badge/node-24.14.x-3c873a)
-![Tests](https://img.shields.io/badge/tests-485%20passing-0d9f6e)
+![Tests](https://img.shields.io/badge/tests-493%20passing-0d9f6e)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%C2%B7%20macOS%20%C2%B7%20Linux-0078d6)
 ![Transport](https://img.shields.io/badge/transport-structured-9440c9)
 
@@ -26,7 +26,8 @@ GroupX 是一个只监听本机 loopback 的多 Agent 群聊 Broker。用户从�
 
 - Codex：App Server；
 - Grok：ACP；
-- Kimi：ACP。
+- Kimi：ACP；
+- Hermes：ACP。
 
 历史 `direct` 代码没有运行入口，不参与当前发布，也不会在 Structured 失败时自动 fallback。
 
@@ -41,6 +42,13 @@ GroupX 是一个只监听本机 loopback 的多 Agent 群聊 Broker。用户从�
 - **公共记忆**：用户显式固定给整个房间的事实、决定、偏好、指令、约束或备注。
 - **两层 Agent 记忆**：每个 Agent 拥有主动维护的核心记忆，以及成功回合后自动生成、按日期展示的私有记忆。
 - **会话恢复与故障收敛**：原生 session 支持 resume/load；可能已送达的业务 Prompt 不会自动重放。
+
+## 0.1.10 更新
+
+- 新增 Hermes ACP driver，可在首次引导页或 Agent 设置中添加多个 Hermes 实例。
+- 固定使用 `hermes --yolo acp`，并在每次新建或恢复 session 后设置 `dont_ask`。
+- 支持 Windows 官方安装目录与跨平台 `PATH` 命令解析；`groupx doctor` 可检测 Hermes 并正确显示版本。
+- Hermes 的 MCP capability 缺失兼容仅限 Hermes Adapter，不放宽其他 ACP driver 的能力检查。
 
 ## 0.1.9 更新
 
@@ -61,7 +69,7 @@ GroupX 是一个只监听本机 loopback 的多 Agent 群聊 Broker。用户从�
 前置条件：
 
 - Node.js `>=24.14.1 <25`；
-- 至少安装并登录 `codex`、`grok`、`kimi` 中的一种 CLI。
+- 至少安装并登录 `codex`、`grok`、`kimi`、`hermes` 中的一种 CLI。
 
 ```bash
 npm i -g @susyimes/groupx
@@ -109,7 +117,7 @@ GroupX 当前保持单房间结构，房间 ID 为 `room:main`。
 
 ## Agent 配置
 
-推荐通过首次引导页或右上角“Agent 设置”维护。`agents` 的键是稳定 Agent ID；内置 ID 可省略 `driver`，自定义 ID 必须声明 `driver: codex | grok | kimi`。
+推荐通过首次引导页或右上角“Agent 设置”维护。`agents` 的键是稳定 Agent ID；内置 ID 可省略 `driver`，自定义 ID 必须声明 `driver: codex | grok | kimi | hermes`。
 
 ```json
 {
@@ -134,6 +142,11 @@ GroupX 当前保持单房间结构，房间 ID 为 `room:main`。
       "command": "kimi",
       "cwd": ".",
       "enabled": false
+    },
+    "hermes": {
+      "command": "hermes",
+      "cwd": ".",
+      "enabled": false
     }
   }
 }
@@ -141,11 +154,13 @@ GroupX 当前保持单房间结构，房间 ID 为 `room:main`。
 
 每个启用的 Agent 拥有独立原生 process/session。修改名册不会热替换正在运行的 session，需要重启 GroupX。
 
+Hermes 使用固定的 `hermes --yolo acp` 启动形状，并在每次 `session/new` 或 `session/load` 后、首个 prompt 前设置 ACP mode 为 `dont_ask`。可先运行 `hermes acp --check` 检查本机 ACP 安装。GroupX 不修改 Hermes 的全局配置。
+
 ## 数据与运行边界
 
 - Web/API 默认只监听 `127.0.0.1`。
 - SQLite/WAL 是消息、Turn、记忆和摘要的本地权威事实源。
-- GroupX 不修改 Codex、Grok 或 Kimi 的全局配置。
+- GroupX 不修改 Codex、Grok、Kimi 或 Hermes 的全局配置。
 - GroupX 按固定 `unrestricted` profile 启动原生 CLI，但不能绕过操作系统权限、企业策略、静态 deny rule 或服务端限制。
 - GroupX 没有审批系统；如果 native CLI 仍请求审批、权限或用户交互，当前 Turn 会明确失败。
 - GroupX 不扫描普通消息或记忆中的秘密内容。不要把凭据发送到群聊。
@@ -199,3 +214,4 @@ npm run build
 - [Agent Client Protocol](https://agentclientprotocol.com/protocol/v1/overview)
 - [Kimi ACP](https://www.kimi.com/code/docs/en/kimi-code-cli/reference/kimi-acp)
 - [Grok CLI](https://docs.x.ai/build/cli/reference)
+- [Hermes ACP](https://github.com/nousresearch/hermes-agent/blob/main/website/docs/user-guide/features/acp.md)

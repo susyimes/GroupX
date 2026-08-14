@@ -531,6 +531,9 @@ function actorToneClass(actorId: string): string {
   if (actorId.startsWith("agent:kimi")) {
     return "actor-kimi";
   }
+  if (actorId.startsWith("agent:hermes")) {
+    return "actor-hermes";
+  }
   if (actorId.startsWith("user:")) {
     return "actor-user";
   }

@@ -12,9 +12,9 @@ GroupX v0.1 的历史类型保留两个值：
 transport: direct | structured
 ```
 
-- 公开运行入口只接受 `structured`，同一次 Broker 运行对 Codex、Grok、Kimi 使用同一值；
+- 公开运行入口只接受 `structured`，同一次 Broker 运行对全部已配置 Agent 使用同一值；
 - `direct` 仅为旧记录和已有 one-shot 源码保留，状态固定 `DEPRECATED`；配置解析、factory 与 runtime 均拒绝启动；
-- `structured` 使用 Codex App Server、Grok ACP、Kimi ACP 长驻 session；
+- `structured` 使用 Codex App Server 与 ACP driver 长驻 session；当前 driver 为 Grok、Kimi、Hermes；
 - message/Turn API 不接受 transport 覆盖；
 - Structured 失败时绝不自动 fallback 到 Direct；
 - `access` 不进入配置，v0.1 恒为 `unrestricted`。
@@ -54,6 +54,7 @@ DEPRECATED
 | Codex | 新会话：`codex --yolo --dangerously-bypass-hook-trust exec --json -`；续会话：`codex --yolo --dangerously-bypass-hook-trust exec resume --json <sessionId> -` | `codex --dangerously-bypass-hook-trust app-server --listen stdio://`；`thread/start`/`thread/resume` 固定 `approvalPolicy="never"`、`sandbox="danger-full-access"` |
 | Grok | `grok --no-auto-update --permission-mode bypassPermissions --sandbox off --no-plan [--resume <sessionId>] --output-format streaming-json --single <prompt>`；`-p` 是 `--single` 短别名 | `grok --no-auto-update --permission-mode bypassPermissions --sandbox off --no-plan agent stdio` |
 | Kimi | deprecated Direct 参考实现保留只读配置 preflight 后使用 `kimi [--session <id>] --prompt <prompt> --output-format stream-json` | 直接启动 `kimi acp`；不以全局默认 permission/plan 为门禁。每次 `session/new` 或 `session/load`（含 Adapter resume）后、首个 prompt 前发送 `session/set_mode {sessionId, modeId:"auto"}` |
+| Hermes | `NOT_APPLICABLE` | `hermes --yolo acp`；每次 `session/new` 或 `session/load` 后、首个 prompt 前发送 `session/set_mode {sessionId, modeId:"dont_ask"}` |
 
 Codex 0.147 的 thread-level `sandbox` 是 kebab-case 字符串 `danger-full-access`；camel-case `dangerFullAccess` 是 `turn/start.sandboxPolicy.type` 的另一种 wire shape，不能混用。Codex child 使用 Agent 配置的 OS cwd，thread params 省略 cwd。Structured 启动前发送 `configRequirements/read {}`：requirements 为 null/缺失表示无约束；显式 allowlist 不含 `never` 或 `danger-full-access` 时以 `NATIVE_POLICY_BLOCKED` 失败。证据只保存有界结论。
 
@@ -61,7 +62,7 @@ Grok 的全局 flags 必须位于 `agent stdio` 或 `--single` 之前。企业�
 
 Kimi Direct 已 deprecated；其历史 one-shot 代码仍因 `--prompt` 与权限 flags 的互斥关系保留只读配置 preflight。Active Structured 不使用这条 preflight：官方 ACP 提供 `session/set_mode`，所以默认 global `manual` 允许启动，GroupX 在每次 `session/new` 或 `session/load`（含 Adapter resume）后设置当前 session 为 auto。mode 不持久化，必须逐 session 重设；auto 仍受 static deny。
 
-固定 argv/mode 只作用于 GroupX 启动的 process/thread/session。GroupX 不写三套 CLI 的全局配置，也不允许通用 `extraArgs` 改写这些常量。Structured Kimi 不读取全局配置来决定是否启动。
+固定 argv/mode 只作用于 GroupX 启动的 process/thread/session。GroupX 不写任何受支持 CLI 的全局配置，也不允许通用 `extraArgs` 改写这些常量。Structured Kimi 不读取全局配置来决定是否启动；Hermes 不追加会持久化 hook approval 的参数。
 
 ## 4. Wire 合同
 
@@ -85,11 +86,11 @@ Kimi Direct 已 deprecated；其历史 one-shot 代码仍因 `--prompt` 与权�
 5. 唯一 `turn/completed` 是 terminal；
 6. GroupX MCP 通过 thread/process 范围配置绑定，不写全局配置。
 
-### 4.3 Grok/Kimi ACP
+### 4.3 Grok/Kimi/Hermes ACP
 
 1. 启动固定 argv，发送 ACP `initialize`；ACP client-agent 生命周期不发送 App Server 的 `initialized` notification；
 2. `session/new`，或 capability verified 后 `session/load`；
-3. Kimi 不要求 global-config preflight；在每次 new/load 后、首 prompt 前完成 `session/set_mode(auto)`；
+3. Kimi 不要求 global-config preflight；在每次 new/load 后、首 prompt 前完成 `session/set_mode(auto)`；Hermes 以 `--yolo acp` 启动，并在同一位置完成 `session/set_mode(dont_ask)`；
 4. `session/prompt` 与 `session/update` 归一化，matching response/`stopReason` 是 terminal；
 5. `session/cancel` 是 notification；
 6. 原生支持时 `session/close`，随后有界关闭进程。
@@ -149,6 +150,8 @@ Direct native run `20260811T132505879Z` 与 fixture run `20260811T132257280Z` �
 | Structured unrestricted | `PASS` | `PASS` | `PASS` | `PASS` |
 
 本机 help/parser 与最小 wire probe 已确认本文件列出的若干 argv/字段形态，这些属于 `advertised/probed`，不等于端到端 `verified`。机器可读当前状态见 [generated/m0-capabilities.json](generated/m0-capabilities.json)。
+
+Hermes 0.20.1 已完成 `acp --check`、initialize、session/new、`dont_ask` 与跨进程 session/load 的无模型 probe；当前生成矩阵仍是原有 Codex/Grok/Kimi 核心 release baseline，不含 Hermes。Hermes 模型回复、GroupX MCP actual call、模型执行中 cancel 与 clean close 必须以新的 matching live evidence 单独验证，不能借用表中 Structured `PASS`。
 
 ## 8. Release Gate
 

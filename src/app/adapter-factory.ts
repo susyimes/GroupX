@@ -1,4 +1,4 @@
-import { GrokAcpAdapter, KimiAcpAdapter } from "../adapters/acp/index.js";
+import { GrokAcpAdapter, HermesAcpAdapter, KimiAcpAdapter } from "../adapters/acp/index.js";
 import { CodexAppServerAdapter } from "../adapters/codex/index.js";
 import { AdapterRegistry } from "../adapters/registry.js";
 import type { CliAdapter } from "../adapters/types.js";
@@ -26,6 +26,8 @@ export function createStructuredAgentAdapter(
       return new GrokAcpAdapter(acpOptions);
     case "kimi":
       return new KimiAcpAdapter(acpOptions);
+    case "hermes":
+      return new HermesAcpAdapter(acpOptions);
   }
 }
 

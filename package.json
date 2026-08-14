@@ -1,7 +1,7 @@
 {
   "name": "@susyimes/groupx",
-  "version": "0.1.9",
-  "description": "Local transparent group-chat broker for Codex, Grok, and Kimi CLIs",
+  "version": "0.1.10",
+  "description": "Local transparent group-chat broker for Codex, Grok, Kimi, and Hermes CLIs",
   "type": "module",
   "main": "dist/src/main.js",
   "types": "dist/src/main.d.ts",
@@ -39,6 +39,7 @@
     "codex",
     "grok",
     "kimi",
+    "hermes",
     "cli",
     "multi-agent",
     "group-chat",

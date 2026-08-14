@@ -5,14 +5,18 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { GrokAcpAdapter, KimiAcpAdapter } from "../../../../src/adapters/acp/index.js";
+import {
+  GrokAcpAdapter,
+  HermesAcpAdapter,
+  KimiAcpAdapter
+} from "../../../../src/adapters/acp/index.js";
 import type { NativeEvent, NativeSession } from "../../../../src/adapters/types.js";
 import { GroupXError } from "../../../../src/core/errors.js";
 
 const FIXTURE_SOURCE = fileURLToPath(new URL("../../../fixtures/acp", import.meta.url));
 const workspaces: string[] = [];
 const liveSessions: Array<{
-  adapter: GrokAcpAdapter | KimiAcpAdapter;
+  adapter: GrokAcpAdapter | KimiAcpAdapter | HermesAcpAdapter;
   session: NativeSession;
 }> = [];
 
@@ -175,6 +179,105 @@ describe("ACP v1 adapter kernel", () => {
     expect(incomingFrames(await wireLog(unsupportedWorkspace)).map((frame) => frame.method)).toEqual([
       "initialize"
     ]);
+  });
+
+  it("starts Hermes in yolo/dont_ask mode and attaches its documented HTTP MCP descriptor", async () => {
+    const workspace = await fixtureWorkspace({
+      agentName: "hermes-agent",
+      agentVersion: "0.20.1",
+      agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } }
+    });
+    const adapter = hermesAdapter();
+    const session = await adapter.start({
+      command: process.execPath,
+      prefixArgs: fixturePrefixArgs(workspace),
+      cwd: workspace,
+      instanceId: "instance:hermes:http",
+      bindingId: "binding:hermes:http",
+      mcp: { transport: "streamable-http", url: "http://127.0.0.1:4310/mcp/hermes" }
+    });
+    liveSessions.push({ adapter, session });
+
+    expect(session).toMatchObject({
+      adapterId: "hermes",
+      actorId: "agent:hermes",
+      nativeSessionId: "fixture-session-1"
+    });
+    const probe = await adapter.probe();
+    expect(probe.launchArgvShape).toEqual([
+      process.execPath,
+      ...fixturePrefixArgs(workspace),
+      "--yolo",
+      "acp"
+    ]);
+    expect(probe.findings.find(({ capability }) => capability === "mcp.http")).toMatchObject({
+      level: "probed"
+    });
+
+    await adapter.close(session);
+    liveSessions.pop();
+    const inbound = incomingFrames(await wireLog(workspace));
+    expect(inbound.map((frame) => frame.method)).toEqual([
+      "initialize",
+      "session/new",
+      "session/set_mode"
+    ]);
+    expect(inbound.find((frame) => frame.method === "session/new")).toMatchObject({
+      params: {
+        mcpServers: [{
+          type: "http",
+          name: "groupx",
+          url: "http://127.0.0.1:4310/mcp/hermes",
+          headers: [{ name: "X-GroupX-Binding", value: "binding:hermes:http" }]
+        }]
+      }
+    });
+    expect(inbound.find((frame) => frame.method === "session/set_mode")).toMatchObject({
+      params: { sessionId: session.nativeSessionId, modeId: "dont_ask" }
+    });
+  });
+
+  it("rejects a non-Hermes ACP implementation behind the Hermes driver", async () => {
+    const workspace = await fixtureWorkspace({ agentName: "not-hermes" });
+    const adapter = hermesAdapter();
+    await expect(
+      adapter.start({
+        command: process.execPath,
+        prefixArgs: fixturePrefixArgs(workspace),
+        cwd: workspace,
+        bindingId: "binding:hermes:wrong-agent"
+      })
+    ).rejects.toMatchObject({ code: "PROTOCOL_INVALID_MESSAGE" });
+    expect(incomingFrames(await wireLog(workspace)).map((frame) => frame.method)).toEqual([
+      "initialize"
+    ]);
+  });
+
+  it("restores Hermes with session/load and reapplies dont_ask before returning ready", async () => {
+    const workspace = await fixtureWorkspace({
+      agentName: "hermes-agent",
+      agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } }
+    });
+    const adapter = hermesAdapter();
+    const session = await adapter.resume({
+      command: process.execPath,
+      prefixArgs: fixturePrefixArgs(workspace),
+      cwd: workspace,
+      instanceId: "instance:hermes:resume",
+      bindingId: "binding:hermes:resume",
+      nativeSessionId: "fixture-hermes-existing"
+    });
+    liveSessions.push({ adapter, session });
+
+    expect(session.nativeSessionId).toBe("fixture-hermes-existing");
+    expect(incomingFrames(await wireLog(workspace)).map((frame) => frame.method)).toEqual([
+      "initialize",
+      "session/load",
+      "session/set_mode"
+    ]);
+    expect(incomingFrames(await wireLog(workspace)).find((frame) => frame.method === "session/set_mode")).toMatchObject({
+      params: { sessionId: "fixture-hermes-existing", modeId: "dont_ask" }
+    });
   });
 
   it("does not require the user's global permission defaults before setting ACP auto mode", async () => {
@@ -633,7 +736,7 @@ describe("ACP v1 adapter kernel", () => {
 });
 
 async function start(
-  adapter: GrokAcpAdapter | KimiAcpAdapter,
+  adapter: GrokAcpAdapter | KimiAcpAdapter | HermesAcpAdapter,
   workspace: string,
   bindingId: string
 ): Promise<NativeSession> {
@@ -657,6 +760,14 @@ function grokAdapter(): GrokAcpAdapter {
 
 function kimiAdapter(): KimiAcpAdapter {
   return new KimiAcpAdapter({
+    handshakeTimeoutMs: 1_000,
+    closeGraceMs: 250,
+    killGraceMs: 250
+  });
+}
+
+function hermesAdapter(): HermesAcpAdapter {
+  return new HermesAcpAdapter({
     handshakeTimeoutMs: 1_000,
     closeGraceMs: 250,
     killGraceMs: 250

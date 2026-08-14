@@ -2,7 +2,7 @@ import { z } from "zod";
 
 import { parseContractOutput, parseWriteRequest } from "./validation.js";
 
-export const SetupAgentDriverSchema = z.enum(["codex", "grok", "kimi"]);
+export const SetupAgentDriverSchema = z.enum(["codex", "grok", "kimi", "hermes"]);
 
 export const SetupAgentIdSchema = z
   .string()
@@ -69,7 +69,7 @@ export const SetupSnapshotSchema = z
     configPath: z.string().min(1),
     existing: z.boolean(),
     runtimeActive: z.boolean(),
-    drivers: z.array(SetupDriverProbeSchema).length(3),
+    drivers: z.array(SetupDriverProbeSchema).length(SetupAgentDriverSchema.options.length),
     config: SetupConfigDraftSchema,
     existingConfigError: z.string().min(1).optional()
   })
@@ -78,7 +78,7 @@ export const SetupSnapshotSchema = z
     if (drivers.size !== SetupAgentDriverSchema.options.length) {
       context.addIssue({
         code: "custom",
-        message: "driver probes must contain codex, grok, and kimi exactly once",
+        message: "driver probes must contain codex, grok, kimi, and hermes exactly once",
         path: ["drivers"]
       });
     }

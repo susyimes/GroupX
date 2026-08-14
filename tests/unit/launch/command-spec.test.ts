@@ -9,6 +9,7 @@ import {
 const paths = path.win32;
 const baseDirectory = "C:\\workspace";
 const appData = "C:\\Users\\groupx\\AppData\\Roaming";
+const localAppData = "C:\\Users\\groupx\\AppData\\Local";
 const userProfile = "C:\\Users\\groupx";
 const nodeExecutable = "C:\\Program Files\\nodejs\\node.exe";
 const codexEntrypoint = paths.resolve(
@@ -30,6 +31,14 @@ const kimiEntrypoint = paths.resolve(
   "main.mjs"
 );
 const grokExecutable = paths.resolve(userProfile, ".grok", "bin", "grok.exe");
+const hermesExecutable = paths.resolve(
+  localAppData,
+  "hermes",
+  "hermes-agent",
+  "venv",
+  "Scripts",
+  "hermes.exe"
+);
 
 function dependencies(
   files: readonly string[],
@@ -40,6 +49,7 @@ function dependencies(
     platform: "win32",
     env: {
       APPDATA: appData,
+      LOCALAPPDATA: localAppData,
       USERPROFILE: userProfile,
       PATH: "C:\\Tools",
       ...environment
@@ -74,6 +84,49 @@ describe("shell-free Agent command resolution", () => {
       executable: grokExecutable,
       prefixArgs: []
     });
+  });
+
+  it("resolves Hermes from PATH or its official Windows install location", () => {
+    const pathExecutable = "C:\\Tools\\hermes.exe";
+    expect(
+      resolveAgentCommand(
+        "hermes",
+        "hermes",
+        legacy("hermes"),
+        baseDirectory,
+        dependencies([pathExecutable])
+      )
+    ).toEqual({ executable: pathExecutable, prefixArgs: [] });
+
+    expect(
+      resolveAgentCommand(
+        "hermes",
+        "hermes",
+        legacy("hermes"),
+        baseDirectory,
+        dependencies([hermesExecutable], { PATH: "C:\\Empty" })
+      )
+    ).toEqual({ executable: hermesExecutable, prefixArgs: [] });
+  });
+
+  it("resolves Hermes as a native executable on a POSIX PATH", () => {
+    const executable = "/opt/homebrew/bin/hermes";
+    const resolver: CommandResolverDependencies = {
+      platform: "darwin",
+      env: { PATH: "/opt/homebrew/bin:/usr/local/bin" },
+      execPath: "/opt/homebrew/bin/node",
+      isFile: (candidate) => candidate === executable
+    };
+
+    expect(
+      resolveAgentCommand(
+        "hermes",
+        "hermes",
+        legacy("hermes"),
+        "/workspace",
+        resolver
+      )
+    ).toEqual({ executable, prefixArgs: [] });
   });
 
   it("fails closed when only an npm cmd shim exists instead of the known JavaScript entrypoint", () => {

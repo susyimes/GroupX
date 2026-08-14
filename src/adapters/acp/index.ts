@@ -1,5 +1,6 @@
 export { AcpV1Adapter, type AcpV1AdapterOptions } from "./acp-v1-adapter.js";
 export { GrokAcpAdapter } from "./grok-acp-adapter.js";
+export { HermesAcpAdapter, type HermesAcpAdapterOptions } from "./hermes-acp-adapter.js";
 export { KimiAcpAdapter, type KimiAcpAdapterOptions } from "./kimi-acp-adapter.js";
 export {
   ACP_PROTOCOL_VERSION,

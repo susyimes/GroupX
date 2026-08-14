@@ -158,6 +158,17 @@ export abstract class AcpV1Adapter implements CliAdapter {
     return Promise.resolve();
   }
 
+  /**
+   * Adapter-specific effective capabilities used for the current session.
+   * The raw initialize response remains the capability-reporting source.
+   */
+  protected effectiveCapabilities(
+    capabilities: AcpAgentCapabilities,
+    _agentInfo: AcpImplementationInfo | undefined
+  ): AcpAgentCapabilities {
+    return capabilities;
+  }
+
   /** Narrow classifier for explicit native/managed policy blocks. */
   protected isNativePolicyBlock(error: unknown): boolean {
     return isStructuredPolicyBlock(error);
@@ -489,7 +500,10 @@ export abstract class AcpV1Adapter implements CliAdapter {
           { timeoutMs: this.#handshakeTimeoutMs }
         )
       );
-      runtime.capabilities = initialized.agentCapabilities;
+      runtime.capabilities = this.effectiveCapabilities(
+        structuredClone(initialized.agentCapabilities),
+        initialized.agentInfo
+      );
       this.#lastCapabilities = structuredClone(initialized.agentCapabilities);
       this.#lastAgentInfo = initialized.agentInfo;
       this.#observed.add("initialize");

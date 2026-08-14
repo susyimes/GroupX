@@ -1,4 +1,4 @@
-export type AdapterId = "codex" | "grok" | "kimi" | (string & {});
+export type AdapterId = "codex" | "grok" | "kimi" | "hermes" | (string & {});
 
 export type CapabilityLevel =
   | "documented"

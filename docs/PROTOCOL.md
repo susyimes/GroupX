@@ -8,7 +8,7 @@
 
 协议需要同时满足：
 
-- 浏览器、Broker、三个 CLI 使用同一语义事件；
+- 浏览器、Broker、全部已配置 CLI 使用同一语义事件；
 - 正常 Adapter invocation/会话流程中的 actor 由 binding 决定，正文和工具参数不能指定 sender；
 - 所有消息在群内可见，但只有明确目标被唤醒；
 - Web/REST 在 active Structured 模式表达用户或本地客户端路由；GroupX MCP `send/ask/read` 提供 Agent 当前回合主动异步发送与同步问答；deprecated Direct 只保留兼容语义；
@@ -16,7 +16,7 @@
 - 原生 CLI 事件可以扩展，而不把核心绑定到某个 CLI schema；
 - 将来可以映射到 A2A Message/Task/Artifact，但首版不承担完整 A2A 生命周期。
 
-运行合同：存储/历史 Envelope 可出现 `direct | structured`，但公开运行配置只接受 `structured`。Direct 标记为 deprecated，配置解析、Adapter factory 与 runtime constructor 均拒绝启动。同一次运行三个 Agent 使用 Structured；REST、MCP 和单 Turn 都不能覆盖，也不允许自动 fallback。`access` 是内部固定值 unrestricted，不进入请求、Envelope 或可变数据库策略。
+运行合同：存储/历史 Envelope 可出现 `direct | structured`，但公开运行配置只接受 `structured`。Direct 标记为 deprecated，配置解析、Adapter factory 与 runtime constructor 均拒绝启动。同一次运行全部已配置 Agent 使用 Structured；REST、MCP 和单 Turn 都不能覆盖，也不允许自动 fallback。`access` 是内部固定值 unrestricted，不进入请求、Envelope 或可变数据库策略。
 
 ## 2. Envelope
 
@@ -104,7 +104,7 @@ routing.loop_stopped
 system.error
 ```
 
-`session.*` 表达 native session lineage，而不是进程是否长驻：Structured 在长驻连接上产生；Direct 只有实际解析到 native session ID 或 resume 成功时才产生相应事件。`session.resumed` 只在 Codex `exec resume`、Grok `--resume`、Kimi `--session`、App Server `thread/resume` 或 ACP `session/load` 真实成功时产生。Active Kimi ACP 不以 global config preflight 为启动门禁；`session/set_mode(auto)` 必须在 new/load 后、首 prompt 前完成。协议中不存在 `approval.*` 事件。
+`session.*` 表达 native session lineage，而不是进程是否长驻：Structured 在长驻连接上产生；Direct 只有实际解析到 native session ID 或 resume 成功时才产生相应事件。`session.resumed` 只在原生 resume/load 真实成功时产生。Codex 使用 App Server `thread/resume`，ACP driver 使用 `session/load`。Active Kimi ACP 不以 global config preflight 为启动门禁；`session/set_mode(auto)` 必须在 new/load 后、首 prompt 前完成。Hermes 必须以 `--yolo acp` 启动，并在 new/load 后、首 prompt 前完成 `session/set_mode(dont_ask)`。协议中不存在 `approval.*` 事件。
 
 `session.retrying` 与 `context.compaction.*` 是 transient 运行进度，重连后不回放。body 只包含 operation/Agent、attempt/maxAttempts、下一次退避时间、覆盖序号及稳定错误码等有界投影，不包含 prompt、摘要正文、raw stderr 或 CLI 配置。
 

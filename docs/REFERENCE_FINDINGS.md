@@ -9,7 +9,7 @@ GroupX v0.1 支持：
 
 ```text
 transport=direct      -> deprecated compatibility: 每个 Turn 一次非交互 CLI
-transport=structured  -> Codex App Server / Grok ACP / Kimi ACP
+transport=structured  -> Codex App Server / Grok ACP / Kimi ACP / Hermes ACP
 default=structured
 automatic fallback=false
 ```
@@ -136,29 +136,41 @@ GroupX mapping：Direct 使用 fixed yolo argv；Structured thread start/resume 
 
 如果设置 auto 后仍出现 `session/request_permission`，GroupX 返回 `cancelled` 结清 request、发送 `session/cancel`，然后一律以 `UNEXPECTED_NATIVE_INTERACTION` 失败。`NATIVE_POLICY_BLOCKED` 只能由独立 preflight、startup/session 创建或 mode 设置拒绝的明确 static-deny evidence 产生，request/options 不能触发升级。
 
-### 6.4 ACP v1
+### 6.4 Hermes ACP
+
+官方资料：[ACP integration](https://github.com/nousresearch/hermes-agent/blob/main/website/docs/developer-guide/programmatic-integration.md)、[Hermes ACP guide](https://github.com/nousresearch/hermes-agent/blob/main/website/docs/user-guide/features/acp.md)、[CLI reference](https://github.com/nousresearch/hermes-agent/blob/main/website/docs/reference/cli-commands.md)
+
+- 官方入口是 `hermes acp`，`hermes acp --check` 可执行不发模型请求的安装检查；
+- GroupX 固定使用 `hermes --yolo acp`，并在每次 `session/new`/`session/load` 后发送 `session/set_mode {modeId:"dont_ask"}`；
+- 本机 0.20.1 的 ACP initialize 支持 `loadSession`，session new/load/set-mode 已完成无模型 probe；
+- 0.20.1 initialize 未声明 `mcpCapabilities.http`，但官方 server 实现会接收 new/load 的 HTTP MCP descriptor。GroupX 只在 Hermes driver 内使用这个窄兼容规则，raw capability report 仍保留未声明事实；
+- GroupX 不追加会持久化 hook approval 的参数，也不写 Hermes 全局配置；任何 permission/question request 继续按 `UNEXPECTED_NATIVE_INTERACTION` 失败当前 Turn。
+
+以上只证明命令、握手、会话配置与恢复 wire。Hermes 模型回复、真实 GroupX MCP `tools/call` 和模型执行中的 cancel 尚未作为 matching live evidence 记录，不能写成 verified。
+
+### 6.5 ACP v1
 
 官方资料：[Agent Client Protocol v1](https://agentclientprotocol.com/protocol/v1/overview)
 
-ACP 定义 client-agent initialize、session/new/load/prompt/update/cancel 和 permission request。ACP initialize 只有 request/response，不发送 Codex App Server 的 `initialized` notification；`session/cancel` 是 notification；`session/prompt` matching response 提供 terminal stop reason。ACP 不是三 Agent 消息总线。
+ACP 定义 client-agent initialize、session/new/load/prompt/update/cancel 和 permission request。ACP initialize 只有 request/response，不发送 Codex App Server 的 `initialized` notification；`session/cancel` 是 notification；`session/prompt` matching response 提供 terminal stop reason。ACP 不是 Agent 消息总线。
 
-### 6.5 MCP
+### 6.6 MCP
 
 MCP 只在 Structured 解决“CLI 在当前生成回合调用 GroupX 工具”。调用者来自 session-specific binding，不来自 tool arguments 的 `from`。这是 Broker 正常 binding 流程内的 provenance/correlation，不是认证或抵抗恶意本机进程的安全边界。Direct 不注入、不发现、不宣告 MCP。
 
 旧 Structured evidence 曾观察到 Codex/Grok actual `tools/call`，但未使用新版完整 unrestricted profile，仍只保留为 `legacy-nonconforming`。当前 native run `20260811T130102169Z` 已在新版合同下让 Codex/Grok/Kimi 各自真实完成一次 `groupx.send` tools/call、binding attribution、stream、cancel 后复用、配置不写与 clean close；它与独立 fixture evidence 共同关闭默认 Structured release Gate。
 
-### 6.6 Native approval/permission wire
+### 6.7 Native approval/permission wire
 
 App Server/ACP 官方协议能够表达 approval、permission 或 user-input request，这只是 wire 事实，不是 GroupX 产品能力。GroupX v0.1 没有 ApprovalService、表、REST、UI、event 或 pending 状态；任何此类 request 都按 [M0 失败合同](M0_TRANSPORT_SPIKE.md#5-无审批子系统与失败合同) 终止 Turn。
 
 旧 Kimi permission options/reject evidence 不能证明新版 `native_policy_blocked`；该错误需要明确 enterprise/server/static deny evidence。
 
-### 6.7 A2A
+### 6.8 A2A
 
 官方资料：[A2A specification](https://a2a-protocol.org/latest/specification/)
 
-A2A 面向独立/远程 Agent，包含 Agent Card、Message、Task、Artifact、发现与异步生命周期。GroupX 首版固定三个本地 Agent，不把这些网络边界搬进内部核心；A2A 只作为 M3 edge adapter。
+A2A 面向独立/远程 Agent，包含 Agent Card、Message、Task、Artifact、发现与异步生命周期。GroupX 首版面向本地配置名册，不把这些网络边界搬进内部核心；A2A 只作为 M3 edge adapter。
 
 ## 7. 当前证据适用性
 
@@ -169,6 +181,7 @@ A2A 面向独立/远程 Agent，包含 Agent Card、Message、Task、Artifact、
 | 旧 Kimi ACP session/cancel/load/permission | 历史 wire evidence | `legacy-nonconforming`，不可关闭 |
 | 当前 Kimi ACP new/set-mode/prompt/MCP/close | matching live evidence | 作为 Structured Kimi 历史匹配证据保留；global-config preflight 已从 active 路径移除 |
 | 当前 Structured runtime Web 群发/resume/三回复/close | matching live evidence | Codex/Grok/Kimi 的 M0-02/M0-03/M0-09/M0-15 为 PASS |
+| Hermes 0.20.1 `acp --check` + initialize/new/set-mode/cold-load | matching no-model probe | 命令与 session wire 为 `probed`；模型回复/MCP actual call/cancel 尚未 `verified` |
 | 本机 argv/help/parser 与最小 wire probe | advertised/probed | 可固定命令/字段，不等于 live PASS |
 | 当前 Direct runtime 新会话 + 重启续会话 | deprecated historical evidence | 仅说明旧兼容实现曾具备连续性，不满足当前 Gate |
 | Direct unrestricted native live `20260811T132505879Z` + fixture `20260811T132257280Z` | deprecation 前三 Agent one-shot/cancel/resume 与 104 项 fixture 曾 PASS | `canSatisfyCurrentGate=false`；Direct baseline 固定 `DEPRECATED` |

@@ -20,7 +20,7 @@
 | broker integration | SQLite、Turn/attempt、恢复、SSE cursor、memory/identity | 否 |
 | Direct fixture | JSON/JSONL、exit、stderr、取消、interaction detection | 否 |
 | Structured fixture | App Server/ACP wire、session、cancel、resume、interaction detection | 否 |
-| native live | 3 Agent × Structured 的 fixed unrestricted profile 与实际能力 | 是 |
+| native live | 核心 3 Agent Structured Gate；新增 driver 使用独立 matching evidence | 是 |
 | MCP integration | `send/ask/read`、binding、因果循环、native actual call；仅 Structured | fixture 必跑；Structured live 必跑 |
 | browser e2e | 发送、并行回复、sender、memory/identity、无审批 UI | fake 必跑；live 显式运行 |
 | performance | 测量 Structured Broker/session/stream 延迟 | native 模型耗时不计入 Broker 指标 |
@@ -29,7 +29,7 @@
 
 | ID | 用例 | 通过标准 |
 | --- | --- | --- |
-| G-001 | 配置省略 transport | 启动选择为 `structured`，三个 Agent 相同 |
+| G-001 | 配置省略 transport | 启动选择为 `structured`，全部已配置 Agent 相同 |
 | G-002 | transport=`direct` / `structured` | Structured 正常启动；Direct 在配置解析与 programmatic runtime 入口 fail-closed，且未打开运行时资源 |
 | G-003 | POST message 带 transport/access | 返回 `INVALID_ENVELOPE`，不能按 Turn 覆盖 |
 | G-004 | access 配置项 | schema 不提供；任何值都不能改变内部 `unrestricted` 常量 |
@@ -39,6 +39,8 @@
 | G-008 | Kimi session mode 负向 | `session/set_mode(auto)` 的明确 native policy 拒绝为 `NATIVE_POLICY_BLOCKED`；普通协议失败按 Adapter 错误收敛；不写全局配置、不 fallback |
 | G-009 | 重复 `groupx start` | 同 config path + canonical config 的现有 runtime 被识别并复用，命令返回成功且不打开 Store/Adapter；另一 config、旧版 GroupX 或非 GroupX listener 明确报端口冲突，不杀进程、不换端口 |
 | G-010 | 并发启动 bind 竞态 | 预检后 `EADDRINUSE` 会有界复查；同 key 赢家按复用成功，无法识别的 listener 返回友好错误，失败方不修改现有 binding/session |
+| G-011 | Hermes Structured 启动 | argv 固定 `hermes --yolo acp`；initialize 必须标识 `hermes-agent`；new/load 后首 prompt 前成功设置 `dont_ask`；不写全局配置 |
+| G-012 | Hermes capability 兼容 | raw initialize 未声明 HTTP 时只有 Hermes driver 可按官方实现接收 HTTP MCP descriptor；其他 ACP driver 仍 fail-closed；报告不得把 descriptor 冒充 actual call |
 
 精确 native profile：
 
@@ -47,6 +49,7 @@
 | Codex | 新会话：`codex --yolo --dangerously-bypass-hook-trust exec --json -`；续会话：同一前缀 `exec resume --json <sessionId> -` | `codex --dangerously-bypass-hook-trust app-server --listen stdio://`；thread start/resume 为 `approvalPolicy="never"`、`sandbox="danger-full-access"` |
 | Grok | flags 在前：`--no-auto-update --permission-mode bypassPermissions --sandbox off --no-plan [--resume <sessionId>] --output-format streaming-json --single <prompt>` | 同一 flags 在前，追加 `agent stdio` |
 | Kimi | deprecated Direct 参考实现保留 preflight 后的 one-shot argv | `kimi acp`；不要求 global default mode；new/load（含 Adapter resume）后首 prompt 前 `session/set_mode {sessionId,modeId:"auto"}` |
+| Hermes | `NOT_APPLICABLE` | `hermes --yolo acp`；new/load 后首 prompt 前 `session/set_mode {sessionId,modeId:"dont_ask"}` |
 
 Kimi ACP 不读取 global defaults 作为启动门禁；mode 不持久化，任何新建或恢复 session 都要重设。Codex thread sandbox 必须是当前 0.147 wire 的 kebab-case `danger-full-access`；不能误用 `dangerFullAccess`。
 
@@ -59,6 +62,8 @@ Direct 不再有“最低可用”发布合同。旧 argv/preflight/resume 实�
 Structured release 合同：三 Agent 都能用 fixed argv/mode 握手、建立/恢复 session、完成 Turn、取消后复用、可靠关闭，并完成 Structured MCP live actual call。任一 native interaction request 必须按负向合同失败 Turn。
 
 当前 Structured Gate 已通过，且没有跨 transport 或沿用旧 non-unrestricted evidence：native run `20260811T130102169Z` 覆盖三 Agent 的 fixed argv/version、stream、sender provenance、actual MCP、cancel 后复用、配置不写与清理，fixture run `20260811T125831853Z` 覆盖负向合同。Direct 的两条后续 live/fixture run 仅保留为 deprecated historical evidence，`canSatisfyCurrentGate=false`。
+
+Hermes 是后加 driver，不改变上述核心三 Agent Gate。它的 adapter fixture 与 0.20.1 无模型 initialize/new/set-mode/cold-load probe 可以证明 wiring 和 session contract；在 Hermes 真实模型回复、GroupX MCP actual call、cancel 后复用与 clean close 的 matching live evidence 完成前，相关 Hermes 能力只能标 `documented/probed`，不能借用核心三 Agent 的 PASS。
 
 ## 5. 协议与 sender provenance
 
@@ -235,6 +240,7 @@ Broker 指标不含模型网络/推理；只测 Structured session startup/reuse
 - 默认 Structured 三 Agent 的全部适用 M0 case PASS，才可关闭 v0.1 release transport Gate；
 - Direct 不得被宣称为 active/完整可用；其 baseline、Agent 和适用 case 保持 `DEPRECATED`；
 - Structured 三 Agent actual MCP call 全部 verified，才可宣称全向当前回合主动互调；
+- 新增 Hermes driver 的产品入口可以随实现交付，但 Hermes native/MCP 能力声明必须按其独立 evidence 分级；
 - native interaction 负向合同通过，且无 approval surface；
 - 无自动 fallback、跨 transport recovery 或 replay。
 

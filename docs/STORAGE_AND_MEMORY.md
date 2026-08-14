@@ -6,7 +6,7 @@
 
 SQLite/WAL 是 GroupX 唯一权威事实源。Broker 是唯一写入者。
 
-存储继续接受 `direct | structured` 以读取旧记录；新产品与 release 路径使用 `structured`，`direct` 为 deprecated compatibility value。同一次 Broker 运行三个 Agent 共用启动级 transport；请求不能覆盖，也不自动 fallback。`access` 恒为 unrestricted，不建立可变配置列、请求字段或数据库 policy 状态。
+存储继续接受 `direct | structured` 以读取旧记录；新产品与 release 路径使用 `structured`，`direct` 为 deprecated compatibility value。同一次 Broker 运行全部已配置 Agent 共用启动级 transport；请求不能覆盖，也不自动 fallback。`access` 恒为 unrestricted，不建立可变配置列、请求字段或数据库 policy 状态。
 
 - CLI 不直接写数据库；
 - Browser 不直接写数据库；
@@ -101,7 +101,7 @@ session_bindings(
 )
 ```
 
-当前 binding 表示 Structured native session：Codex 使用 `codex-app-server`，Grok/Kimi 使用 `acp`。历史 Direct binding 仍按旧 invocation 语义可读，但当前 runtime 不创建或恢复它。M2 GroupX MCP 只关联 Structured session binding，不为三个 Agent 共用匿名入口。
+当前 binding 表示 Structured native session：Codex 使用 `codex-app-server`，Grok/Kimi/Hermes 使用 `acp`。历史 Direct binding 仍按旧 invocation 语义可读，但当前 runtime 不创建或恢复它。M2 GroupX MCP 只关联各自的 Structured session binding，不为多个 Agent 共用匿名入口。
 
 Agent binding 的 `transport` 必须非 null，且与所属 instance 及 Turn snapshot 相同；只有 Web source binding 例外为 null。v4 物理 migration 为了 SQLite `ALTER TABLE` 兼容性可先加 nullable 列，但必须回填所有旧 Agent 行为 `structured`，Store 在创建/claim 时拒绝任何 Agent null 值。
 
@@ -393,7 +393,7 @@ Broker 启动时先枚举非终态 attempt，不先写 terminal：
 
 - 历史 Direct attempt 保留原 terminal、delivery certainty 和 native session ID，但当前 runtime 不 claim、不 resume、不 replay；
 - Codex App Server 记录 thread ID；只有 capability verified 后才使用 `thread/resume`；
-- Grok/Kimi 只有在各自 M0 capability verified 后才使用 ACP `session/load`；
+- Grok/Kimi/Hermes 只有在各自 capability evidence 支持时才使用 ACP `session/load`；
 - Structured 原生 resume/load 不支持、未取得 session ID 或失败时，只为后续新 Turn 建立新 session，并注入 GroupX Context Packet；
 - `prompt_invoked` 或更晚阶段的当前 Turn 不因连接丢失、恢复失败或终态不明而自动重放；
 - 新 session 属于同一稳定 actor，但有新的 binding/instance lineage；
@@ -555,7 +555,7 @@ GroupX 诊断日志只记录实现合同需要的有界字段：
 13. Structured binding 按 active 合同持久化；历史 Direct invocation 仍可读取与恢复其已有语义，但状态明确为 deprecated，不形成新 Gate 或跨 transport fallback。
 14. binding 的 transport、协议、实测 capability 与 instance lineage 可查询；重建 process/session 不修改稳定 actor 或历史 Turn。
 15. schema 中不存在 approval table；native interaction request 只形成一次 terminal failure，重启后没有 pending approval 可恢复。
-16. 默认 transport 是 Structured；同一运行三个 Agent 的 Turn、binding、instance transport snapshot 一致，attempt 从 Turn 推导，不重复存列；请求不能覆盖 transport/access。
+16. 默认 transport 是 Structured；同一运行全部已配置 Agent 的 Turn、binding、instance transport snapshot 一致，attempt 从 Turn 推导，不重复存列；请求不能覆盖 transport/access。
 17. SQLite-backed SSE cursor tail 在历史补齐与 commit 唤醒之间不丢 durable event。
 18. 推理 delta 不逐条落库；terminal transaction 最多生成一条聚合 `turn.reasoning.recorded`，刷新后可回放。
 19. live `tool.progress` 不直接落库；terminal transaction 保存其 started/completed 有界投影，刷新后仍合并为折叠记录。

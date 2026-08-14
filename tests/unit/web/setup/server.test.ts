@@ -24,7 +24,8 @@ function setupApi(): SetupApi {
       drivers: [
         { driver: "codex", found: true },
         { driver: "grok", found: true },
-        { driver: "kimi", found: true }
+        { driver: "kimi", found: true },
+        { driver: "hermes", found: true }
       ],
       config: {
         serverPort: 4_310,

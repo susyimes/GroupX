@@ -31,6 +31,7 @@
 | D-019 | 工具进度可回放但不进入上下文 | Accepted |
 | D-020 | `groupx start` 复用同配置的现有 runtime | Accepted |
 | D-021 | Agent 记忆拆分为显式核心记忆与自动日期记忆 | Accepted |
+| D-022 | Hermes 作为独立 ACP driver 接入 Structured transport | Accepted |
 
 ## D-001：透明 Broker
 
@@ -38,7 +39,7 @@
 
 原因：
 
-- 三套 CLI 没有统一 peer server；
+- 多套 CLI 没有统一 peer server；
 - 连接数保持 O(N)；
 - 公共记忆和 sender provenance 只有一个事实源；
 - 新增 Adapter 不需要修改现有 CLI；
@@ -67,14 +68,14 @@
 transport: direct | structured
 ```
 
-默认值为 `structured`，首版同一次 Broker 运行对三个 Agent 使用同一选择：
+默认值为 `structured`，同一次 Broker 运行对全部已配置 Agent 使用同一选择：
 
-- `structured`：Codex 使用 App Server，Grok/Kimi 使用 ACP，维持长驻 session，支持原生事件、语义化取消、resume/load 和 GroupX MCP；
+- `structured`：Codex 使用 App Server，Grok/Kimi/Hermes 使用 ACP，维持长驻 session，支持原生事件、语义化取消、resume/load 和 GroupX MCP；
 - `direct`：deprecated compatibility vocabulary。既有 one-shot/resume 源码和历史数据库记录保持可读；配置解析、Adapter factory 与 runtime constructor 均 fail-closed，不启动 Direct；不再新增能力、不维护 live Gate、不参与 release，也不作为 Structured 失败后的 fallback；
 - 两者共用同一个 Broker、Envelope、sender provenance、Turn、记忆和 SSE 合同；
 - 选择是显式的。任何启动、握手、执行或能力失败都在所选 transport 内收敛，不自动切换到另一 transport。
 
-原因：产品目标已经收敛到 Codex App Server + Grok/Kimi ACP。保留 Direct enum/实现可避免破坏旧数据和已有调用方，但继续把它当 active 产品会重复维护 argv、wire、Gate 和能力说明。
+原因：产品目标已经收敛到 Codex App Server + ACP driver。保留 Direct enum/实现可避免破坏旧数据和已有调用方，但继续把它当 active 产品会重复维护 argv、wire、Gate 和能力说明。
 
 M0 只维护 Structured active release baseline。Direct baseline、Agent 与适用 case 固定为 `DEPRECATED`；已有 Direct live/fixture evidence 仅作历史事实，`canSatisfyCurrentGate=false`。
 
@@ -82,7 +83,7 @@ M0 只维护 Structured active release baseline。Direct baseline、Agent 与适
 
 决定：GroupX 内部不采用完整 A2A Task 模型。内部 Envelope 保留可映射字段，M3 以 Adapter 暴露/接入 A2A。
 
-原因：本机固定三 Agent 不需要 discovery、远程认证和完整 Task/Artifact 生命周期；TendrilFlow 的当前 A2A 实现也采用外部适配到内部房间的边界。
+原因：本机配置名册不需要 discovery、远程认证和完整 Task/Artifact 生命周期；TendrilFlow 的当前 A2A 实现也采用外部适配到内部房间的边界。
 
 ## D-005：SQLite/WAL
 
@@ -107,10 +108,11 @@ M0 只维护 Structured active release baseline。Direct baseline、Agent 与适
 | Codex | 新会话：`codex --yolo --dangerously-bypass-hook-trust exec --json -`；续会话：同一前缀后 `exec resume --json <sessionId> -` | `codex --dangerously-bypass-hook-trust app-server --listen stdio://`；`thread/start`/`thread/resume` 使用 `approvalPolicy: "never"` 与 `sandbox: "danger-full-access"` |
 | Grok | `grok --no-auto-update --permission-mode bypassPermissions --sandbox off --no-plan [--resume <sessionId>] --output-format streaming-json --single <prompt>`（`-p` 是短别名） | 同一全局前缀后追加 `agent stdio` |
 | Kimi | deprecated Direct 参考实现保留只读配置预检后使用 `kimi [--session <id>] --prompt <prompt> --output-format stream-json` | 直接启动 `kimi acp`；不要求全局默认模式。每次 `session/new` 或 `session/load`（含 Adapter resume）后、首个 prompt 前调用 `session/set_mode`，`modeId="auto"`；mode 不持久化 |
+| Hermes | 不提供 Direct 产品入口 | `hermes --yolo acp`；每次 `session/new` 或 `session/load` 后、首个 prompt 前调用 `session/set_mode`，`modeId="dont_ask"` |
 
 Codex 0.147 的 thread-level `sandbox` 是 kebab-case 字符串 `danger-full-access`；camel-case `dangerFullAccess` 只出现在 `turn/start.sandboxPolicy.type` 这类不同 wire shape，不能写进 thread params。Codex child 的 OS cwd 使用 Agent 配置值，thread params 不重复发送 cwd，避免触发不必要的原生 trust 持久化。
 
-GroupX 仍不写 Codex/Grok/Kimi 的全局配置，不允许用户透传任意额外权限 argv，也不再实现第二套 GroupX 审批或沙箱判断。Active Structured Kimi 的 session mode 是 GroupX 唯一依据：官方默认 `manual` 不阻止 ACP 启动，随后必须以原生 `session/set_mode(auto)` 覆盖当前 session。该设置被明确的 native static/enterprise policy 拒绝时才失败；不会先要求用户修改全局配置。
+GroupX 仍不写 Codex/Grok/Kimi/Hermes 的全局配置，不允许用户透传任意额外权限 argv，也不再实现第二套 GroupX 审批或沙箱判断。Active Structured Kimi 的 session mode 是 GroupX 唯一依据：官方默认 `manual` 不阻止 ACP 启动，随后必须以原生 `session/set_mode(auto)` 覆盖当前 session。Hermes 同时使用进程级 `--yolo` 与 session 级 `dont_ask`，但不追加会持久化用户选择的 hook allowlist 参数。明确 native policy 拒绝才失败；不会先要求用户修改全局配置。
 
 Direct/Kimi one-shot 的旧 preflight 规则只保留作历史实现说明，不再构成产品能力。Active Structured Kimi 不执行 global-config preflight，但必须在每次 new/load 后重设 session auto mode。
 
@@ -213,7 +215,7 @@ Structured resume/load 不能自动重放不确定 Turn。历史 Direct attempt 
 
 ## D-017：配置驱动的 Agent 名册与 npm CLI 分发
 
-决定：`agents` 配置从固定的 codex/grok/kimi 三键改为显式房间名册。键即 agent id(actor `agent:<id>`)，每个条目声明 `driver`(codex/grok/kimi 原生 CLI 家族)、可选显示名 `name`、`command`、`cwd`、`enabled`。内置 id 省略 `driver` 时默认同名；自定义 id 必须显式给出 driver。名册写谁启动谁；缺省整个 `agents` 字段仍等价于内置三 Agent。同一 driver 可挂多个实例，各自持有独立长驻 session。
+决定：`agents` 配置从固定名册改为显式房间名册。键即 agent id(actor `agent:<id>`)，每个条目声明 `driver`(codex/grok/kimi/hermes 原生 CLI 家族)、可选显示名 `name`、`command`、`cwd`、`enabled`。内置 id 省略 `driver` 时默认同名；自定义 id 必须显式给出 driver。名册写谁启动谁；为兼容现有安装，缺省整个 `agents` 字段仍等价于原有 Codex/Grok/Kimi 三 Agent，不自动启用后来新增的 Hermes。同一 driver 可挂多个实例，各自持有独立长驻 session。
 
 runtime 启动时把名册中的自定义/改名 agent upsert 进 actors 表，显示名由此流入 durable 事件与 Web UI;Web UI 的目标 chips、Agent 卡片、身份记忆下拉全部按 bootstrap 名册动态渲染，非内置 id 按 actor id 哈希分配固定调色板色调。
 
@@ -227,7 +229,7 @@ runtime 启动时把名册中的自定义/改名 agent upsert 进 actors 表，�
 - 固定三键 schema 把房间成员硬编码进了解析层，扩展必须改协议代码；
 - 全局 CLI 是"安装后任意目录启动"的最小分发闭环；npm 裸名 `groupx` 已被占用，故用 owner scope。
 
-变更条件：新增 driver 家族(非 codex/grok/kimi 的 CLI)需要新 Adapter 并走 release Gate;多房间/远程分发仍属 Deferred。
+变更条件：新增 driver 家族需要新 Adapter、命令解析、setup/UI 投影和该 driver 自己的 evidence Gate；多房间/远程分发仍属 Deferred。
 
 ## D-018：推理记录可回放但不进入上下文
 
@@ -277,6 +279,14 @@ CLI 在创建 Store、Adapter 和 native session 前先探测目标 origin：
 原因：核心记忆需要 Agent 主动筛选，自动日期记忆需要保留连续工作事实；混为一类会让自动摘要稀释长期偏好，也会让 Web/工具误把系统生成记录当成 Agent 明确承诺。把自动写入放在 terminal transaction 内可避免成功响应与日期记忆部分提交，同时保持 Broker 唯一写者。
 
 回滚边界：停止生成新 dated 或隐藏 core tool 不会破坏已有记录。回滚代码仍必须把未知 `agent_memory_type` fail-closed，不能把 dated 无条件当 core 注入；若降级到 schema v5，需要显式导出/重建数据库，不做破坏性原地降级。
+
+## D-022：Hermes ACP driver
+
+决定：Hermes 以独立 `hermes` driver 接入现有 Structured ACP kernel。GroupX 固定使用 `hermes --yolo acp`，校验 initialize 的 `agentInfo.name="hermes-agent"`，在每次 new/load 后设置 `dont_ask`，并把 session binding 作为 sender provenance。Hermes 可和其他 driver 一样创建多个独立房间实例。
+
+Hermes 0.20.1 的 initialize 当前未声明 `mcpCapabilities.http`，但官方实现明确接受 ACP `session/new`/`session/load` 中的 HTTP MCP descriptor。这个兼容例外只存在于 Hermes Adapter：共享 ACP kernel 对其他 driver 仍严格要求 capability advertisement；能力报告保留 raw initialize 事实，并把描述符接收标为 `documented/probed`，不能冒充模型实际 `tools/call` 已 verified。
+
+本次边界内已完成本机 `hermes acp --check`、ACP v1 initialize、session/new、`session/set_mode(dont_ask)` 和跨进程 session/load 的无模型 probe。Hermes native 模型回复、GroupX MCP 实调、取消中实际模型回合等仍需独立 live evidence 后才能写成 `verified`；现有 Codex/Grok/Kimi M0 矩阵不会自动替 Hermes 背书。
 
 ## 决策变更规则
 

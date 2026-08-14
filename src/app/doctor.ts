@@ -57,6 +57,10 @@ export function nodeSatisfiesEngines(version: string): boolean {
   return major === 24 && (minor > 14 || (minor === 14 && patch >= 1));
 }
 
+export function extractCliVersion(output: string): string | undefined {
+  return /(?:^|[^\d])v?(\d+\.\d+\.\d+)\b/u.exec(output)?.[1];
+}
+
 export async function collectDoctorReport(
   options: { cwd: string; configPath?: string },
   dependencies: DoctorDependencies
@@ -138,7 +142,7 @@ export function formatDoctorReport(report: DoctorReport): string {
     }
   }
   const found = report.drivers.filter((probe) => probe.found).length;
-  lines.push("", found === 0 ? "结论: 未检测到任何 CLI,请先安装 codex / grok / kimi。" : `结论: 检测到 ${found} 个 CLI。`);
+  lines.push("", found === 0 ? "结论: 未检测到任何 CLI,请先安装 codex / grok / kimi / hermes。" : `结论: 检测到 ${found} 个 CLI。`);
   return lines.join("\n");
 }
 
@@ -175,8 +179,7 @@ function systemProbeVersion(command: CommandSpec): Promise<string | undefined> {
     });
     child.on("close", () => {
       clearTimeout(timer);
-      const match = /\b\d+\.\d+\.\d+\b/u.exec(output);
-      finish(match?.[0]);
+      finish(extractCliVersion(output));
     });
   });
 }

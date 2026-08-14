@@ -8,6 +8,7 @@ import type { CommandResolverDependencies } from "../../src/launch/command-spec.
 const windowsPaths = path.win32;
 const nodeExecutable = windowsPaths.resolve("C:\\Program Files", "nodejs", "node.exe");
 const appData = windowsPaths.resolve("C:\\Users", "groupx", "AppData", "Roaming");
+const localAppData = windowsPaths.resolve("C:\\Users", "groupx", "AppData", "Local");
 const userProfile = windowsPaths.resolve("C:\\Users", "groupx");
 const codexEntrypoint = windowsPaths.resolve(
   appData,
@@ -28,10 +29,18 @@ const kimiEntrypoint = windowsPaths.resolve(
   "main.mjs"
 );
 const grokExecutable = windowsPaths.resolve(userProfile, ".grok", "bin", "grok.exe");
+const hermesExecutable = windowsPaths.resolve(
+  localAppData,
+  "hermes",
+  "hermes-agent",
+  "venv",
+  "Scripts",
+  "hermes.exe"
+);
 
 function commandDependencies(additionalFiles: readonly string[] = []): CommandResolverDependencies {
   const files = new Set(
-    [nodeExecutable, codexEntrypoint, kimiEntrypoint, grokExecutable, ...additionalFiles].map((candidate) =>
+    [nodeExecutable, codexEntrypoint, kimiEntrypoint, grokExecutable, hermesExecutable, ...additionalFiles].map((candidate) =>
       windowsPaths.normalize(candidate).toLowerCase()
     )
   );
@@ -39,6 +48,7 @@ function commandDependencies(additionalFiles: readonly string[] = []): CommandRe
     platform: "win32",
     env: {
       APPDATA: appData,
+      LOCALAPPDATA: localAppData,
       USERPROFILE: userProfile,
       PATH: windowsPaths.resolve("C:\\Tools")
     },
@@ -289,6 +299,7 @@ describe("GroupX configuration", () => {
       enabled: true
     };
     agents["grok-2"] = { driver: "grok", command: "grok", cwd: ".", enabled: false };
+    agents.hermes = { command: "hermes", cwd: ".", enabled: true };
     const { configPath } = await writeConfig(input);
 
     const config = await loadConfig(configPath, process.cwd(), commandDependencies());
@@ -301,6 +312,8 @@ describe("GroupX configuration", () => {
     });
     expect(config.agents.rex!.command).toEqual({ executable: nodeExecutable, prefixArgs: [codexEntrypoint] });
     expect(config.agents["grok-2"]).toMatchObject({ driver: "grok", enabled: false });
+    expect(config.agents.hermes).toMatchObject({ driver: "hermes", enabled: true });
+    expect(config.agents.hermes!.command).toEqual({ executable: hermesExecutable, prefixArgs: [] });
     expect(config.agents.codex).toMatchObject({ driver: "codex" });
   });
 

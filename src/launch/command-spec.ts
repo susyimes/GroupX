@@ -2,7 +2,7 @@ import { statSync } from "node:fs";
 import path from "node:path";
 import { GroupXError } from "../core/errors.js";
 
-export const BUILTIN_AGENT_IDS = ["codex", "grok", "kimi"] as const;
+export const BUILTIN_AGENT_IDS = ["codex", "grok", "kimi", "hermes"] as const;
 
 export type BuiltinAgentId = (typeof BUILTIN_AGENT_IDS)[number];
 
@@ -109,6 +109,29 @@ function resolveDefaultAgentCommand(
     const executable = findOnPath(agentId, dependencies, pathApi);
     if (executable === undefined) {
       throw resolutionError(agentId, "executable_not_found");
+    }
+    return { executable, prefixArgs: [] };
+  }
+
+  if (agentId === "hermes") {
+    const onPath = findOnPath(agentId, dependencies, pathApi);
+    if (onPath !== undefined) {
+      return { executable: onPath, prefixArgs: [] };
+    }
+    const localAppData = readEnvironmentValue(dependencies.env, "LOCALAPPDATA");
+    if (localAppData === undefined) {
+      throw resolutionError(agentId, "localappdata_not_available");
+    }
+    const executable = pathApi.resolve(
+      localAppData,
+      "hermes",
+      "hermes-agent",
+      "venv",
+      "Scripts",
+      "hermes.exe"
+    );
+    if (!safeIsFile(dependencies, executable)) {
+      throw resolutionError(agentId, "native_executable_not_found");
     }
     return { executable, prefixArgs: [] };
   }

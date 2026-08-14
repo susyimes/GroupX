@@ -113,7 +113,7 @@ describe("sender structure", () => {
     expect(new Set(actors.map((actor) => actor.actorId)).size).toBe(actors.length);
     expect(BUILTIN_ACTORS.web.kind).toBe("user");
     expect(BUILTIN_ACTORS.system.kind).toBe("system");
-    expect([BUILTIN_ACTORS.codex, BUILTIN_ACTORS.grok, BUILTIN_ACTORS.kimi]).toSatisfy(
+    expect([BUILTIN_ACTORS.codex, BUILTIN_ACTORS.grok, BUILTIN_ACTORS.kimi, BUILTIN_ACTORS.hermes]).toSatisfy(
       (agents: typeof actors) => agents.every((actor) => actor.kind === "agent")
     );
   });
