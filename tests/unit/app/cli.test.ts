@@ -1,4 +1,7 @@
+import { mkdtemp, rm, symlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 
 import { collectDoctorReport, formatDoctorReport, nodeSatisfiesEngines, type DoctorDependencies } from "../../../src/app/doctor.js";
@@ -9,9 +12,25 @@ import {
 import { openBrowser } from "../../../src/utils/open-browser.js";
 import type { CommandResolverDependencies, CommandSpec } from "../../../src/launch/index.js";
 import type { SetupSaveRequest } from "../../../src/contracts/index.js";
+import { isEntryModule } from "../../../src/cli.js";
 
 const nodeExecutable = "C:\\Program Files\\nodejs\\node.exe";
 const codexEntrypoint = "C:\\Users\\groupx\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\bin\\codex.js";
+
+describe("groupx CLI entry", () => {
+  it("recognizes execution through an npm-style symbolic link", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "groupx-cli-"));
+    const target = path.resolve("src/cli.ts");
+    const linkedEntry = path.join(directory, "groupx");
+
+    try {
+      await symlink(target, linkedEntry);
+      expect(isEntryModule(linkedEntry, pathToFileURL(target).href)).toBe(true);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+});
 
 function resolverWith(files: readonly string[]): CommandResolverDependencies {
   const normalized = new Set(files.map((file) => path.win32.normalize(file).toLowerCase()));
