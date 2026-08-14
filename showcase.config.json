@@ -1,0 +1,58 @@
+{
+  "projectName": "GroupX",
+  "root": ".",
+  "type": "local-web",
+  "installCommand": "npm install",
+  "startCommand": null,
+  "baseUrl": "http://127.0.0.1:4311",
+  "outputDir": "docs/assets/showcase",
+  "readme": "README.md",
+  "waitMs": 1200,
+  "timeoutMs": 60000,
+  "disableAnimations": true,
+  "viewports": {
+    "desktop": { "width": 1280, "height": 720 },
+    "mobile": { "width": 390, "height": 844 }
+  },
+  "screenshots": [
+    {
+      "id": "builder-response",
+      "title": "Builder — real model response",
+      "path": "/",
+      "viewport": "desktop",
+      "waitFor": "main.conversation-panel",
+      "waitMs": 1500,
+      "fullPage": false,
+      "selector": "article.event-card.tone-grok:not([data-stream-key])",
+      "steps": []
+    },
+    {
+      "id": "reviewer-response",
+      "title": "Reviewer — real model response",
+      "path": "/",
+      "viewport": "desktop",
+      "waitFor": "main.conversation-panel",
+      "waitMs": 1200,
+      "fullPage": false,
+      "selector": "article.event-card.tone-kimi:not([data-stream-key])",
+      "steps": []
+    },
+    {
+      "id": "architect-response",
+      "title": "Architect — real model response",
+      "path": "/",
+      "viewport": "desktop",
+      "waitFor": "main.conversation-panel",
+      "waitMs": 1200,
+      "fullPage": false,
+      "selector": "article.event-card.tone-codex:not([data-stream-key])",
+      "steps": []
+    }
+  ],
+  "hero": {
+    "file": "real-conversation.png",
+    "title": "Three agents. One room. Real responses.",
+    "subtitle": "A real GroupX run with three independent Kimi ACP sessions acting as Architect, Builder, and Reviewer.",
+    "images": ["builder-response", "reviewer-response", "architect-response"]
+  }
+}
