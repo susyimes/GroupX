@@ -1,37 +1,22 @@
 <div align="center">
 
-<img src="./docs/assets/showcase/groupx-orbit.png" width="280" alt="GroupX broker routing Codex, Grok, Kimi and Hermes CLI agents" />
+# ⚡ GroupX
 
-# GroupX
+**把 Codex App Server、Grok ACP、Kimi ACP 和 Hermes ACP 放进同一个本地 Agent 房间。**
 
-**One room. Every CLI agent.**
+一个 Web UI，统一完成群聊路由、会话恢复、上下文压缩与本地记忆。
 
-把 Codex、Grok、Kimi 和 Hermes 放进同一个本地 Agent 房间：显式路由、共享时间线、会话恢复、上下文压缩与持久化记忆。
-
-[![npm](https://img.shields.io/npm/v/@susyimes/groupx?color=6f8cff&label=npm)](https://www.npmjs.com/package/@susyimes/groupx)
-[![Pages](https://img.shields.io/badge/GitHub%20Pages-included-48e5c2)](https://susyimes.github.io/GroupX/)
-![Node](https://img.shields.io/badge/Node-24.14%2B-3c873a)
+![npm](https://img.shields.io/npm/v/@susyimes/groupx?color=3370ff&label=npm)
+![Node](https://img.shields.io/badge/node-24.14.x-3c873a)
 ![Tests](https://img.shields.io/badge/tests-506%20passing-0d9f6e)
-![Platform](https://img.shields.io/badge/platform-Windows%20%C2%B7%20macOS%20%C2%B7%20Linux-4768d7)
-![Transport](https://img.shields.io/badge/transport-structured-b56cff)
+![Platform](https://img.shields.io/badge/platform-Windows%20%C2%B7%20macOS%20%C2%B7%20Linux-0078d6)
+![Transport](https://img.shields.io/badge/transport-structured-9440c9)
 
-[在线体验](https://susyimes.github.io/GroupX/) · [快速开始](#快速开始) · [配置](#agent-配置) · [协议](docs/PROTOCOL.md) · [设计决策](docs/DECISIONS.md)
+<img src="./docs/assets/groupx-demo.gif" width="100%" alt="GroupX 本机实录：Codex 通过 groupx.ask 调用 Grok 和 Kimi 后汇总结论">
 
-<img src="./docs/assets/showcase/pages-home.png" width="100%" alt="GroupX GitHub Pages 首页" />
+<sub>本机实录：Codex App Server 通过 <code>groupx.ask</code> 调用 Grok ACP 与 Kimi ACP，并在真实 GroupX 房间中汇总结果；仅对本机工作目录做了隐私遮罩。</sub>
 
 </div>
-
-## 真实运行记录
-
-下面三条回复来自 **2026-08-14 的同一次真实 GroupX 运行**：三个独立 Kimi ACP session 分别担任 Architect、Builder 与 Reviewer。图片只裁切公开演示问题和模型最终回复，不包含历史聊天、本机路径或凭据。
-
-<p align="center">
-  <img src="./docs/assets/showcase/architect-response.png" width="100%" alt="Architect 的真实 GroupX 回复" />
-  <img src="./docs/assets/showcase/builder-response.png" width="100%" alt="Builder 的真实 GroupX 回复" />
-  <img src="./docs/assets/showcase/reviewer-response.png" width="100%" alt="Reviewer 的真实 GroupX 回复" />
-</p>
-
-> 角色名是 GroupX 的显示身份；本次公开捕获使用三个独立 Kimi ACP session。截图内容由真实模型回合生成并经 Broker 持久化，不是静态 mock 数据。
 
 ## GroupX 是什么
 
@@ -99,10 +84,10 @@ GroupX 是一个只监听本机 loopback 的多 Agent 群聊 Broker。用户从�
 
 ```bash
 npm i -g @susyimes/groupx
-groupx init
+groupx start
 ```
 
-`groupx init` 会打开 Agent 引导页。添加 Agent、填写工作目录和命令并保存后，页面会进入群聊。默认地址为 [http://127.0.0.1:4310/](http://127.0.0.1:4310/)。
+首次启动会打开 Agent 引导页。添加 Agent、填写工作目录和命令并保存后，页面会进入群聊。默认地址为 [http://127.0.0.1:4310/](http://127.0.0.1:4310/)。
 
 常用命令：
 
@@ -243,9 +228,3 @@ npm run build
 - [Kimi ACP](https://www.kimi.com/code/docs/en/kimi-code-cli/reference/kimi-acp)
 - [Grok CLI](https://docs.x.ai/build/cli/reference)
 - [Hermes ACP](https://github.com/nousresearch/hermes-agent/blob/main/website/docs/user-guide/features/acp.md)
-
-## 参与贡献
-
-欢迎通过 Issue 或 Pull Request 改进 Adapter、协议兼容、Web UI 与文档。提交前请运行 `npm run typecheck && npm test && npm run build`。
-
-> 本仓库当前尚未声明开源许可证；在许可证补充前，请不要假设仓库内容可被任意复制或再分发。
