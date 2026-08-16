@@ -23,7 +23,7 @@ const HELP = `GroupX — 本机多 CLI 群聊
 
 用法:
   groupx [start] [--config <path>] [--no-open]   启动 Broker 与 Web UI(默认命令)
-  groupx doctor [--config <path>]                检测系统、Node 与 codex/grok/kimi/hermes CLI
+  groupx doctor [--config <path>]                检测系统、Node 与 codex/grok/kimi/hermes/claude CLI
   groupx init [--config <path>] [--no-open]      配置 Agent，随后启动并进入群聊
   groupx update [--check]                       检查并安装 npm latest 版本
   groupx --version                               打印版本

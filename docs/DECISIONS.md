@@ -33,6 +33,7 @@
 | D-021 | Agent 记忆拆分为显式核心记忆与自动日期记忆 | Accepted |
 | D-022 | Hermes 作为独立 ACP driver 接入 Structured transport | Accepted |
 | D-023 | Agent 日期记忆由逐 Turn 原文改为可恢复的每日批量 rollup | Accepted |
+| D-024 | Claude Code 作为独立 stream-json driver 接入 Structured transport | Accepted |
 
 ## D-001：透明 Broker
 
@@ -216,7 +217,7 @@ Structured resume/load 不能自动重放不确定 Turn。历史 Direct attempt 
 
 ## D-017：配置驱动的 Agent 名册与 npm CLI 分发
 
-决定：`agents` 配置从固定名册改为显式房间名册。键即 agent id(actor `agent:<id>`)，每个条目声明 `driver`(codex/grok/kimi/hermes 原生 CLI 家族)、可选显示名 `name`、`command`、`cwd`、`enabled`。内置 id 省略 `driver` 时默认同名；自定义 id 必须显式给出 driver。名册写谁启动谁；为兼容现有安装，缺省整个 `agents` 字段仍等价于原有 Codex/Grok/Kimi 三 Agent，不自动启用后来新增的 Hermes。同一 driver 可挂多个实例，各自持有独立长驻 session。
+决定：`agents` 配置从固定名册改为显式房间名册。键即 agent id(actor `agent:<id>`)，每个条目声明 `driver`(codex/grok/kimi/hermes 原生 CLI 家族)、可选显示名 `name`、`command`、`cwd`、`enabled`。内置 id 省略 `driver` 时默认同名；自定义 id 必须显式给出 driver。名册写谁启动谁；为兼容现有安装，缺省整个 `agents` 字段仍等价于原有 Codex/Grok/Kimi 三 Agent，不自动启用后来新增的 Hermes 与 Claude。同一 driver 可挂多个实例，各自持有独立长驻 session。
 
 runtime 启动时把名册中的自定义/改名 agent upsert 进 actors 表，显示名由此流入 durable 事件与 Web UI;Web UI 的目标 chips、Agent 卡片、身份记忆下拉全部按 bootstrap 名册动态渲染，非内置 id 按 actor id 哈希分配固定调色板色调。
 
@@ -308,6 +309,24 @@ Hermes 0.20.1 的 initialize 当前未声明 `mcpCapabilities.http`，但官方�
 复杂度与回滚：新增一个后台定时/single-flight 引擎、两个只保存外键/检查点的表和一个 compaction 前 best-effort hook。关闭引擎即可停止新 rollup；pending source 与 transcript 都可保留，不影响聊天恢复。降级 schema 需导出/重建，不做破坏性原地删除。
 
 完成标准：存储测试证明 completed 只登记来源、失败 Turn 不登记、同日 CAS/空批次/崩溃重开幂等；引擎测试证明 8 Turn/16K/日期/压缩触发、5 分钟 debounce、owner-only、8K 上限和失败重试；Context Packet 与 compactor 测试继续证明 reasoning/tool 不进入任何自动记忆。
+
+## D-024：Claude Code stream-json driver
+
+触发证据：Claude Code CLI 没有 ACP 子命令。它的第一方结构化 stdio 面是 `--print --input-format stream-json --output-format stream-json`，一条 JSONL 消息流而不是 JSON-RPC。社区存在 ACP 桥（`@zed-industries/claude-code-acp`），复用现有 ACP kernel 只需约 40 行；但那是厂商之外的协议 shim，会让 Claude 成为唯一一个不走自己原生协议入口的 driver，并把 GroupX 的访问契约押在第三方包的版本上。
+
+决定：Claude Code 以独立 `claude` driver 和独立 Adapter 家族（`src/adapters/claude/`）接入 Structured transport，直接架在通用 JSONL 进程层 `supervisor/jsonline-process.ts` 之上，不复用 `adapters/jsonline-rpc.ts`。protocol 串为 `claude-cli-stream-json-v1`。固定产品 argv 为 `--print --input-format stream-json --output-format stream-json --verbose --include-partial-messages --permission-mode bypassPermissions`，MCP 绑定追加 `--mcp-config`，会话追加 `--session-id <uuid>` 或 `--resume <uuid>`。native session id 由 GroupX 自己指派，不向 native 协商。
+
+握手（本次接入的核心协议差异）：Claude Code 的 `system`/`init` 帧只在收到第一条 user 消息之后才发出，因此它不能充当握手。若 `start()` 等待该帧，会在没有任何模型回合的情况下永久挂起——这一点由实机 probe 直接观测确认（写入 stdin 后 35ms 才出现 init）。GroupX 改用 SDK 控制协议：`control_request`/`initialize` 证明进程存活并投影 `current_permission_mode`（观测值，部分 CLI 会回显用户 settings 默认模式，即使 argv 已要求 `bypassPermissions`），再用 `control_request`/`set_permission_mode` **建立** `bypassPermissions`。只有 set 被拒绝或降级才判 `NATIVE_POLICY_BLOCKED`；initialize 缺字段仍是 `PROTOCOL_INVALID_MESSAGE`。每次 start/resume 都重申 set，不因 initialize 已是目标模式而跳过。这是 Codex `configRequirements/read` 与 Kimi/Hermes `session/set_mode` 在 Claude 上的对应物。延后到首个 Turn 才到达的 `init` 帧仍要校验 `session_id`、`cwd` 与 `permissionMode`，不匹配则判该 Turn 失败。
+
+`initialize` 响应同时携带 account、organization、model、command、plugin 清单。Adapter 只投影 `current_permission_mode` 与 `pid`，其余字段不进入任何 GroupX 记录或诊断（不变量 11）。取消走 `control_request`/`interrupt`，终态是 `result` 帧且中止原因有两个：流式输出中取消为 `aborted_streaming`，工具执行中取消为 `aborted_tools`（后者才是长 Turn 里最常见的取消点），两者都归一化为 `turn.cancelled`。实机确认取消后同一 stdio 进程仍可继续下一个 Turn，因此取消不污染 session。若 interrupt 输给了正在收敛的 Turn，CLI 仍会为该 interrupt 补发一个 `result`；Adapter 在 cancel 窗口内吸收这一帧，避免它终结下一个 Turn。注意 `result.num_turns` 是单次 prompt 内部的 agent 迭代计数而非会话级单调计数器，不能用来做跨 Turn 关联。
+
+交互类 control request 一律在协议边界拒绝并以 `UNEXPECTED_NATIVE_INTERACTION` 失败当前 Turn：实测 CLI 的交互 subtype 为 `can_use_tool`、`elicitation` 与 `request_user_dialog`；`hook_callback`、`mcp_message`、`host_auth_token_refresh`、`oauth_token_refresh` 不是决策请求，只回协议错误而不失败 Turn。GroupX 仍然没有审批子系统。
+
+本次边界内已完成实机 native-live 证据（Claude Code 2.1.233 / win32）：基础回合、流式增量、GroupX MCP `memory_search` 经 http binding 精确实调一次、runtime 重启后 `--resume` 会话恢复、干净关停、无残留进程、用户 settings 未被改写。证据独立存放于 `.groupx/evidence/claude-live/`，沿用 Hermes 先例，不进入 Codex/Grok/Kimi 三 Agent 的核心 M0 gate。已知并记录：Claude Code 会在任何调用下重写自己的 `~/.claude.json` 会话状态文件，这是原生 CLI 行为而非 GroupX 写入，因此该文件只作诊断记录、不作 gate。
+
+回滚边界：`claude` 是加法接入。移除它只需从名册删条目；缺省 `agents` 字段本就不自动启用它，现有 Codex/Grok/Kimi/Hermes 房间不受影响。
+
+完成标准：Adapter 测试覆盖固定 argv、无模型控制握手（initialize 观测 / set 建立，含 initialize 报 default 而 set 升级成功）、策略拒绝与降级、延后 init 帧的 session/cwd 校验、流式增量与完整消息去重、工具起止、取消与取消超时、首事件与空闲超时、畸形帧、进程中途退出、握手前退出的 stderr、`--resume` 重启，以及 `initialize` 载荷的字段投影边界。命令解析覆盖 Windows PATH（不依赖 APPDATA）、`%USERPROFILE%\\.local\\bin\\claude.exe`、npm 回退、拒绝 `.cmd` shim，以及 POSIX `~/.local/bin/claude`、当前 Node 前缀 / Homebrew / `/usr/local` 的 npm 回退。
 
 ## 决策变更规则
 

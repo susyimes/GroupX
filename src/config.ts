@@ -61,7 +61,7 @@ const agentIdKeySchema = z
 
 const agentConfigSchema = z
   .object({
-    // Omit for the builtin ids (codex/grok/kimi/hermes); required for custom ids.
+    // Omit for the builtin ids (codex/grok/kimi/hermes/claude); required for custom ids.
     driver: z.enum(BUILTIN_AGENT_IDS).optional(),
     name: z.string().min(1).max(64).optional(),
     /** Stable GroupX room identity injected into every turn for this Agent. */
@@ -83,7 +83,7 @@ const agentsConfigSchema = z
         context.addIssue({
           code: "custom",
           path: [agentId, "driver"],
-          message: `Custom agent "${agentId}" requires a driver: codex | grok | kimi | hermes`
+          message: `Custom agent "${agentId}" requires a driver: ${BUILTIN_AGENT_IDS.join(" | ")}`
         });
       }
     }

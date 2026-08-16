@@ -2,7 +2,7 @@
 
 # ⚡ GroupX
 
-**把 Codex App Server、Grok ACP、Kimi ACP 和 Hermes ACP 放进同一个本地 Agent 房间。**
+**把 Codex App Server、Grok ACP、Kimi ACP、Hermes ACP 和 Claude Code CLI 放进同一个本地 Agent 房间。**
 
 一个 Web UI，统一完成群聊路由、会话恢复、上下文压缩与本地记忆。
 
@@ -27,7 +27,8 @@ GroupX 是一个只监听本机 loopback 的多 Agent 群聊 Broker。用户从�
 - Codex：App Server；
 - Grok：ACP；
 - Kimi：ACP；
-- Hermes：ACP。
+- Hermes：ACP；
+- Claude：Claude Code CLI stream-json。
 
 历史 `direct` 代码没有运行入口，不参与当前发布，也不会在 Structured 失败时自动 fallback。
 
@@ -42,6 +43,14 @@ GroupX 是一个只监听本机 loopback 的多 Agent 群聊 Broker。用户从�
 - **公共记忆**：用户显式固定给整个房间的事实、决定、偏好、指令、约束或备注。
 - **两层 Agent 记忆**：每个 Agent 拥有主动维护的核心记忆，以及把成功回合批量整理成每日一条的私有工作记忆。
 - **会话恢复与故障收敛**：原生 session 支持 resume/load；可能已送达的业务 Prompt 不会自动重放。
+
+## 0.1.13 更新
+
+- 新增 Claude Code CLI driver（`claude`），可在首次引导页或 Agent 设置中添加多个 Claude 实例。
+- 固定使用 `claude --print --input-format stream-json --output-format stream-json --verbose --include-partial-messages --permission-mode bypassPermissions`，unrestricted 由 `set_permission_mode` 建立；GroupX 不写 Claude Code 的 settings 文件。
+- `start()` 先发 `control_request`/`initialize` 读取 `current_permission_mode`（观测），再发 `control_request`/`set_permission_mode` 建立 `bypassPermissions`；只有 set 被拒绝或降级才是 `NATIVE_POLICY_BLOCKED`。
+- 由 GroupX 自己分配原生 session id（`--session-id <uuid>`），恢复使用 `--resume <uuid>`；取消走 `control_request`/`interrupt`，进程可继续用于下一回合。
+- Windows 依次解析 `PATH`、`%USERPROFILE%\.local\bin\claude.exe` 与 npm 全局 `@anthropic-ai/claude-code/cli.js`（经 node 启动，此层才需要 `APPDATA`）；POSIX 为 `PATH`、`$HOME/.local/bin/claude`，再按当前 Node 前缀 / Homebrew / `/usr/local` 找 npm 全局 `cli.js`；`groupx doctor` 可检测 Claude。
 
 ## 0.1.12 更新
 
@@ -80,7 +89,7 @@ GroupX 是一个只监听本机 loopback 的多 Agent 群聊 Broker。用户从�
 前置条件：
 
 - Node.js `>=24.14.1 <25`；
-- 至少安装并登录 `codex`、`grok`、`kimi`、`hermes` 中的一种 CLI。
+- 至少安装并登录 `codex`、`grok`、`kimi`、`hermes`、`claude` 中的一种 CLI。
 
 ```bash
 npm i -g @susyimes/groupx
@@ -130,7 +139,7 @@ GroupX 当前保持单房间结构，房间 ID 为 `room:main`。
 
 ## Agent 配置
 
-推荐通过首次引导页或右上角“Agent 设置”维护。`agents` 的键是稳定 Agent ID；内置 ID 可省略 `driver`，自定义 ID 必须声明 `driver: codex | grok | kimi | hermes`。
+推荐通过首次引导页或右上角“Agent 设置”维护。`agents` 的键是稳定 Agent ID；内置 ID 可省略 `driver`，自定义 ID 必须声明 `driver: codex | grok | kimi | hermes | claude`。
 
 ```json
 {
@@ -160,6 +169,11 @@ GroupX 当前保持单房间结构，房间 ID 为 `room:main`。
       "command": "hermes",
       "cwd": ".",
       "enabled": false
+    },
+    "claude": {
+      "command": "claude",
+      "cwd": ".",
+      "enabled": false
     }
   }
 }
@@ -169,11 +183,13 @@ GroupX 当前保持单房间结构，房间 ID 为 `room:main`。
 
 Hermes 使用固定的 `hermes --yolo acp` 启动形状，并在每次 `session/new` 或 `session/load` 后、首个 prompt 前设置 ACP mode 为 `dont_ask`。可先运行 `hermes acp --check` 检查本机 ACP 安装。GroupX 不修改 Hermes 的全局配置。
 
+Claude 使用固定的 `claude --print --input-format stream-json --output-format stream-json --verbose --include-partial-messages --permission-mode bypassPermissions` 启动形状；存在 GroupX MCP 绑定时追加 `--mcp-config <json>`，最后追加 `--session-id <uuid>`（新建）或 `--resume <uuid>`（恢复）。Claude Code 的 `system`/`init` 帧要在首条用户消息之后才发出，因此 GroupX 改用 SDK control request：先 `initialize` 读取 `current_permission_mode`（观测），再 `set_permission_mode` 建立 `bypassPermissions`，不消耗模型回合。unrestricted 由 set 建立，不因 initialize 回显用户默认模式而失败；GroupX 不写 Claude Code 的 settings 文件。注意：Claude Code 在任何调用下都会重写自己的 `~/.claude.json` 会话状态文件，那是原生 CLI 行为，不是 GroupX 的写入。
+
 ## 数据与运行边界
 
 - Web/API 默认只监听 `127.0.0.1`。
 - SQLite/WAL 是消息、Turn、记忆和摘要的本地权威事实源。
-- GroupX 不修改 Codex、Grok、Kimi 或 Hermes 的全局配置。
+- GroupX 不修改 Codex、Grok、Kimi、Hermes 或 Claude 的全局配置。
 - GroupX 按固定 `unrestricted` profile 启动原生 CLI，但不能绕过操作系统权限、企业策略、静态 deny rule 或服务端限制。
 - GroupX 没有审批系统；如果 native CLI 仍请求审批、权限或用户交互，当前 Turn 会明确失败。
 - GroupX 不扫描普通消息或记忆中的秘密内容。不要把凭据发送到群聊。
@@ -228,3 +244,4 @@ npm run build
 - [Kimi ACP](https://www.kimi.com/code/docs/en/kimi-code-cli/reference/kimi-acp)
 - [Grok CLI](https://docs.x.ai/build/cli/reference)
 - [Hermes ACP](https://github.com/nousresearch/hermes-agent/blob/main/website/docs/user-guide/features/acp.md)
+- [Claude Code headless（stream-json）](https://docs.claude.com/en/docs/claude-code/headless)

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { HermesAcpAdapter } from "../../../src/adapters/acp/hermes-acp-adapter.js";
+import { ClaudeCliAdapter } from "../../../src/adapters/claude/claude-cli-adapter.js";
 import { createStructuredAgentAdapter } from "../../../src/app/adapter-factory.js";
 
 const timeouts = {
@@ -21,6 +22,16 @@ describe("structured adapter factory", () => {
     expect(adapter).toMatchObject({
       adapterId: "researcher",
       actorId: "agent:researcher"
+    });
+  });
+
+  it("creates a room-local Claude stream-json adapter outside the ACP family", () => {
+    const adapter = createStructuredAgentAdapter("reviewer", "claude", timeouts);
+
+    expect(adapter).toBeInstanceOf(ClaudeCliAdapter);
+    expect(adapter).toMatchObject({
+      adapterId: "reviewer",
+      actorId: "agent:reviewer"
     });
   });
 });

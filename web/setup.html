@@ -9,17 +9,17 @@
     >
     <meta name="color-scheme" content="light dark">
     <title>GroupX · Agent 配置</title>
-    <link rel="stylesheet" href="/setup.css?v=0.1.10-hermes1">
-    <script type="module" src="/setup.js?v=0.1.11-roster1"></script>
+    <link rel="stylesheet" href="/setup.css?v=0.1.13-claude1">
+    <script type="module" src="/setup.js?v=0.1.13-claude1"></script>
   </head>
   <body>
     <header class="setup-header">
-      <a class="brand" href="/?v=0.1.10-hermes1" aria-label="GroupX">
+      <a class="brand" href="/?v=0.1.13-claude1" aria-label="GroupX">
         <span class="brand-mark" aria-hidden="true">GX</span>
         <span><strong>GroupX</strong><small>Agent room setup</small></span>
       </a>
       <div class="header-actions">
-        <a id="back-room" class="quiet-link" href="/?v=0.1.10-hermes1" hidden>返回群聊</a>
+        <a id="back-room" class="quiet-link" href="/?v=0.1.13-claude1" hidden>返回群聊</a>
         <button id="theme-toggle" class="theme-toggle" type="button" aria-label="切换到夜间模式">☾</button>
       </div>
     </header>
@@ -69,6 +69,7 @@
               <button type="button" data-add-driver="grok">+ Grok</button>
               <button type="button" data-add-driver="kimi">+ Kimi</button>
               <button type="button" data-add-driver="hermes">+ Hermes</button>
+              <button type="button" data-add-driver="claude">+ Claude</button>
             </div>
           </div>
 
@@ -107,7 +108,7 @@
           <p id="success-copy"></p>
           <code id="saved-path"></code>
           <div class="success-actions">
-            <a id="success-room-link" class="primary-link" href="/?v=0.1.10-hermes1" hidden>返回群聊</a>
+            <a id="success-room-link" class="primary-link" href="/?v=0.1.13-claude1" hidden>返回群聊</a>
             <button id="edit-again" class="secondary-button" type="button">继续编辑</button>
           </div>
         </section>
@@ -136,6 +137,7 @@
               <option value="grok">Grok ACP</option>
               <option value="kimi">Kimi ACP</option>
               <option value="hermes">Hermes ACP</option>
+              <option value="claude">Claude Code stream-json</option>
             </select>
           </label>
           <label>

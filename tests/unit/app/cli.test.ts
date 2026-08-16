@@ -150,13 +150,15 @@ describe("GroupX browser setup service", () => {
       { id: "codex", driver: "codex", enabled: true },
       { id: "grok", driver: "grok", enabled: false },
       { id: "kimi", driver: "kimi", enabled: false },
-      { id: "hermes", driver: "hermes", enabled: false }
+      { id: "hermes", driver: "hermes", enabled: false },
+      { id: "claude", driver: "claude", enabled: false }
     ]);
     expect(snapshot.drivers).toMatchObject([
       { driver: "codex", found: true },
       { driver: "grok", found: false },
       { driver: "kimi", found: false },
-      { driver: "hermes", found: false }
+      { driver: "hermes", found: false },
+      { driver: "claude", found: false }
     ]);
   });
 
@@ -170,7 +172,7 @@ describe("GroupX browser setup service", () => {
 
     const snapshot = await service.snapshot(new AbortController().signal);
 
-    expect(snapshot.config.agents).toHaveLength(4);
+    expect(snapshot.config.agents).toHaveLength(5);
     expect(snapshot.config.agents.every((agent) => agent.enabled === false)).toBe(true);
     expect(snapshot.drivers.every((probe) => probe.found === false)).toBe(true);
   });
@@ -297,7 +299,7 @@ describe("GroupX browser setup service", () => {
 
     expect(snapshot.existing).toBe(true);
     expect(snapshot.existingConfigError).toBeDefined();
-    expect(snapshot.config.agents.map(({ id }) => id)).toEqual(["codex", "grok", "kimi", "hermes"]);
+    expect(snapshot.config.agents.map(({ id }) => id)).toEqual(["codex", "grok", "kimi", "hermes", "claude"]);
   });
 
   it("does not overwrite an existing config when the preservation read fails", async () => {

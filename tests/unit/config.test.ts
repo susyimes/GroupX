@@ -37,10 +37,11 @@ const hermesExecutable = windowsPaths.resolve(
   "Scripts",
   "hermes.exe"
 );
+const claudeExecutable = windowsPaths.resolve(userProfile, ".local", "bin", "claude.exe");
 
 function commandDependencies(additionalFiles: readonly string[] = []): CommandResolverDependencies {
   const files = new Set(
-    [nodeExecutable, codexEntrypoint, kimiEntrypoint, grokExecutable, hermesExecutable, ...additionalFiles].map((candidate) =>
+    [nodeExecutable, codexEntrypoint, kimiEntrypoint, grokExecutable, hermesExecutable, claudeExecutable, ...additionalFiles].map((candidate) =>
       windowsPaths.normalize(candidate).toLowerCase()
     )
   );
@@ -300,6 +301,7 @@ describe("GroupX configuration", () => {
     };
     agents["grok-2"] = { driver: "grok", command: "grok", cwd: ".", enabled: false };
     agents.hermes = { command: "hermes", cwd: ".", enabled: true };
+    agents.claude = { command: "claude", cwd: ".", enabled: true };
     const { configPath } = await writeConfig(input);
 
     const config = await loadConfig(configPath, process.cwd(), commandDependencies());
@@ -314,6 +316,8 @@ describe("GroupX configuration", () => {
     expect(config.agents["grok-2"]).toMatchObject({ driver: "grok", enabled: false });
     expect(config.agents.hermes).toMatchObject({ driver: "hermes", enabled: true });
     expect(config.agents.hermes!.command).toEqual({ executable: hermesExecutable, prefixArgs: [] });
+    expect(config.agents.claude).toMatchObject({ driver: "claude", enabled: true });
+    expect(config.agents.claude!.command).toEqual({ executable: claudeExecutable, prefixArgs: [] });
     expect(config.agents.codex).toMatchObject({ driver: "codex" });
   });
 

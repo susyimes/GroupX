@@ -101,7 +101,7 @@ session_bindings(
 )
 ```
 
-当前 binding 表示 Structured native session：Codex 使用 `codex-app-server`，Grok/Kimi/Hermes 使用 `acp`。历史 Direct binding 仍按旧 invocation 语义可读，但当前 runtime 不创建或恢复它。M2 GroupX MCP 只关联各自的 Structured session binding，不为多个 Agent 共用匿名入口。
+当前 binding 表示 Structured native session：Codex 使用 `codex-app-server-stdio-jsonrpc-v2`，Grok/Kimi/Hermes 使用 `acp`，Claude 使用 `claude-cli-stream-json-v1`。历史 Direct binding 仍按旧 invocation 语义可读，但当前 runtime 不创建或恢复它。M2 GroupX MCP 只关联各自的 Structured session binding，不为多个 Agent 共用匿名入口。
 
 Agent binding 的 `transport` 必须非 null，且与所属 instance 及 Turn snapshot 相同；只有 Web source binding 例外为 null。v4 物理 migration 为了 SQLite `ALTER TABLE` 兼容性可先加 nullable 列，但必须回填所有旧 Agent 行为 `structured`，Store 在创建/claim 时拒绝任何 Agent null 值。
 
@@ -403,6 +403,7 @@ Broker 启动时先枚举非终态 attempt，不先写 terminal：
 - 历史 Direct attempt 保留原 terminal、delivery certainty 和 native session ID，但当前 runtime 不 claim、不 resume、不 replay；
 - Codex App Server 记录 thread ID；只有 capability verified 后才使用 `thread/resume`；
 - Grok/Kimi/Hermes 只有在各自 capability evidence 支持时才使用 ACP `session/load`；
+- Claude 的原生 session id 由 GroupX 自行分配（UUID，启动时经 `--session-id` 传入）并记录，后续新 Turn 用 `--resume <id>` 延续同一 native session；
 - Structured 原生 resume/load 不支持、未取得 session ID 或失败时，只为后续新 Turn 建立新 session，并注入 GroupX Context Packet；
 - `prompt_invoked` 或更晚阶段的当前 Turn 不因连接丢失、恢复失败或终态不明而自动重放；
 - 新 session 属于同一稳定 actor，但有新的 binding/instance lineage；

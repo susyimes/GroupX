@@ -67,14 +67,15 @@ describe("setup contracts", () => {
         { driver: "codex", found: true },
         { driver: "grok", found: false },
         { driver: "kimi", found: true },
-        { driver: "hermes", found: true }
+        { driver: "hermes", found: true },
+        { driver: "claude", found: true }
       ],
       config: {
         serverPort: 4_310,
         storagePath: ".groupx/groupx.db",
         agents: [agent()]
       }
-    }).drivers).toHaveLength(4);
+    }).drivers).toHaveLength(5);
     expect(parseSetupSaveResponse({
       saved: true,
       configPath: "D:\\GroupX\\groupx.json",
@@ -91,7 +92,8 @@ describe("setup contracts", () => {
         { driver: "codex", found: true },
         { driver: "codex", found: false },
         { driver: "kimi", found: true },
-        { driver: "hermes", found: true }
+        { driver: "hermes", found: true },
+        { driver: "claude", found: true }
       ],
       config: {
         serverPort: 4_310,

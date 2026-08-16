@@ -41,6 +41,11 @@
 | G-010 | 并发启动 bind 竞态 | 预检后 `EADDRINUSE` 会有界复查；同 key 赢家按复用成功，无法识别的 listener 返回友好错误，失败方不修改现有 binding/session |
 | G-011 | Hermes Structured 启动 | argv 固定 `hermes --yolo acp`；initialize 必须标识 `hermes-agent`；new/load 后首 prompt 前成功设置 `dont_ask`；不写全局配置 |
 | G-012 | Hermes capability 兼容 | raw initialize 未声明 HTTP 时只有 Hermes driver 可按官方实现接收 HTTP MCP descriptor；其他 ACP driver 仍 fail-closed；报告不得把 descriptor 冒充 actual call |
+| G-013 | Claude Structured 启动 | argv 固定 `claude --print --input-format stream-json --output-format stream-json --verbose --include-partial-messages --permission-mode bypassPermissions`，有 GroupX MCP 绑定时追加 `--mcp-config <json>`，末尾为 `--session-id <uuid>` 或 `--resume <uuid>`；`start()` 完成 `control_request`/`initialize` 与 `control_request`/`set_permission_mode(bypassPermissions)`；不写 Claude Code settings 文件 |
+| G-014 | Claude permission mode 负向 | 仅 `set_permission_mode` 被拒绝或降级时为 `NATIVE_POLICY_BLOCKED`；`initialize` 回显非目标模式不得单独失败启动；缺 `current_permission_mode` 为 `PROTOCOL_INVALID_MESSAGE`；普通协议失败按 Adapter 错误收敛；不写 settings、不 fallback |
+| G-015 | Claude 延后 `system`/`init` 帧 | `init` 帧只在首条用户消息之后到达，不得当作握手；到达时 `session_id`、`cwd` 与 `permissionMode` 必须与 GroupX 启动值一致，无法解析或不一致都使当前 Turn 失败 |
+| G-016 | Claude 取消与迟到 `result` | `aborted_streaming`(流式中) 与 `aborted_tools`(工具执行中) 都归一化为 `turn.cancelled` 且不污染 session；interrupt 输给正在收敛的 Turn 时补发的 `result` 必须在 cancel 窗口内被吸收，不得终结下一个 Turn |
+| G-017 | Claude 交互类 control request | `can_use_tool`、`elicitation`、`request_user_dialog` 一律拒绝并以 `UNEXPECTED_NATIVE_INTERACTION` 失败当前 Turn；`hook_callback` 等非决策类只回协议错误，不影响 Turn |
 
 精确 native profile：
 
@@ -50,6 +55,7 @@
 | Grok | flags 在前：`--no-auto-update --permission-mode bypassPermissions --sandbox off --no-plan [--resume <sessionId>] --output-format streaming-json --single <prompt>` | 同一 flags 在前，追加 `agent stdio` |
 | Kimi | deprecated Direct 参考实现保留 preflight 后的 one-shot argv | `kimi acp`；不要求 global default mode；new/load（含 Adapter resume）后首 prompt 前 `session/set_mode {sessionId,modeId:"auto"}` |
 | Hermes | `NOT_APPLICABLE` | `hermes --yolo acp`；new/load 后首 prompt 前 `session/set_mode {sessionId,modeId:"dont_ask"}` |
+| Claude | `NOT_APPLICABLE` | `claude --print --input-format stream-json --output-format stream-json --verbose --include-partial-messages --permission-mode bypassPermissions`；有 GroupX MCP 绑定时追加 `--mcp-config <json>`；末尾 `--session-id <uuid>`（新建）或 `--resume <uuid>`（恢复）；`start()` 先 `control_request`/`initialize`，再 `control_request`/`set_permission_mode(bypassPermissions)` |
 
 Kimi ACP 不读取 global defaults 作为启动门禁；mode 不持久化，任何新建或恢复 session 都要重设。Codex thread sandbox 必须是当前 0.147 wire 的 kebab-case `danger-full-access`；不能误用 `dangerFullAccess`。
 
@@ -64,6 +70,8 @@ Structured release 合同：三 Agent 都能用 fixed argv/mode 握手、建立/
 当前 Structured Gate 已通过，且没有跨 transport 或沿用旧 non-unrestricted evidence：native run `20260811T130102169Z` 覆盖三 Agent 的 fixed argv/version、stream、sender provenance、actual MCP、cancel 后复用、配置不写与清理，fixture run `20260811T125831853Z` 覆盖负向合同。Direct 的两条后续 live/fixture run 仅保留为 deprecated historical evidence，`canSatisfyCurrentGate=false`。
 
 Hermes 是后加 driver，不改变上述核心三 Agent Gate。它的 adapter fixture 与 0.20.1 无模型 initialize/new/set-mode/cold-load probe 可以证明 wiring 和 session contract；在 Hermes 真实模型回复、GroupX MCP actual call、cancel 后复用与 clean close 的 matching live evidence 完成前，相关 Hermes 能力只能标 `documented/probed`，不能借用核心三 Agent 的 PASS。
+
+Claude 同样是后加 driver，也不改变核心三 Agent Gate。它有自己的版本化 native-live probe：2026-08-16 对 win32 上的 Claude Code 2.1.233 确认基础 Turn、streaming delta、经 http binding 恰好一次的 GroupX MCP `memory_search` 调用、runtime 重启后 `--resume` 恢复、clean shutdown、无遗留进程与用户 settings 未被修改，证据位于 `.groupx/evidence/claude-live/`。该证据只支撑 Claude 自己的能力分级，不进入 codex/grok/kimi 的核心 M0 Gate，也不能借用其 PASS。
 
 ## 5. 协议与 sender provenance
 
@@ -243,7 +251,7 @@ Broker 指标不含模型网络/推理；只测 Structured session startup/reuse
 - 默认 Structured 三 Agent 的全部适用 M0 case PASS，才可关闭 v0.1 release transport Gate；
 - Direct 不得被宣称为 active/完整可用；其 baseline、Agent 和适用 case 保持 `DEPRECATED`；
 - Structured 三 Agent actual MCP call 全部 verified，才可宣称全向当前回合主动互调；
-- 新增 Hermes driver 的产品入口可以随实现交付，但 Hermes native/MCP 能力声明必须按其独立 evidence 分级；
+- 新增 Hermes 与 Claude driver 的产品入口可以随实现交付，但它们的 native/MCP 能力声明必须按各自独立 evidence 分级；
 - native interaction 负向合同通过，且无 approval surface；
 - 无自动 fallback、跨 transport recovery 或 replay。
 

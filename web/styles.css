@@ -43,6 +43,7 @@
   --tone-grok: #4f63d2;
   --tone-kimi: #9440c9;
   --tone-hermes: #d97706;
+  --tone-claude: #c4522f;
   --tone-user: #a86f0e;
   --tone-system: #6b768c;
 
@@ -142,6 +143,7 @@
   --tone-grok: #8ea2ff;
   --tone-kimi: #d09bff;
   --tone-hermes: #f6ad55;
+  --tone-claude: #f0a58a;
   --tone-user: #f5c46b;
   --tone-system: #7d8ca3;
 
@@ -642,6 +644,10 @@ input:disabled {
   color: var(--tone-hermes);
 }
 
+.actor-claude {
+  color: var(--tone-claude);
+}
+
 .actor-user {
   color: var(--tone-user);
 }
@@ -1073,6 +1079,10 @@ input:disabled {
 
 .tone-hermes {
   --tone: var(--tone-hermes);
+}
+
+.tone-claude {
+  --tone: var(--tone-claude);
 }
 
 .tone-user {

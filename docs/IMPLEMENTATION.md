@@ -49,10 +49,13 @@ GroupX 按定义字段记录诊断数据，不主动采集完整环境、CLI 配
 | Grok | `grok --no-auto-update --permission-mode bypassPermissions --sandbox off --no-plan [--resume <sessionId>] --output-format streaming-json --single <prompt>`（`-p` 是短别名） | 相同全局前缀后追加 `agent stdio` | 长驻 ACP、语义化 cancel、GroupX MCP |
 | Kimi | deprecated Direct 参考实现保留只读配置预检后使用 `kimi [--session <id>] --prompt <prompt> --output-format stream-json` | 直接启动 `kimi acp`，不要求全局默认 yolo/auto；session new/load（含 Adapter resume）后、首 prompt 前 `session/set_mode(modeId="auto")`；mode 不持久化 | Structured 长驻 ACP、语义化 cancel、GroupX MCP |
 | Hermes | 无 Direct 产品入口 | `hermes --yolo acp`；session new/load 后、首 prompt 前 `session/set_mode(modeId="dont_ask")` | Structured 长驻 ACP、语义化 cancel、GroupX MCP descriptor |
+| Claude | 无 Direct 产品入口 | `claude --print --input-format stream-json --output-format stream-json --verbose --include-partial-messages --permission-mode bypassPermissions`；有 GroupX MCP 绑定时追加 `--mcp-config <json>`；末尾追加 `--session-id <uuid>`（新建）或 `--resume <uuid>`（恢复）；`start()` 先 `control_request`/`initialize`，再 `control_request`/`set_permission_mode(bypassPermissions)` | Structured 长驻 stream-json stdio、`control_request`/`interrupt` 取消、GroupX MCP |
 
 Direct 的 one-shot、resume 与 Kimi preflight 逻辑只为兼容旧配置/记录保留，不再成为里程碑、M0 Gate 或新功能落点。Structured 维持长驻 session，是唯一 active 路径。任何 Structured 失败都在本 transport 内收敛，不自动 fallback 到 Direct。
 
 Codex 0.147 的 thread-level `sandbox` 值是 kebab-case `danger-full-access`。`dangerFullAccess` 是 `turn/start.sandboxPolicy.type` 的另一种字段形态，在 `thread/start`/`thread/resume` 中会被拒绝。Codex child 使用 Agent 配置的 OS cwd，thread params 省略 cwd；启动前发送 `configRequirements/read {}`：requirements 为 null/缺失表示无约束；若显式 allowlist 不含 `never` 或 `danger-full-access`，启动以 `NATIVE_POLICY_BLOCKED` 失败。
+
+Claude Code 的 `system`/`init` 帧只在首条用户消息之后才发出，不能当作握手。GroupX 在 `start()` 阶段改用 SDK control request：先 `control_request`/`initialize` 取得 `current_permission_mode`（观测，不消耗模型回合），再 `control_request`/`set_permission_mode` 建立 `bypassPermissions`。只有 set 拒绝或降级才以 `NATIVE_POLICY_BLOCKED` 失败；initialize 报出的非目标模式不得单独阻断启动。这是 Codex `configRequirements/read` 与 Kimi/Hermes `session/set_mode` 的 Claude 对应形态。延后到达的 `system`/`init` 帧仍在首个 Turn 内校验：`session_id`、`cwd` 与 `permissionMode` 必须与 GroupX 启动值一致，否则该 Turn 失败——这是 initialize 只作观测后，会话内模式被降级时唯一还能暴露它的兜底层。原生 session id 由 GroupX 自己分配（UUID，经 `--session-id` 传入），恢复使用 `--resume <id>`。unrestricted 通过 argv 申请、由 set 建立，GroupX 不写 Claude Code 的 settings 文件。
 
 ## 3. 明确不做
 
@@ -81,14 +84,17 @@ flowchart LR
     Broker --> GrokAdapter["Grok ACP Adapter"]
     Broker --> KimiAdapter["Kimi ACP Adapter"]
     Broker --> HermesAdapter["Hermes ACP Adapter"]
+    Broker --> ClaudeAdapter["Claude Code CLI Adapter"]
     CodexAdapter --> CodexNative["codex app-server"]
     GrokAdapter --> GrokNative["grok agent stdio"]
     KimiAdapter --> KimiNative["kimi acp"]
     HermesAdapter --> HermesNative["hermes --yolo acp"]
+    ClaudeAdapter --> ClaudeNative["claude --print<br/>stream-json stdio"]
     CodexNative -.-> GroupXMCP["GroupX MCP<br/>send / ask / read"]
     GrokNative -. "Structured only" .-> GroupXMCP
     KimiNative -. "Structured only" .-> GroupXMCP
     HermesNative -. "Structured only" .-> GroupXMCP
+    ClaudeNative -. "Structured only" .-> GroupXMCP
     GroupXMCP --> Broker
 ```
 
@@ -136,9 +142,15 @@ Broker 不负责：
 核心只依赖统一接口：
 
 ```ts
-type AdapterId = "codex" | "grok" | "kimi" | string;
+type AdapterId = "codex" | "grok" | "kimi" | "hermes" | "claude" | string;
 type AdapterTransport = "direct" | "structured";
-type NativeProtocol = "codex-exec" | "codex-app-server" | "grok-cli" | "kimi-cli" | "acp";
+type NativeProtocol =
+  | "codex-exec"
+  | "codex-app-server-stdio-jsonrpc-v2"
+  | "grok-cli"
+  | "kimi-cli"
+  | "acp"
+  | "claude-cli-stream-json-v1";
 
 interface AgentAdapter {
   readonly adapterId: AdapterId;
@@ -457,16 +469,17 @@ CONTEXT_BUDGET_EXCEEDED
     "codex": { "command": "codex", "cwd": "D:\\GroupX" },
     "grok": { "command": "grok", "cwd": "D:\\GroupX" },
     "kimi": { "enabled": true, "command": "kimi", "cwd": "D:\\GroupX", "name": "小K" },
+    "claude": { "command": "claude", "cwd": "D:\\GroupX" },
     "rex": { "driver": "kimi", "command": "kimi", "cwd": "D:\\GroupX", "name": "小R" }
   }
 }
 ```
 
-`agents` map 是显式房间名册：键即 agent id(actor 为 `agent:<id>`),写了哪些就启动哪些。兼容缺省配置仍只启用 codex/grok/kimi 三个原有内置 Agent；Hermes 由引导页或显式配置加入。内置 id 的 `driver` 默认同名；自定义 id 必须显式声明 `driver: codex | grok | kimi | hermes`,driver 决定 native CLI 家族、固定 argv/session 合同与命令解析方式。同一 driver 允许挂多个 agent 实例(各自独立长驻 session)。`name` 是可选显示名:runtime 启动时把它 upsert 进 actors 表，Web UI 的目标 chips、Agent 卡片与身份记忆下拉都按名册动态渲染;内置 id 未配 `name` 时沿用内置种子名。agent id 只允许字母数字开头结尾的 `A-Za-z0-9._-`(≤64 字符),名册至少一个 agent。
+`agents` map 是显式房间名册：键即 agent id(actor 为 `agent:<id>`),写了哪些就启动哪些。兼容缺省配置仍只启用 codex/grok/kimi 三个原有内置 Agent；Hermes 与 Claude 由引导页或显式配置加入。内置 id 的 `driver` 默认同名；自定义 id 必须显式声明 `driver: codex | grok | kimi | hermes | claude`,driver 决定 native CLI 家族、固定 argv/session 合同与命令解析方式。同一 driver 允许挂多个 agent 实例(各自独立长驻 session)。`name` 是可选显示名:runtime 启动时把它 upsert 进 actors 表，Web UI 的目标 chips、Agent 卡片与身份记忆下拉都按名册动态渲染;内置 id 未配 `name` 时沿用内置种子名。agent id 只允许字母数字开头结尾的 `A-Za-z0-9._-`(≤64 字符),名册至少一个 agent。
 
 公开 `transport` 配置只接受 `structured`;`direct` 会在解析和 runtime construction 阶段明确失败。message/Turn API 不允许覆盖。运行态公开 Structured、版本、健康状态和 capability snapshot。
 
-Agent `enabled` 默认 true;`enabled: false` 的 agent 不建 Adapter、不进名册 UI。Kimi driver enabled 时不读取或要求修改全局 permission/plan 默认值；ACP process 建立 session 后用 `session/set_mode(auto)` 固定当前 session。Hermes driver 使用 `--yolo acp`，建立或加载 session 后用 `session/set_mode(dont_ask)` 固定当前 session。若 mode RPC 的明确 native policy 拒绝成立，则返回 `NATIVE_POLICY_BLOCKED`;其他协议/启动错误按对应 Adapter 错误收敛，不自动禁用 Agent、不切 transport、不写配置。
+Agent `enabled` 默认 true;`enabled: false` 的 agent 不建 Adapter、不进名册 UI。Kimi driver enabled 时不读取或要求修改全局 permission/plan 默认值；ACP process 建立 session 后用 `session/set_mode(auto)` 固定当前 session。Hermes driver 使用 `--yolo acp`，建立或加载 session 后用 `session/set_mode(dont_ask)` 固定当前 session。Claude driver 通过 argv `--permission-mode bypassPermissions` 申请 unrestricted，并在每次 `start()`/`resume()` 用 `control_request`/`set_permission_mode` 建立当前进程的 `bypassPermissions`；`initialize` 只观测 `current_permission_mode`，不因其回显 settings 默认值而失败。不写 Claude Code 的 settings 文件。若 set 的明确 native policy 拒绝或降级成立，则返回 `NATIVE_POLICY_BLOCKED`;其他协议/启动错误按对应 Adapter 错误收敛，不自动禁用 Agent、不切 transport、不写配置。
 
 `groupx init` 启动一个临时 loopback 引导服务并打开浏览器；首次 `groupx start` 没有配置时复用同一流程。引导页可创建多个相同 driver 实例并填写 id/name/cwd/command；保存严格配置后，CLI 启动正式 runtime，临时服务通过同源 launch 状态通知当前页面，并在正式服务 ready 后自动跳转到群聊。运行中的 `/setup` 使用同一合同编辑名册；保存只更新配置文件，不在运行时热增删 Adapter/session。主房间同时读取 setup snapshot，把已保存但当前 bootstrap 不存在的启用 Agent 投影为 `pending_restart`，计入名册总数但禁止路由；重启后由真实 Adapter 状态替换。setup API 不暴露 transport、access、approval 或 sandbox 字段。
 
@@ -509,7 +522,7 @@ D:\GroupX
 │  ├─ core                       # envelope / dispatcher / identity-binding / errors
 │  ├─ launch                     # command-spec:跨平台 shell-free 命令解析
 │  ├─ app                        # runtime / session-manager / adapter-factory / doctor / init-config / update
-│  ├─ adapters                   # codex app-server、acp(grok/kimi/hermes)、direct(deprecated)
+│  ├─ adapters                   # codex app-server、acp(grok/kimi/hermes)、claude(cli stream-json)、direct(deprecated)
 │  ├─ broker
 │  ├─ storage                    # sqlite-store(WAL)
 │  ├─ memory                     # 公共/Agent 独立记忆、兼容身份记录与 context packet
@@ -581,7 +594,7 @@ D:\GroupX
 
 GroupX v0.1 完成必须同时满足：
 
-1. Structured 核心 Codex App Server、Grok ACP、Kimi ACP 继续满足既有 unrestricted release Gate；新增 Hermes driver 的能力声明只按它自己的 fixture/no-model/live evidence 分级。任一缺失、握手失败或 native interaction request 都明确失败，不自动切换 transport。Direct 配置、factory 与 runtime 入口保持关闭。
+1. Structured 核心 Codex App Server、Grok ACP、Kimi ACP 继续满足既有 unrestricted release Gate；新增 Hermes 与 Claude driver 的能力声明只按各自的 fixture/no-model/live evidence 分级。任一缺失、握手失败或 native interaction request 都明确失败，不自动切换 transport。Direct 配置、factory 与 runtime 入口保持关闭。
 2. 全部已配置 Structured Adapter 的回复进入同一公共 transcript，用户可通过 Web/REST 明确选择下一目标继续群聊；普通模型文本不自动触发其他 CLI。
 3. 每个 Agent 在正常流程内的 sender 归属由 Structured session binding 决定，正文自称不会改变 UI 归属。
 4. 同一 Agent 顺序稳定，不同 Agent 并行；一个失败不阻塞其他 Agent。

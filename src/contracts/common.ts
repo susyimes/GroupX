@@ -84,7 +84,8 @@ export const DEFAULT_KNOWN_TARGETS = [
   "agent:codex",
   "agent:grok",
   "agent:kimi",
-  "agent:hermes"
+  "agent:hermes",
+  "agent:claude"
 ] as const;
 
 export type ClientCommandId = z.infer<typeof ClientCommandIdSchema>;

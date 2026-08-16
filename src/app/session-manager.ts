@@ -1,4 +1,5 @@
 import type { AdapterId, CliAdapter, LaunchProfile, NativeSession } from "../adapters/types.js";
+import { CLAUDE_PROTOCOL } from "../adapters/claude/index.js";
 import { AdapterRegistry } from "../adapters/registry.js";
 import { TRANSPORT_LIFECYCLE, type GroupXConfig, type TransportMode } from "../config.js";
 import { createId } from "../core/envelope.js";
@@ -137,9 +138,14 @@ export class AgentSessionManager {
       options.protocolFor ??
       ((agentId, transport) => {
         if (transport === "direct") return "direct-jsonl";
-        return this.#config.agents[agentId]?.driver === "codex"
-          ? "codex-app-server-stdio-jsonrpc-v2"
-          : "acp";
+        switch (this.#config.agents[agentId]?.driver) {
+          case "codex":
+            return "codex-app-server-stdio-jsonrpc-v2";
+          case "claude":
+            return CLAUDE_PROTOCOL;
+          default:
+            return "acp";
+        }
       });
     this.#closeTimeoutMs = options.closeTimeoutMs ?? options.config.timeouts.closeMs;
     this.#startAttempts = options.startAttempts ?? 3;

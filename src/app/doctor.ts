@@ -142,7 +142,12 @@ export function formatDoctorReport(report: DoctorReport): string {
     }
   }
   const found = report.drivers.filter((probe) => probe.found).length;
-  lines.push("", found === 0 ? "结论: 未检测到任何 CLI,请先安装 codex / grok / kimi / hermes。" : `结论: 检测到 ${found} 个 CLI。`);
+  lines.push(
+    "",
+    found === 0
+      ? `结论: 未检测到任何 CLI,请先安装 ${BUILTIN_AGENT_IDS.join(" / ")}。`
+      : `结论: 检测到 ${found} 个 CLI。`
+  );
   return lines.join("\n");
 }
 

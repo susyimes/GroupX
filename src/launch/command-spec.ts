@@ -2,7 +2,7 @@ import { statSync } from "node:fs";
 import path from "node:path";
 import { GroupXError } from "../core/errors.js";
 
-export const BUILTIN_AGENT_IDS = ["codex", "grok", "kimi", "hermes"] as const;
+export const BUILTIN_AGENT_IDS = ["codex", "grok", "kimi", "hermes", "claude"] as const;
 
 export type BuiltinAgentId = (typeof BUILTIN_AGENT_IDS)[number];
 
@@ -107,10 +107,13 @@ function resolveDefaultAgentCommand(
 ): CommandSpec {
   if (dependencies.platform !== "win32") {
     const executable = findOnPath(agentId, dependencies, pathApi);
-    if (executable === undefined) {
-      throw resolutionError(agentId, "executable_not_found");
+    if (executable !== undefined) {
+      return { executable, prefixArgs: [] };
     }
-    return { executable, prefixArgs: [] };
+    if (agentId === "claude") {
+      return resolvePosixClaudeCommand(agentId, dependencies, pathApi);
+    }
+    throw resolutionError(agentId, "executable_not_found");
   }
 
   if (agentId === "hermes") {
@@ -148,23 +151,147 @@ function resolveDefaultAgentCommand(
     return { executable, prefixArgs: [] };
   }
 
+  if (agentId === "claude") {
+    return resolveWindowsClaudeCommand(agentId, dependencies, pathApi);
+  }
+
   const appData = readEnvironmentValue(dependencies.env, "APPDATA");
   if (appData === undefined) {
     throw resolutionError(agentId, "appdata_not_available");
-  }
-  const nodeExecutable = normalizeAbsolutePath(dependencies.execPath, dependencies, pathApi);
-  if (!isNodeExecutable(nodeExecutable, pathApi) || !safeIsFile(dependencies, nodeExecutable)) {
-    throw resolutionError(agentId, "node_runtime_not_found");
   }
 
   const entrypoint =
     agentId === "codex"
       ? pathApi.resolve(appData, "npm", "node_modules", "@openai", "codex", "bin", "codex.js")
       : pathApi.resolve(appData, "npm", "node_modules", "@moonshot-ai", "kimi-code", "dist", "main.mjs");
+  return {
+    executable: requireNodeRuntime(agentId, dependencies, pathApi),
+    prefixArgs: [requireNpmEntrypoint(agentId, dependencies, entrypoint)]
+  };
+}
+
+/**
+ * Claude Code ships a native single-file build first and an npm package
+ * second. Native lookup must not depend on APPDATA; that variable is only
+ * required for the npm-global fallback.
+ */
+function resolveWindowsClaudeCommand(
+  agentId: BuiltinAgentId,
+  dependencies: CommandResolverDependencies,
+  pathApi: typeof path.win32 | typeof path.posix
+): CommandSpec {
+  const onPath = findOnPath(agentId, dependencies, pathApi);
+  if (onPath !== undefined) {
+    return { executable: onPath, prefixArgs: [] };
+  }
+  const home = readEnvironmentValue(dependencies.env, "USERPROFILE") ?? readEnvironmentValue(dependencies.env, "HOME");
+  if (home !== undefined) {
+    const nativeExecutable = pathApi.resolve(home, ".local", "bin", "claude.exe");
+    if (safeIsFile(dependencies, nativeExecutable)) {
+      return { executable: nativeExecutable, prefixArgs: [] };
+    }
+  }
+  const appData = readEnvironmentValue(dependencies.env, "APPDATA");
+  if (appData === undefined) {
+    throw resolutionError(agentId, "appdata_not_available");
+  }
+  return {
+    executable: requireNodeRuntime(agentId, dependencies, pathApi),
+    prefixArgs: [
+      requireNpmEntrypoint(
+        agentId,
+        dependencies,
+        pathApi.resolve(appData, "npm", "node_modules", "@anthropic-ai", "claude-code", "cli.js")
+      )
+    ]
+  };
+}
+
+/**
+ * POSIX Claude lookup mirrors Windows: native binary first, npm-global
+ * `cli.js` second. The npm layer never shells out to `npm root -g`; it
+ * walks this process's Node prefix, then Homebrew and /usr/local.
+ */
+function resolvePosixClaudeCommand(
+  agentId: BuiltinAgentId,
+  dependencies: CommandResolverDependencies,
+  pathApi: typeof path.win32 | typeof path.posix
+): CommandSpec {
+  const home = readEnvironmentValue(dependencies.env, "HOME") ?? readEnvironmentValue(dependencies.env, "USERPROFILE");
+  if (home !== undefined) {
+    const nativeExecutable = pathApi.resolve(home, ".local", "bin", "claude");
+    if (safeIsFile(dependencies, nativeExecutable)) {
+      return { executable: nativeExecutable, prefixArgs: [] };
+    }
+  }
+
+  const nodeExecutable = requireNodeRuntime(agentId, dependencies, pathApi);
+  for (const prefix of posixNodeInstallPrefixes(nodeExecutable, pathApi)) {
+    const entrypoint = claudeNpmEntrypoint(prefix, pathApi);
+    if (safeIsFile(dependencies, entrypoint)) {
+      return { executable: nodeExecutable, prefixArgs: [entrypoint] };
+    }
+  }
+  throw resolutionError(agentId, "npm_entrypoint_not_found");
+}
+
+const CLAUDE_NPM_ENTRYPOINT = ["lib", "node_modules", "@anthropic-ai", "claude-code", "cli.js"] as const;
+const POSIX_KNOWN_NODE_PREFIXES = ["/opt/homebrew", "/usr/local"] as const;
+
+function claudeNpmEntrypoint(
+  prefix: string,
+  pathApi: typeof path.win32 | typeof path.posix
+): string {
+  return pathApi.resolve(prefix, ...CLAUDE_NPM_ENTRYPOINT);
+}
+
+function nodeInstallPrefix(
+  nodeExecutable: string,
+  pathApi: typeof path.win32 | typeof path.posix
+): string | undefined {
+  const binDirectory = pathApi.dirname(nodeExecutable);
+  return pathApi.basename(binDirectory) === "bin" ? pathApi.dirname(binDirectory) : undefined;
+}
+
+function posixNodeInstallPrefixes(
+  nodeExecutable: string,
+  pathApi: typeof path.win32 | typeof path.posix
+): string[] {
+  const prefixes: string[] = [];
+  const fromNode = nodeInstallPrefix(nodeExecutable, pathApi);
+  if (fromNode !== undefined) {
+    prefixes.push(fromNode);
+  }
+  for (const known of POSIX_KNOWN_NODE_PREFIXES) {
+    const resolved = pathApi.resolve(known);
+    if (!prefixes.includes(resolved)) {
+      prefixes.push(resolved);
+    }
+  }
+  return prefixes;
+}
+
+function requireNodeRuntime(
+  agentId: BuiltinAgentId,
+  dependencies: CommandResolverDependencies,
+  pathApi: typeof path.win32 | typeof path.posix
+): string {
+  const nodeExecutable = normalizeAbsolutePath(dependencies.execPath, dependencies, pathApi);
+  if (!isNodeExecutable(nodeExecutable, pathApi) || !safeIsFile(dependencies, nodeExecutable)) {
+    throw resolutionError(agentId, "node_runtime_not_found");
+  }
+  return nodeExecutable;
+}
+
+function requireNpmEntrypoint(
+  agentId: BuiltinAgentId,
+  dependencies: CommandResolverDependencies,
+  entrypoint: string
+): string {
   if (!safeIsFile(dependencies, entrypoint)) {
     throw resolutionError(agentId, "npm_entrypoint_not_found");
   }
-  return { executable: nodeExecutable, prefixArgs: [entrypoint] };
+  return entrypoint;
 }
 
 function resolveExecutable(

@@ -14,7 +14,7 @@ transport: direct | structured
 
 - 公开运行入口只接受 `structured`，同一次 Broker 运行对全部已配置 Agent 使用同一值；
 - `direct` 仅为旧记录和已有 one-shot 源码保留，状态固定 `DEPRECATED`；配置解析、factory 与 runtime 均拒绝启动；
-- `structured` 使用 Codex App Server 与 ACP driver 长驻 session；当前 driver 为 Grok、Kimi、Hermes；
+- `structured` 使用 Codex App Server、ACP driver 与 Claude Code CLI stream-json driver 的长驻 session；当前 ACP driver 为 Grok、Kimi、Hermes，Claude 自成一族；
 - message/Turn API 不接受 transport 覆盖；
 - Structured 失败时绝不自动 fallback 到 Direct；
 - `access` 不进入配置，v0.1 恒为 `unrestricted`。
@@ -55,6 +55,7 @@ DEPRECATED
 | Grok | `grok --no-auto-update --permission-mode bypassPermissions --sandbox off --no-plan [--resume <sessionId>] --output-format streaming-json --single <prompt>`；`-p` 是 `--single` 短别名 | `grok --no-auto-update --permission-mode bypassPermissions --sandbox off --no-plan agent stdio` |
 | Kimi | deprecated Direct 参考实现保留只读配置 preflight 后使用 `kimi [--session <id>] --prompt <prompt> --output-format stream-json` | 直接启动 `kimi acp`；不以全局默认 permission/plan 为门禁。每次 `session/new` 或 `session/load`（含 Adapter resume）后、首个 prompt 前发送 `session/set_mode {sessionId, modeId:"auto"}` |
 | Hermes | `NOT_APPLICABLE` | `hermes --yolo acp`；每次 `session/new` 或 `session/load` 后、首个 prompt 前发送 `session/set_mode {sessionId, modeId:"dont_ask"}` |
+| Claude | `NOT_APPLICABLE` | `claude --print --input-format stream-json --output-format stream-json --verbose --include-partial-messages --permission-mode bypassPermissions`；存在 GroupX MCP 绑定时追加 `--mcp-config <json>`；末尾追加 `--session-id <uuid>`（新建）或 `--resume <uuid>`（恢复）。`start()` 先发 `control_request`/`initialize` 读取 `current_permission_mode`，再发 `control_request`/`set_permission_mode` 建立 `bypassPermissions` |
 
 Codex 0.147 的 thread-level `sandbox` 是 kebab-case 字符串 `danger-full-access`；camel-case `dangerFullAccess` 是 `turn/start.sandboxPolicy.type` 的另一种 wire shape，不能混用。Codex child 使用 Agent 配置的 OS cwd，thread params 省略 cwd。Structured 启动前发送 `configRequirements/read {}`：requirements 为 null/缺失表示无约束；显式 allowlist 不含 `never` 或 `danger-full-access` 时以 `NATIVE_POLICY_BLOCKED` 失败。证据只保存有界结论。
 
@@ -62,7 +63,9 @@ Grok 的全局 flags 必须位于 `agent stdio` 或 `--single` 之前。企业�
 
 Kimi Direct 已 deprecated；其历史 one-shot 代码仍因 `--prompt` 与权限 flags 的互斥关系保留只读配置 preflight。Active Structured 不使用这条 preflight：官方 ACP 提供 `session/set_mode`，所以默认 global `manual` 允许启动，GroupX 在每次 `session/new` 或 `session/load`（含 Adapter resume）后设置当前 session 为 auto。mode 不持久化，必须逐 session 重设；auto 仍受 static deny。
 
-固定 argv/mode 只作用于 GroupX 启动的 process/thread/session。GroupX 不写任何受支持 CLI 的全局配置，也不允许通用 `extraArgs` 改写这些常量。Structured Kimi 不读取全局配置来决定是否启动；Hermes 不追加会持久化 hook approval 的参数。
+Claude Code 的 stream-json 是换行分隔消息流，不是 JSON-RPC，因此 Adapter 直接建立在通用 JSONL 进程层之上。它的 `system`/`init` 帧只在首条用户消息之后才发出，不能当作握手；GroupX 在 `start()` 用 SDK control request 完成等价工作：`control_request`/`initialize` 返回 `current_permission_mode`（观测，不消耗模型回合），随后 `control_request`/`set_permission_mode` 建立 `bypassPermissions`；只有 set 拒绝或降级才以 `NATIVE_POLICY_BLOCKED` 失败。原生 session id 由 GroupX 自行分配（UUID，`--session-id`），恢复用 `--resume <id>`。Windows 命令解析顺序为 `PATH`、`%USERPROFILE%\.local\bin\claude.exe`（原生单文件构建）、npm 全局入口 `%APPDATA%\npm\node_modules\@anthropic-ai\claude-code\cli.js`（经 node 启动，此层才需要 `APPDATA`）；POSIX 为 `PATH`、`$HOME/.local/bin/claude`，再按当前 Node 安装前缀 / Homebrew `/opt/homebrew` / `/usr/local` 查找 npm 全局 `cli.js`（经 node 启动，不调用 `npm root -g`）。
+
+固定 argv/mode 只作用于 GroupX 启动的 process/thread/session。GroupX 不写任何受支持 CLI 的全局配置，也不允许通用 `extraArgs` 改写这些常量。Structured Kimi 不读取全局配置来决定是否启动；Hermes 不追加会持久化 hook approval 的参数；Claude 的 unrestricted 只由 argv `--permission-mode bypassPermissions` 表达，GroupX 从不写 Claude Code 的 settings 文件。
 
 ## 4. Wire 合同
 
@@ -94,6 +97,16 @@ Kimi Direct 已 deprecated；其历史 one-shot 代码仍因 `--prompt` 与权�
 4. `session/prompt` 与 `session/update` 归一化，matching response/`stopReason` 是 terminal；
 5. `session/cancel` 是 notification；
 6. 原生支持时 `session/close`，随后有界关闭进程。
+
+### 4.4 Claude Code CLI stream-json
+
+1. 启动固定 argv（含 `--session-id <uuid>` 或 `--resume <uuid>`），stdio 上按换行分隔的 stream-json 消息流读写，不使用 JSON-RPC 封装；
+2. 不等待 `system`/`init` 帧握手：先发 `control_request`/`initialize` 取得 `current_permission_mode`（观测），再发 `control_request`/`set_permission_mode` 建立 `bypassPermissions`；只有 set 拒绝或降级为 `NATIVE_POLICY_BLOCKED`；
+3. 延后到达的 `system`/`init` 帧仍在首个 Turn 内校验：`session_id` 与 `cwd` 必须与 GroupX 启动值一致，否则该 Turn 失败；
+4. 归一化 assistant 消息与 partial message delta，`result` 帧是唯一 terminal；
+5. 取消发送 `control_request`/`interrupt`，Turn 以 `result` 帧收敛：流式中取消为 `terminal_reason: "aborted_streaming"`，工具执行中取消为 `"aborted_tools"`，两者都归一化为 `turn.cancelled`，stdio 进程可继续用于下一个 Turn。interrupt 输给正在收敛的 Turn 时 CLI 会补发一个 `result`，须在 cancel 窗口内吸收；`num_turns` 是单次 prompt 的内部迭代计数，不可用于跨 Turn 关联；
+6. GroupX MCP 通过 `--mcp-config` 注入单个名为 `groupx` 的 server（http 或 stdio 描述符），与用户自有 MCP server 合并，不使用 `--strict-mcp-config`，也不写全局配置；
+7. 交互类 control request（`can_use_tool`、`elicitation`、`request_user_dialog`）在 wire 边界直接拒绝，当前 Turn 以 `UNEXPECTED_NATIVE_INTERACTION` 失败；非决策类（`hook_callback`、`mcp_message`、`host_auth_token_refresh`、`oauth_token_refresh`）只回协议错误。
 
 ## 5. 无审批子系统与失败合同
 
@@ -152,6 +165,8 @@ Direct native run `20260811T132505879Z` 与 fixture run `20260811T132257280Z` �
 本机 help/parser 与最小 wire probe 已确认本文件列出的若干 argv/字段形态，这些属于 `advertised/probed`，不等于端到端 `verified`。机器可读当前状态见 [generated/m0-capabilities.json](generated/m0-capabilities.json)。
 
 Hermes 0.20.1 已完成 `acp --check`、initialize、session/new、`dont_ask` 与跨进程 session/load 的无模型 probe；当前生成矩阵仍是原有 Codex/Grok/Kimi 核心 release baseline，不含 Hermes。Hermes 模型回复、GroupX MCP actual call、模型执行中 cancel 与 clean close 必须以新的 matching live evidence 单独验证，不能借用表中 Structured `PASS`。
+
+Claude 同样是后加 driver，携带自己的版本化 native-live probe：2026-08-16 对 win32 上的 Claude Code 2.1.233 确认基础 Turn、streaming delta、经 http binding 恰好一次的 GroupX MCP `memory_search` 调用、runtime 重启后的 `--resume` 恢复、clean shutdown、无遗留进程与用户 settings 未被修改，证据位于 `.groupx/evidence/claude-live/`。当前生成矩阵仍是原有 Codex/Grok/Kimi 核心 release baseline，不含 Hermes 也不含 Claude；Claude 的能力只能引用它自己的独立 evidence，不能借用表中 Structured `PASS`。
 
 ## 8. Release Gate
 

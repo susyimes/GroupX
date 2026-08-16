@@ -81,6 +81,7 @@ export const BUILTIN_ACTORS = {
   grok: { actorId: "agent:grok", kind: "agent", displayName: "Grok" },
   kimi: { actorId: "agent:kimi", kind: "agent", displayName: "Kimi" },
   hermes: { actorId: "agent:hermes", kind: "agent", displayName: "Hermes" },
+  claude: { actorId: "agent:claude", kind: "agent", displayName: "Claude" },
   system: { actorId: "system:groupx", kind: "system", displayName: "GroupX" }
 } as const satisfies Record<string, ActorRef>;
 

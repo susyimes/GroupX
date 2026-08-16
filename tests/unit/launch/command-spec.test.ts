@@ -262,6 +262,141 @@ describe("shell-free Agent command resolution", () => {
     });
   });
 
+  it("resolves Windows Claude from PATH without requiring APPDATA", () => {
+    const executable = "C:\\Tools\\claude.exe";
+    const resolver = dependencies([executable], { APPDATA: undefined, PATH: "C:\\Tools" });
+
+    expect(resolveAgentCommand("claude", "claude", legacy("claude"), baseDirectory, resolver)).toEqual({
+      executable,
+      prefixArgs: []
+    });
+  });
+
+  it("resolves Windows Claude from the native installer path before npm", () => {
+    const nativeExecutable = paths.resolve(userProfile, ".local", "bin", "claude.exe");
+    const npmEntrypoint = paths.resolve(
+      appData,
+      "npm",
+      "node_modules",
+      "@anthropic-ai",
+      "claude-code",
+      "cli.js"
+    );
+    const resolver = dependencies([nativeExecutable, nodeExecutable, npmEntrypoint], { PATH: "C:\\Empty" });
+
+    expect(resolveAgentCommand("claude", "claude", legacy("claude"), baseDirectory, resolver)).toEqual({
+      executable: nativeExecutable,
+      prefixArgs: []
+    });
+  });
+
+  it("falls back to the Claude npm entrypoint only after native lookup misses", () => {
+    const npmEntrypoint = paths.resolve(
+      appData,
+      "npm",
+      "node_modules",
+      "@anthropic-ai",
+      "claude-code",
+      "cli.js"
+    );
+    const resolver = dependencies([nodeExecutable, npmEntrypoint], { PATH: "C:\\Empty" });
+
+    expect(resolveAgentCommand("claude", "claude", legacy("claude"), baseDirectory, resolver)).toEqual({
+      executable: nodeExecutable,
+      prefixArgs: [npmEntrypoint]
+    });
+  });
+
+  it("does not treat a Claude cmd shim as a resolved executable", () => {
+    const npmShim = paths.resolve(appData, "npm", "claude.cmd");
+    const resolver = dependencies([nodeExecutable, npmShim], { PATH: paths.dirname(npmShim) });
+
+    expect(() => resolveAgentCommand("claude", "claude", legacy("claude"), baseDirectory, resolver)).toThrowError(
+      expect.objectContaining({
+        code: "INVALID_ENVELOPE",
+        details: { agentId: "claude", reason: "npm_entrypoint_not_found" }
+      })
+    );
+  });
+
+  it("resolves a custom Claude-driver agent with the same default lookup", () => {
+    const executable = "C:\\Tools\\claude.exe";
+    const resolver = dependencies([executable]);
+
+    expect(resolveAgentCommand("reviewer", "claude", legacy("claude"), baseDirectory, resolver)).toEqual({
+      executable,
+      prefixArgs: []
+    });
+  });
+
+  it("resolves POSIX Claude from ~/.local/bin when PATH has no claude", () => {
+    const executable = "/Users/groupx/.local/bin/claude";
+    const npmEntrypoint = "/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js";
+    const resolver: CommandResolverDependencies = {
+      platform: "darwin",
+      env: { HOME: "/Users/groupx", PATH: "/usr/bin" },
+      execPath: "/usr/local/bin/node",
+      isFile: (candidate) => candidate === executable || candidate === "/usr/local/bin/node" || candidate === npmEntrypoint
+    };
+
+    expect(resolveAgentCommand("claude", "claude", legacy("claude"), "/Users/groupx/work", resolver)).toEqual({
+      executable,
+      prefixArgs: []
+    });
+  });
+
+  it("falls back to the current Node prefix npm entrypoint on macOS", () => {
+    const nodeExecutable = "/Users/groupx/.nvm/versions/node/v24.14.1/bin/node";
+    const npmEntrypoint =
+      "/Users/groupx/.nvm/versions/node/v24.14.1/lib/node_modules/@anthropic-ai/claude-code/cli.js";
+    const resolver: CommandResolverDependencies = {
+      platform: "darwin",
+      env: { HOME: "/Users/groupx", PATH: "/usr/bin" },
+      execPath: nodeExecutable,
+      isFile: (candidate) => candidate === nodeExecutable || candidate === npmEntrypoint
+    };
+
+    expect(resolveAgentCommand("claude", "claude", legacy("claude"), "/Users/groupx/work", resolver)).toEqual({
+      executable: nodeExecutable,
+      prefixArgs: [npmEntrypoint]
+    });
+  });
+
+  it("falls back to Homebrew's global Claude package when this Node prefix has none", () => {
+    const nodeExecutable = "/usr/local/bin/node";
+    const homebrewEntrypoint = "/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js";
+    const resolver: CommandResolverDependencies = {
+      platform: "darwin",
+      env: { HOME: "/Users/groupx", PATH: "/usr/bin" },
+      execPath: nodeExecutable,
+      isFile: (candidate) => candidate === nodeExecutable || candidate === homebrewEntrypoint
+    };
+
+    expect(resolveAgentCommand("claude", "claude", legacy("claude"), "/Users/groupx/work", resolver)).toEqual({
+      executable: nodeExecutable,
+      prefixArgs: [homebrewEntrypoint]
+    });
+  });
+
+  it("fails closed on POSIX when no Claude native binary or npm entrypoint exists", () => {
+    const nodeExecutable = "/usr/local/bin/node";
+    const resolver: CommandResolverDependencies = {
+      platform: "darwin",
+      env: { HOME: "/Users/groupx", PATH: "/usr/bin" },
+      execPath: nodeExecutable,
+      isFile: (candidate) => candidate === nodeExecutable
+    };
+
+    expect(() =>
+      resolveAgentCommand("claude", "claude", legacy("claude"), "/Users/groupx/work", resolver)
+    ).toThrowError(
+      expect.objectContaining({
+        code: "INVALID_ENVELOPE",
+        details: { agentId: "claude", reason: "npm_entrypoint_not_found" }
+      })
+    );
+  });
+
   it("resolves a custom executable path for a custom agent id", () => {
     const executable = "C:\\Tools\\rex-agent.exe";
     const resolver = dependencies([executable]);

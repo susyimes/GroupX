@@ -1,6 +1,6 @@
 import { collectCursorPages } from "./pagination.js";
 
-type AgentDriver = "codex" | "grok" | "kimi" | "hermes";
+type AgentDriver = "codex" | "grok" | "kimi" | "hermes" | "claude";
 
 interface AgentDraft {
   id: string;
@@ -68,7 +68,8 @@ const DRIVER_META: Readonly<Record<AgentDriver, DriverMeta>> = {
   codex: { label: "Codex App Server", short: "CO", tone: "#3370ff" },
   grok: { label: "Grok ACP", short: "GR", tone: "#a348c5" },
   kimi: { label: "Kimi ACP", short: "KI", tone: "#0c9667" },
-  hermes: { label: "Hermes ACP", short: "HE", tone: "#d97706" }
+  hermes: { label: "Hermes ACP", short: "HE", tone: "#d97706" },
+  claude: { label: "Claude Code stream-json", short: "CL", tone: "#d97757" }
 };
 
 const THEME_KEY = "groupx-theme";
@@ -120,7 +121,7 @@ function requiredElement<T extends HTMLElement>(id: string): T {
 }
 
 function isDriver(value: string): value is AgentDriver {
-  return value === "codex" || value === "grok" || value === "kimi" || value === "hermes";
+  return Object.hasOwn(DRIVER_META, value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

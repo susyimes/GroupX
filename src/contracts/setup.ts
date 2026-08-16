@@ -2,7 +2,9 @@ import { z } from "zod";
 
 import { parseContractOutput, parseWriteRequest } from "./validation.js";
 
-export const SetupAgentDriverSchema = z.enum(["codex", "grok", "kimi", "hermes"]);
+// Mirrors BUILTIN_AGENT_IDS. The contracts layer stays free of runtime imports,
+// so the list is duplicated here and pinned by tests/unit/contracts/setup.test.ts.
+export const SetupAgentDriverSchema = z.enum(["codex", "grok", "kimi", "hermes", "claude"]);
 
 export const SetupAgentIdSchema = z
   .string()
@@ -78,7 +80,7 @@ export const SetupSnapshotSchema = z
     if (drivers.size !== SetupAgentDriverSchema.options.length) {
       context.addIssue({
         code: "custom",
-        message: "driver probes must contain codex, grok, kimi, and hermes exactly once",
+        message: `driver probes must contain ${SetupAgentDriverSchema.options.join(", ")} exactly once`,
         path: ["drivers"]
       });
     }

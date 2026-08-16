@@ -1,4 +1,5 @@
 import { GrokAcpAdapter, HermesAcpAdapter, KimiAcpAdapter } from "../adapters/acp/index.js";
+import { ClaudeCliAdapter } from "../adapters/claude/index.js";
 import { CodexAppServerAdapter } from "../adapters/codex/index.js";
 import { AdapterRegistry } from "../adapters/registry.js";
 import type { CliAdapter } from "../adapters/types.js";
@@ -28,6 +29,8 @@ export function createStructuredAgentAdapter(
       return new KimiAcpAdapter(acpOptions);
     case "hermes":
       return new HermesAcpAdapter(acpOptions);
+    case "claude":
+      return new ClaudeCliAdapter({ timeouts, agentId });
   }
 }
 
