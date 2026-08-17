@@ -47,7 +47,7 @@ export const McpAskInputSchema = z.strictObject({
   content: MessageContentSchema,
   replyToEventId: ReferenceIdSchema.optional(),
   clientCommandId: ClientCommandIdSchema,
-  timeoutMs: z.number().int().positive().max(600_000).optional(),
+  timeoutMs: z.number().int().positive().max(3_600_000).optional(),
   cancelOnTimeout: z.boolean().optional()
 });
 
@@ -57,7 +57,8 @@ export const McpAskTargetResultSchema = z
     status: z.enum(["completed", "failed", "cancelled", "timeout"]),
     responseEventId: ReferenceIdSchema.optional(),
     content: z.string().max(MAX_MESSAGE_CONTENT_LENGTH).optional(),
-    errorCode: z.string().min(1).max(128).optional()
+    errorCode: z.string().min(1).max(128).optional(),
+    note: z.string().min(1).max(500).optional()
   })
   .passthrough()
   .superRefine((result, context) => {

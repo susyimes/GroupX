@@ -73,7 +73,7 @@
                 <option value="note">备注</option>
               </select>
               <label for="memory-input">固定一条公共记忆</label>
-              <textarea id="memory-input" maxlength="32768" rows="3" placeholder="写下需要长期保留的群组信息"></textarea>
+              <textarea id="memory-input" maxlength="131072" rows="3" placeholder="写下需要长期保留的群组信息"></textarea>
               <button id="memory-submit" class="secondary-button" type="submit">固定到房间</button>
             </form>
           </div>
@@ -161,7 +161,7 @@
             <label class="sr-only" for="message-input">消息内容</label>
             <textarea
               id="message-input"
-              maxlength="32768"
+              maxlength="131072"
               rows="3"
               required
               placeholder="给 Agent 们发一条消息…"
@@ -177,7 +177,7 @@
           </div>
           <div class="composer-footer">
             <span id="composer-status" aria-live="polite">Enter 发送 · Shift+Enter 换行</span>
-            <span id="character-count">0 / 32768</span>
+            <span id="character-count">0 / 131072</span>
           </div>
         </form>
       </main>

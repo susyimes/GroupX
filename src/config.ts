@@ -127,11 +127,15 @@ const groupXConfigSchema = z
         // REST/MCP request schemas use the same fixed wire bound. Keep this
         // field for an explicit runtime snapshot, but do not pretend a config
         // value can widen or narrow a parser that is intentionally static.
-        messageCharacters: z.literal(32_768).default(32_768),
+        // The retired 32_768 literal stays parseable so older generated
+        // configs load; the loader upgrades it to the current bound.
+        messageCharacters: z
+          .union([z.literal(131_072), z.literal(32_768)])
+          .default(131_072),
         queuePerAgent: z.number().int().min(1).max(10_000).default(64),
-        rootTurns: z.number().int().min(1).max(1_000).default(24),
-        hopCount: z.number().int().min(1).max(1_000).default(12),
-        actorCallsPerRoot: z.number().int().min(1).max(1_000).default(8),
+        rootTurns: z.number().int().min(1).max(1_000).default(48),
+        hopCount: z.number().int().min(1).max(1_000).default(24),
+        actorCallsPerRoot: z.number().int().min(1).max(1_000).default(16),
         // Cross-Agent room budget. This is a deterministic character bound,
         // not a claim about any provider's token window (Codex may expose a
         // much larger model-specific window). RoomContextEngine compacts at a
@@ -144,25 +148,27 @@ const groupXConfigSchema = z
           .max(10_000_000)
           .default(DEFAULT_CONTEXT_CHARACTERS),
         sseEvents: z.number().int().min(8).max(100_000).default(512),
-        sseBytes: z.number().int().min(16_384).max(100_000_000).default(524_288)
+        // A single durable event frame must always fit this buffer, so the
+        // default stays a wide multiple of the message wire bound.
+        sseBytes: z.number().int().min(16_384).max(100_000_000).default(2_097_152)
       })
       .strict()
       .default({
-        messageCharacters: 32_768,
+        messageCharacters: 131_072,
         queuePerAgent: 64,
-        rootTurns: 24,
-        hopCount: 12,
-        actorCallsPerRoot: 8,
+        rootTurns: 48,
+        hopCount: 24,
+        actorCallsPerRoot: 16,
         contextCharacters: DEFAULT_CONTEXT_CHARACTERS,
         sseEvents: 512,
-        sseBytes: 524_288
+        sseBytes: 2_097_152
       }),
     timeouts: z
       .object({
         handshakeMs: z.number().int().min(100).max(300_000).default(15_000),
         requestMs: z.number().int().min(100).max(300_000).default(10_000),
-        firstEventMs: z.number().int().min(100).max(3_600_000).default(90_000),
-        idleMs: z.number().int().min(100).max(3_600_000).default(120_000),
+        firstEventMs: z.number().int().min(100).max(3_600_000).default(180_000),
+        idleMs: z.number().int().min(100).max(3_600_000).default(300_000),
         cancelMs: z.number().int().min(100).max(300_000).default(10_000),
         closeMs: z.number().int().min(100).max(300_000).default(5_000),
         askMs: z.number().int().min(100).max(3_600_000).default(120_000)
@@ -171,8 +177,8 @@ const groupXConfigSchema = z
       .default({
         handshakeMs: 15_000,
         requestMs: 10_000,
-        firstEventMs: 90_000,
-        idleMs: 120_000,
+        firstEventMs: 180_000,
+        idleMs: 300_000,
         cancelMs: 10_000,
         closeMs: 5_000,
         askMs: 120_000
@@ -234,12 +240,28 @@ export async function loadConfig(
     });
   }
   const parsed = parseConfigDocument(raw);
-  // 48k was the pre-compaction generated default. Upgrade only an exact
-  // legacy value; explicit custom budgets remain user-owned.
-  if (parsed.limits.contextCharacters === LEGACY_CONTEXT_CHARACTERS) {
-    parsed.limits.contextCharacters = DEFAULT_CONTEXT_CHARACTERS;
-  }
+  upgradeLegacyGeneratedDefaults(parsed);
   return resolveConfigDocument(parsed, path.dirname(absolutePath), commandDependencies);
+}
+
+/**
+ * Upgrades values that exactly match an auto-generated default from an older
+ * release to the current default. Any other explicit value stays user-owned;
+ * this mirrors the original 48k context-budget migration precedent.
+ */
+export function upgradeLegacyGeneratedDefaults(config: GroupXConfig): void {
+  if (config.limits.contextCharacters === LEGACY_CONTEXT_CHARACTERS) {
+    config.limits.contextCharacters = DEFAULT_CONTEXT_CHARACTERS;
+  }
+  if (config.limits.messageCharacters === 32_768) {
+    config.limits.messageCharacters = 131_072;
+  }
+  if (config.limits.rootTurns === 24) config.limits.rootTurns = 48;
+  if (config.limits.hopCount === 12) config.limits.hopCount = 24;
+  if (config.limits.actorCallsPerRoot === 8) config.limits.actorCallsPerRoot = 16;
+  if (config.limits.sseBytes === 524_288) config.limits.sseBytes = 2_097_152;
+  if (config.timeouts.firstEventMs === 90_000) config.timeouts.firstEventMs = 180_000;
+  if (config.timeouts.idleMs === 120_000) config.timeouts.idleMs = 300_000;
 }
 
 function resolveConfigPaths(

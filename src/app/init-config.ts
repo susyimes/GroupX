@@ -15,10 +15,9 @@ import {
   type SetupSnapshot
 } from "../contracts/index.js";
 import {
-  DEFAULT_CONTEXT_CHARACTERS,
-  LEGACY_CONTEXT_CHARACTERS,
   parseConfigDocument,
   resolveConfigDocument,
+  upgradeLegacyGeneratedDefaults,
   type GroupXConfig
 } from "../config.js";
 import {
@@ -233,9 +232,7 @@ export class GroupXConfigSetupService implements ConfigSetupApi {
     try {
       const raw: unknown = JSON.parse(contents);
       const parsed = parseConfigDocument(raw);
-      if (parsed.limits.contextCharacters === LEGACY_CONTEXT_CHARACTERS) {
-        parsed.limits.contextCharacters = DEFAULT_CONTEXT_CHARACTERS;
-      }
+      upgradeLegacyGeneratedDefaults(parsed);
       return { limits: parsed.limits, timeouts: parsed.timeouts };
     } catch {
       return undefined;

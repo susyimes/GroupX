@@ -138,14 +138,25 @@ export function createGroupXMcpServer(options: CreateGroupXMcpServerOptions): Mc
     { name: GROUPX_MCP_SERVER_NAME, version: GROUPX_MCP_SERVER_VERSION },
     {
       instructions:
-        "GroupX tools route explicit local group messages and memory operations. Caller identity comes from the current Adapter/session binding."
+        "GroupX tools route explicit local group messages and memory operations. Caller identity " +
+        "comes from the current Adapter/session binding. Routing rules: (1) Your final turn " +
+        "response is visible to the room but wakes no agent, and @name mentions in plain text " +
+        "never route; to make another agent act or answer, call send or ask. (2) After an ask " +
+        "timeout the target keeps running and its answer is never delivered to you " +
+        "automatically; keep polling read until the target turn is terminal, or hand off " +
+        "explicitly with send before ending your turn. (3) Your prompt context is frozen at " +
+        "dispatch time; call read to catch up on newer room messages before irreversible " +
+        "actions such as pushing commits or declaring agreement with another agent."
     }
   );
 
   server.registerTool(
     "send",
     {
-      description: "Send a public GroupX message asynchronously to one or more agents.",
+      description:
+        "Send a public GroupX message asynchronously to one or more agents. Each target is " +
+        "woken with a new turn. This (or ask) is the only way to make another agent act: " +
+        "plain final responses and @name mentions in text wake no one.",
       inputSchema: McpSendWireInputSchema,
       outputSchema: McpSendResultSchema
     },
@@ -163,7 +174,11 @@ export function createGroupXMcpServer(options: CreateGroupXMcpServerOptions): Mc
   server.registerTool(
     "ask",
     {
-      description: "Ask one or more agents and wait for their terminal GroupX results.",
+      description:
+        "Ask one or more agents and wait for their terminal GroupX results. Waits up to " +
+        "timeoutMs (default 120000, max 3600000). On timeout the target keeps running: poll " +
+        "read with the returned correlationId until its turn is terminal, or hand off with " +
+        "send; the answer is never delivered automatically after your turn ends.",
       inputSchema: McpAskWireInputSchema,
       outputSchema: McpAskResultSchema
     },
@@ -181,7 +196,11 @@ export function createGroupXMcpServer(options: CreateGroupXMcpServerOptions): Mc
   server.registerTool(
     "read",
     {
-      description: "Read durable GroupX events and turn state by correlation or sequence cursor.",
+      description:
+        "Read durable GroupX events and turn state by correlation or sequence cursor. Your " +
+        "prompt context is frozen at dispatch time; use read to catch up on newer room " +
+        "messages, sibling answers, and running turn status, especially before irreversible " +
+        "actions.",
       inputSchema: McpReadInputSchema,
       outputSchema: McpReadWireResultSchema
     },

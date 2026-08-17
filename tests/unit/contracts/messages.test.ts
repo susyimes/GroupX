@@ -112,7 +112,7 @@ describe("message sender and routing contracts", () => {
     );
   });
 
-  it("applies the shared 32768 character content boundary", () => {
+  it("applies the shared fixed wire content boundary", () => {
     const accepted = parseCreateMessageRequest({
       ...WEB_MESSAGE,
       content: "x".repeat(MAX_MESSAGE_CONTENT_LENGTH)

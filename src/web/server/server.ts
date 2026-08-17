@@ -53,7 +53,9 @@ import type {
 
 const LOOPBACK_HOST = "127.0.0.1" as const;
 const DEFAULT_PORT = 4_310;
-const DEFAULT_BODY_LIMIT = 256 * 1_024;
+// Must comfortably hold one max-length message content (131,072 chars) as
+// escaped JSON UTF-8 plus envelope fields; the server binds loopback only.
+const DEFAULT_BODY_LIMIT = 2 * 1_024 * 1_024;
 const DEFAULT_GRACEFUL_CLOSE_TIMEOUT_MS = 5_000;
 
 interface StaticAsset {

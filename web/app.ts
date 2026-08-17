@@ -135,7 +135,7 @@ class ApiFailure extends Error implements ApiFailureShape {
   }
 }
 
-const MESSAGE_MAX_LENGTH = 32_768;
+const MESSAGE_MAX_LENGTH = 131_072;
 const DELTA_BATCH_MS = 32;
 const RECONNECT_MIN_MS = 250;
 const RECONNECT_MAX_MS = 10_000;

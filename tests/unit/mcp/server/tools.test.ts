@@ -171,6 +171,18 @@ describe("GroupX MCP tools", () => {
     }
   });
 
+  it("teaches wake, timeout, and frozen-context semantics in the tool surface", async () => {
+    const fixture = await connectFixture();
+    closeables.push(fixture.client, fixture.server);
+
+    expect(fixture.client.getInstructions()).toContain("wakes no agent");
+    const listed = await fixture.client.listTools();
+    const byName = new Map(listed.tools.map((tool) => [tool.name, tool] as const));
+    expect(byName.get("send")?.description).toContain("wake no one");
+    expect(byName.get("ask")?.description).toContain("the target keeps running");
+    expect(byName.get("read")?.description).toContain("frozen at dispatch");
+  });
+
   it("supplies actor provenance only from the fixed binding", async () => {
     const broker = new FakeBroker();
     const fixture = await connectFixture(broker);

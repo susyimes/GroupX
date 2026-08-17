@@ -34,6 +34,8 @@
 | D-022 | Hermes 作为独立 ACP driver 接入 Structured transport | Accepted |
 | D-023 | Agent 日期记忆由逐 Turn 原文改为可恢复的每日批量 rollup | Accepted |
 | D-024 | Claude Code 作为独立 stream-json driver 接入 Structured transport | Accepted |
+| D-025 | ask 超时不加回送机制，harness 只以有界文本指导模型闭环 | Accepted |
+| D-026 | 放宽消息 wire 上限（131,072）、运行超时与互调链路默认值 | Accepted |
 
 ## D-001：透明 Broker
 
@@ -327,6 +329,44 @@ Hermes 0.20.1 的 initialize 当前未声明 `mcpCapabilities.http`，但官方�
 回滚边界：`claude` 是加法接入。移除它只需从名册删条目；缺省 `agents` 字段本就不自动启用它，现有 Codex/Grok/Kimi/Hermes 房间不受影响。
 
 完成标准：Adapter 测试覆盖固定 argv、无模型控制握手（initialize 观测 / set 建立，含 initialize 报 default 而 set 升级成功）、策略拒绝与降级、延后 init 帧的 session/cwd 校验、流式增量与完整消息去重、工具起止、取消与取消超时、首事件与空闲超时、畸形帧、进程中途退出、握手前退出的 stderr、`--resume` 重启，以及 `initialize` 载荷的字段投影边界。命令解析覆盖 Windows PATH（不依赖 APPDATA）、`%USERPROFILE%\\.local\\bin\\claude.exe`、npm 回退、拒绝 `.cmd` shim，以及 POSIX `~/.local/bin/claude`、当前 Node 前缀 / Homebrew / `/usr/local` 的 npm 回退。
+
+## D-025：ask 超时不加回送机制，harness 只以有界文本指导模型闭环
+
+触发证据：2026-08-17 一次真实审 PR 会话（用户库 `corr_9dd9b038d2c5462084fe781cfa7faeb0`）中，Claude 以默认 120s `ask` 询问 Codex，子 Turn 实际运行 11.3 分钟；超时后 Claude 读取一次即收工，Codex 终稿以 `to=[]` 落房，提问方永远不会再被唤醒，双方在未真正对齐的状态下完成了 PR 修改。逐层核对确认：ask 超时后没有任何回送路径；MCP instructions/工具描述完全没有说明「收工回复不唤醒任何人」「超时后目标仍在运行」等语义；`timeoutMs` 上限 600s 连想等也等不了。
+
+决定：不引入 Broker 回送/续跑 Turn、兄弟终稿门禁或任何新派发来源，保持不变量 7（只有显式工具调用或用户路由派发 Turn）不变。harness 只做四处最小干预：
+
+1. MCP server instructions 与 `send/ask/read` 工具描述写明唤醒、超时与上下文冻结语义；
+2. `ask` 超时的目标结果附带有界 `note` 指导文本（合同新增可选字段，向后兼容）；
+3. Context Packet `[groupx_protocol]` 头部固定一行路由提醒，覆盖所有 driver 的每一轮；
+4. `ask` 的 `timeoutMs` 调用上限从 600,000 提升到 3,600,000 ms（与 `timeouts.askMs` 配置上界一致），默认值不变，等多久由调用模型自行决定。
+
+对原始需求的影响：交付闭环依赖模型智能与用户在房间内的最终兜底，符合透明 Broker 定位（R3/R5/R7 不变）；不新增状态机、存储表或审批语义。
+
+协议/存储迁移：无存储迁移。`AskResult.note` 为新增可选字段，属向后兼容；PROTOCOL.md §6.2 同步更新。
+
+复杂度与回滚：全部改动为文本与两个合同常量/字段；回滚即恢复原文案与上限，不影响任何已持久化数据。
+
+完成标准：工具描述与 instructions 含关键语义断言；ask 超时结果携带含 correlationId 的 note；Context Packet 头部含固定提醒行；`timeoutMs` 边界测试更新。若真实运行证明纯文本引导不足，再以新证据评估最小回送机制，且必须同步修订不变量 7。
+
+## D-026：放宽消息 wire 上限、运行超时与互调链路默认值
+
+触发证据：真实多 Agent 审查负载的审计发现三类对模型能力的硬约束：(a) Agent 经 `send/ask` 互发内容被固定 wire 上限 32,768 字符卡死，而收工回复本身不限长，长报告无法显式交接；(b) `idleMs=120s`/`firstEventMs=90s` 会误杀长静默工具执行与大上下文冷启动；(c) `hopCount 12 / actorCallsPerRoot 8 / rootTurns 24` 截断较长的多 Agent 协作链。上下文预算族维持 256,000/75%/8,000/120,000/12 不变（评估过 512k 方案后按用户决定还原）。
+
+决定：
+
+1. **消息 wire 上限**：`MAX_MESSAGE_CONTENT_LENGTH` 32,768 → **131,072** 字符，统一作用于 REST/MCP 消息、记忆与身份内容 schema。`limits.messageCharacters` 仍是固定 wire bound 的运行时快照（literal 131,072），schema 兼容解析旧 literal 32,768 并由加载器升级。连动：REST 默认 body 上限 256 KiB → **2 MiB**；`limits.sseBytes` 默认 524,288 → **2,097,152**，保证单条 durable 事件帧永远能装进 SSE 发送缓冲，避免超长消息触发重连死循环。
+2. **运行超时默认**：`timeouts.firstEventMs` 90,000 → **180,000**；`timeouts.idleMs` 120,000 → **300,000**（含 Codex/Claude Adapter 回退常量）。idle 计时仍由任意原生事件重置，语义不变。
+3. **互调链路默认**：`limits.hopCount` 12 → **24**、`limits.actorCallsPerRoot` 8 → **16**、`limits.rootTurns` 24 → **48**。仍是防失控回路的有界安全绳，触顶行为（公开 `routing.loop_stopped`/`turn.failed`）不变。
+4. **迁移**：沿用 48k 上下文预算先例，`upgradeLegacyGeneratedDefaults` 只把恰好等于历史自动生成默认值的字段升级为当前默认（32,768→131,072、24→48、12→24、8→16、524,288→2,097,152、90,000→180,000、120,000→300,000、48,000→256,000），其他显式自定义值不动；`loadConfig` 与 setup 快照共用同一函数。
+
+对原始需求的影响：R3/R5 不变——链路限制仍是可靠性边界而非权限；R7 的本地开销仍受有界队列与限额保护。更长消息与更长静默由用户模型自行决定是否利用，GroupX 不新增内容判断。
+
+协议/存储迁移：无 schema 变化；错误码与状态机不变。SQLite 摘要 32,768 硬上限与消息内容无关，保持不变。
+
+复杂度与回滚：常量/默认值与一个共享迁移函数；回滚即恢复旧常量，已升级的配置文件可手动改回。
+
+完成标准：wire 边界测试随常量收敛（接受 131,072、拒绝 131,073）；旧 literal 32,768 配置可解析并升级；全部迁移字段的精确值升级与自定义保留测试通过；超时/链路新默认断言更新。
 
 ## 决策变更规则
 

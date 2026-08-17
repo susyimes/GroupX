@@ -376,7 +376,7 @@ GroupX 只承诺命令接收与派发记录幂等，不虚构模型执行的 exa
 
 不把完整数据库或完整房间历史重复注入每个 turn。默认 Context Packet 硬上限是 `256,000` 字符，Room Context Engine 以其约 `75%`（默认 `192,000` 字符）作为压缩软目标，给原生 instructions、工具调用和回复留余量；这是跨 Agent 的确定性字符预算，不等同于某个模型的 token window（例如 Codex UI 可能显示约 258k tokens）。用户可通过 `limits.contextCharacters` 覆盖硬上限。
 
-配置加载器只把历史自动生成默认值 `48,000` 迁移为 `256,000`；任何其他显式自定义预算保持不变。
+配置加载器只把恰好等于历史自动生成默认值的配置升级为当前默认（见 D-026 的字段清单，含 `48,000` 上下文预算先例）；任何其他显式自定义值保持不变。
 
 当软目标将省略未投递消息时，Room Context Engine 采用与 Codex checkpoint compaction 相同的核心形态：把既有检查点与较旧消息交给配置顺序中第一个健康 Agent，生成新的累计摘要，同时保留近期真实消息、完整 reply chain 和当前消息。若不可压缩的当前消息/reply chain 只超过软目标而未超过硬上限，则允许本 Turn 使用硬上限。压缩使用独立、短生命周期、无 GroupX MCP 的 Structured session；首个 Agent 不可用或返回无效摘要时按配置顺序尝试下一个。
 

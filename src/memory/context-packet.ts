@@ -21,6 +21,15 @@ import type {
 const CONTEXT_SCHEMA = "groupx.context/0.4" as const;
 const QUERY_LIMIT = 500;
 const MAX_REPLY_DEPTH = 64;
+/**
+ * Fixed routing reminder rendered into every packet header. Replies are
+ * room-visible but never wake another agent, so agents must use explicit
+ * GroupX tools to close a loop; harness behavior is otherwise unchanged.
+ */
+const PROTOCOL_NOTE =
+  "Replies are visible to the room but wake no agent; @name mentions in text do not route. " +
+  "Only explicit groupx send/ask tool calls or user routing dispatch new turns. This context " +
+  "is frozen at through_seq; use groupx read to catch up before irreversible actions.";
 
 type OptionalSectionName = Exclude<keyof ContextPacketOmissions, "generatedSummary">;
 
@@ -198,7 +207,7 @@ export function renderContextPacket(input: {
   sections: ContextPacketSections;
 }): string {
   const parts = [
-    `[groupx_protocol]\nschema=${CONTEXT_SCHEMA}\nroom=${input.roomId}\ntarget=${input.targetActorId}\nafter_seq=${input.afterSeq}\nthrough_seq=${input.throughSeq}`
+    `[groupx_protocol]\nschema=${CONTEXT_SCHEMA}\nroom=${input.roomId}\ntarget=${input.targetActorId}\nafter_seq=${input.afterSeq}\nthrough_seq=${input.throughSeq}\nnote=${PROTOCOL_NOTE}`
   ];
   pushSection(parts, "configured_agent_identity", input.sections.configuredIdentity);
   pushSection(parts, "self_identity", input.sections.selfIdentity);

@@ -2,7 +2,7 @@ import { z } from "zod";
 
 import { canonicalHash, canonicalJson } from "../core/envelope.js";
 
-export const MAX_MESSAGE_CONTENT_LENGTH = 32_768;
+export const MAX_MESSAGE_CONTENT_LENGTH = 131_072;
 export const MAX_CLIENT_COMMAND_ID_LENGTH = 128;
 export const MAX_REFERENCE_ID_LENGTH = 256;
 export const MAX_TARGETS_PER_MESSAGE = 32;

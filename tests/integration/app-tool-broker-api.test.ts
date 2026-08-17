@@ -217,6 +217,45 @@ describe("GroupXToolBrokerApi", () => {
     });
   });
 
+  it("marks non-terminal ask targets as timeout with a bounded follow-up note", async () => {
+    const fixture = brokerFixture();
+    fixture.broker.waitForCorrelation = vi.fn(async () => ({
+      state: "timeout" as const,
+      correlationId: "corr:root",
+      turns: [
+        {
+          turnId: "turn:child",
+          sourceEventId: "event:question",
+          targetActorId: "agent:grok",
+          adapterId: "grok",
+          transport: "structured" as const,
+          rootCorrelationId: "corr:root",
+          hopCount: 3,
+          enqueueSeq: 5,
+          queuedEventId: "event:queued",
+          status: "running" as const,
+          queuedAt: "2026-08-11T00:00:00.000Z"
+        }
+      ],
+      read: { correlationId: "corr:root", events: [], turns: [] },
+      responseEvents: []
+    }));
+
+    const result = await fixture.api.ask(caller(), {
+      clientCommandId: "command:ask-timeout",
+      to: ["agent:grok"],
+      content: "question"
+    });
+
+    expect(result.results).toEqual([
+      expect.objectContaining({ target: "agent:grok", status: "timeout" })
+    ]);
+    const note = result.results[0]?.note;
+    expect(note).toContain("still running");
+    expect(note).toContain('correlationId "corr:root"');
+    expect(note?.length ?? 0).toBeLessThanOrEqual(500);
+  });
+
   it("passes offset cursors to memory queries and advances only full pages", async () => {
     const fixture = brokerFixture();
 

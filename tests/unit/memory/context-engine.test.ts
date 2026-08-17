@@ -143,7 +143,7 @@ describe("RoomContextEngine", () => {
     const engine = new RoomContextEngine({
       store: fixture.store,
       summarizer,
-      maxChars: 1_800,
+      maxChars: 2_100,
       maxCompactionInputChars: 2_000,
       maxSummaryChars: 300
     });
@@ -191,7 +191,7 @@ describe("RoomContextEngine", () => {
     const engine = new RoomContextEngine({
       store: fixture.store,
       summarizer,
-      maxChars: 1_800,
+      maxChars: 2_100,
       maxCompactionInputChars: 2_000,
       maxSummaryChars: 300
     });

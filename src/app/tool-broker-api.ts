@@ -165,7 +165,15 @@ export class GroupXToolBrokerApi implements ToolBrokerApi {
       results: accepted.turns.map((acceptedTurn) => {
         const turn = byTurnId.get(acceptedTurn.turnId);
         if (!turn || (waited.state === "timeout" && !isTerminal(turn))) {
-          return { target: acceptedTurn.target, status: "timeout" as const };
+          return {
+            target: acceptedTurn.target,
+            status: "timeout" as const,
+            note:
+              `${acceptedTurn.target} is still running; the timeout only stopped this wait. ` +
+              `Nothing delivers the answer to you automatically after your turn ends. ` +
+              `Poll groupx read with correlationId "${accepted.correlationId}" until this ` +
+              `target's turn is terminal, or hand off explicitly with groupx send before finishing.`
+          };
         }
         if (turn.status === "completed") {
           const responseEventId = turn.responseEventId;

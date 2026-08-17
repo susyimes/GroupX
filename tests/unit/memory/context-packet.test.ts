@@ -229,6 +229,9 @@ describe("ContextPacketBuilder provenance and cursor semantics", () => {
     expect(packet.throughSeq).toBe(seeded.current.seq);
     expect(packet.charCount).toBe(packet.text.length);
     expect(packet.charCount).toBeLessThanOrEqual(packet.maxChars);
+    expect(packet.text).toContain(
+      "note=Replies are visible to the room but wake no agent"
+    );
     expect(packet.sections.currentMessage).toMatchObject({
       id: "evt_current",
       authorActorId: "user:web",

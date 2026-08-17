@@ -150,6 +150,47 @@ describe("GroupX configuration", () => {
     expect(preserved.limits.contextCharacters).toBe(96_000);
   });
 
+  it("upgrades exact legacy generated limit and timeout defaults but preserves custom values", async () => {
+    const legacy = validConfig();
+    legacy.limits = {
+      messageCharacters: 32_768,
+      rootTurns: 24,
+      hopCount: 12,
+      actorCallsPerRoot: 8,
+      sseBytes: 524_288
+    };
+    legacy.timeouts = { firstEventMs: 90_000, idleMs: 120_000 };
+    const legacyFile = await writeConfig(legacy);
+    const upgraded = await loadConfig(
+      legacyFile.configPath,
+      process.cwd(),
+      commandDependencies()
+    );
+    expect(upgraded.limits.messageCharacters).toBe(131_072);
+    expect(upgraded.limits.rootTurns).toBe(48);
+    expect(upgraded.limits.hopCount).toBe(24);
+    expect(upgraded.limits.actorCallsPerRoot).toBe(16);
+    expect(upgraded.limits.sseBytes).toBe(2_097_152);
+    expect(upgraded.timeouts.firstEventMs).toBe(180_000);
+    expect(upgraded.timeouts.idleMs).toBe(300_000);
+
+    const custom = validConfig();
+    custom.limits = { rootTurns: 30, hopCount: 9, actorCallsPerRoot: 5, sseBytes: 600_000 };
+    custom.timeouts = { firstEventMs: 45_000, idleMs: 150_000 };
+    const customFile = await writeConfig(custom);
+    const preserved = await loadConfig(
+      customFile.configPath,
+      process.cwd(),
+      commandDependencies()
+    );
+    expect(preserved.limits.rootTurns).toBe(30);
+    expect(preserved.limits.hopCount).toBe(9);
+    expect(preserved.limits.actorCallsPerRoot).toBe(5);
+    expect(preserved.limits.sseBytes).toBe(600_000);
+    expect(preserved.timeouts.firstEventMs).toBe(45_000);
+    expect(preserved.timeouts.idleMs).toBe(150_000);
+  });
+
   it("treats the agents map as the explicit room roster", async () => {
     const omitted = await writeConfig({});
     const omittedConfig = await loadConfig(omitted.configPath, process.cwd(), commandDependencies());
@@ -258,6 +299,16 @@ describe("GroupX configuration", () => {
   });
 
   it("keeps the configured message limit equal to the fixed REST and MCP wire bound", async () => {
+    const current = validConfig();
+    current.limits = { messageCharacters: 131_072 };
+    const currentFile = await writeConfig(current);
+    const loaded = await loadConfig(
+      currentFile.configPath,
+      process.cwd(),
+      commandDependencies()
+    );
+    expect(loaded.limits.messageCharacters).toBe(131_072);
+
     const input = validConfig();
     input.limits = { messageCharacters: 32_769 };
     const { configPath } = await writeConfig(input);

@@ -57,8 +57,8 @@ export interface CodexThreadConfigOverride {
 const DEFAULT_TIMEOUTS: CodexAdapterTimeouts = {
   handshakeMs: 15_000,
   requestMs: 10_000,
-  firstEventMs: 90_000,
-  idleMs: 120_000,
+  firstEventMs: 180_000,
+  idleMs: 300_000,
   cancelMs: 10_000,
   closeMs: 5_000
 };

@@ -294,13 +294,18 @@ type AskResult = {
     responseEventId?: string;
     content?: string;
     errorCode?: string;
+    note?: string;
   }>;
 };
 ```
 
 多目标 ask 并行等待，逐目标返回状态。一个目标失败不能丢弃其他目标已完成的结果。
 
+`timeoutMs` 默认取配置 `timeouts.askMs`（默认 120,000 ms），单次调用上限 3,600,000 ms。
+
 默认 `cancelOnTimeout=false`：ask 超时只停止当前工具等待，目标 Turn 可以继续，调用方之后用 `groupx.read` 获取结果。若显式为 true，Broker 对仍运行的 ask child Turn 发起 best-effort 原生 cancel。取消发起 ask 的父 Turn 时，Broker 默认也 best-effort 取消尚未 terminal 的同步 ask child；异步 `send` 创建的 Turn 不随父 Turn 取消。
+
+超时的目标结果附带有界 `note` 提示文本，说明目标仍在运行、结果不会在调用方回合结束后自动回送，以及如何在本回合内用 `groupx.read` 轮询或用 `groupx.send` 显式交接。`note` 只是给调用模型的指导文字，不是新的路由、回送或审批机制；超时后不自动唤醒调用方的语义保持不变。
 
 ### 6.3 `groupx.read`
 
