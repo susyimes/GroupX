@@ -225,6 +225,11 @@ export const DEFAULT_ACCEPT_MESSAGE_LIMITS: Readonly<AcceptMessageLimits> = Obje
   queuePerActor: 64
 });
 
+export interface SupervisionAcceptInput {
+  observers: readonly TurnTargetInput[];
+  mode: "live_steer";
+}
+
 export interface AcceptMessageInput {
   sourceBindingId: string;
   clientCommandId: string;
@@ -239,6 +244,7 @@ export interface AcceptMessageInput {
   occurredAt?: string;
   provenance?: PublicProvenance;
   limits?: AcceptMessageLimits;
+  supervision?: SupervisionAcceptInput;
 }
 
 export interface AcceptedTurnResult {
@@ -251,6 +257,9 @@ export interface AcceptMessageResult {
   messageEventId: string;
   correlationId: string;
   turns: AcceptedTurnResult[];
+  watchTurns?: AcceptedTurnResult[];
+  watchEventId?: string;
+  pairEventId?: string;
 }
 
 export interface AcceptMessageOutcome {
@@ -619,6 +628,27 @@ export interface IdentityQuery {
   limit?: number;
 }
 
+export type SupervisionTurnRole = "worker" | "observer";
+
+export interface SupervisionPairRecord {
+  pairId: string;
+  roomId: string;
+  correlationId: string;
+  sourceEventId: string;
+  watchEventId: string;
+  pairEventId: string;
+  mode: "live_steer";
+  createdAt: string;
+}
+
+export interface SupervisionPairTurnRecord {
+  pairId: string;
+  turnId: string;
+  role: SupervisionTurnRole;
+  actorId: string;
+  createdAt: string;
+}
+
 export interface IntegrityCheckResult {
   ok: boolean;
   messages: string[];
@@ -662,6 +692,18 @@ export interface GroupXStore {
   ): TResult;
   acceptMessage(input: AcceptMessageInput): AcceptMessageResult;
   acceptMessageWithDisposition(input: AcceptMessageInput): AcceptMessageOutcome;
+  getSupervisionPair(pairId: string): SupervisionPairRecord | undefined;
+  getSupervisionPairByTurn(turnId: string): SupervisionPairRecord | undefined;
+  getSupervisionTurnRole(turnId: string): SupervisionTurnRole | undefined;
+  listSupervisionPairTurns(pairId: string): SupervisionPairTurnRecord[];
+  attachSupervisionWorkerTurn(input: {
+    pairId: string;
+    turnId: string;
+    actorId: string;
+    createdAt?: string;
+  }): SupervisionPairTurnRecord;
+  getSteerCount(subjectTurnId: string): number;
+  incrementSteerCount(subjectTurnId: string, limit: number): number;
   appendDurableEvent(input: DurableEventInput): StoredEventRecord;
   getEvent(eventId: string): StoredEventRecord | undefined;
   listEvents(input: { roomId: string; afterSeq?: number; limit?: number }): EventPage;

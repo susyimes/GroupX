@@ -6,6 +6,7 @@ import {
   ClientCommandIdSchema,
   CursorParameterSchema,
   MAX_MESSAGE_CONTENT_LENGTH,
+  MAX_SUPERVISION_OBSERVERS,
   MessageContentSchema,
   MessageTargetsSchema,
   NonNegativeIntegerSchema,
@@ -21,12 +22,51 @@ import {
   type KnownTargetOptions
 } from "./validation.js";
 
-export const CreateMessageRequestSchema = z.strictObject({
-  clientCommandId: ClientCommandIdSchema,
-  to: MessageTargetsSchema,
-  content: MessageContentSchema,
-  replyToEventId: OptionalReplyToEventIdSchema
+const SupervisionObserversSchema = z
+  .array(AgentActorIdSchema)
+  .min(1)
+  .max(MAX_SUPERVISION_OBSERVERS)
+  .superRefine((observers, context) => {
+    const seen = new Set<string>();
+    for (const [index, observer] of observers.entries()) {
+      if (seen.has(observer)) {
+        context.addIssue({
+          code: "custom",
+          message: "supervision observers must be unique",
+          path: [index]
+        });
+      }
+      seen.add(observer);
+    }
+  })
+  .transform((observers) => [...observers].sort((left, right) => left.localeCompare(right)));
+
+export const SupervisionPairSchema = z.strictObject({
+  observers: SupervisionObserversSchema,
+  mode: z.literal("live_steer")
 });
+
+export const CreateMessageRequestSchema = z
+  .strictObject({
+    clientCommandId: ClientCommandIdSchema,
+    to: MessageTargetsSchema,
+    content: MessageContentSchema,
+    replyToEventId: OptionalReplyToEventIdSchema,
+    supervision: SupervisionPairSchema.optional()
+  })
+  .superRefine((request, context) => {
+    if (request.supervision === undefined) return;
+    const workers = new Set(request.to);
+    for (const [index, observer] of request.supervision.observers.entries()) {
+      if (workers.has(observer)) {
+        context.addIssue({
+          code: "custom",
+          message: "a supervision observer cannot also be a worker in the same command",
+          path: ["supervision", "observers", index]
+        });
+      }
+    }
+  });
 
 export const QueuedTurnResultSchema = z.object({
   target: AgentActorIdSchema,
@@ -52,7 +92,10 @@ export const QueuedTurnResultsSchema = z
 export const CreateMessageAcceptedSchema = z.object({
   messageEventId: ReferenceIdSchema,
   correlationId: ReferenceIdSchema,
-  turns: QueuedTurnResultsSchema
+  turns: QueuedTurnResultsSchema,
+  watchTurns: QueuedTurnResultsSchema.optional(),
+  watchEventId: ReferenceIdSchema.optional(),
+  pairEventId: ReferenceIdSchema.optional()
 }).passthrough();
 
 export const CancelTurnRequestSchema = z.strictObject({
@@ -359,6 +402,7 @@ export const BootstrapResponseSchema = z.object({
     .optional()
 }).passthrough();
 
+export type SupervisionPair = z.infer<typeof SupervisionPairSchema>;
 export type CreateMessageRequest = z.infer<typeof CreateMessageRequestSchema>;
 export type CreateMessageAccepted = z.infer<typeof CreateMessageAcceptedSchema>;
 export type CancelTurnRequest = z.infer<typeof CancelTurnRequestSchema>;
@@ -385,7 +429,13 @@ export function parseCreateMessageRequest(
   options?: KnownTargetOptions
 ): CreateMessageRequest {
   const parsed = parseWriteRequest(CreateMessageRequestSchema, input);
-  assertKnownTargets(parsed.to, options);
+  assertKnownTargets(
+    [
+      ...parsed.to,
+      ...(parsed.supervision === undefined ? [] : parsed.supervision.observers)
+    ],
+    options
+  );
   return parsed;
 }
 

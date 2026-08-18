@@ -14,11 +14,17 @@ import type {
   McpReadInput,
   McpReadResult,
   McpSendInput,
-  McpSendResult
+  McpSendResult,
+  McpSteerInput,
+  McpSteerResult,
+  McpWatchInput,
+  McpWatchResult
 } from "../contracts/mcp.js";
 import {
   parseMcpReadResult,
-  parseMcpSendResult
+  parseMcpSendResult,
+  parseMcpSteerResult,
+  parseMcpWatchResult
 } from "../contracts/mcp.js";
 import { GroupXBroker } from "../broker/broker.js";
 import { GroupXError } from "../core/errors.js";
@@ -54,6 +60,9 @@ export interface GroupXToolBrokerApiOptions {
   broker: Pick<
     GroupXBroker,
     | "acceptMessage"
+    | "assertObserverRouting"
+    | "watchSubject"
+    | "steerSubject"
     | "waitForCorrelation"
     | "cancelTurn"
     | "readCorrelation"
@@ -87,6 +96,7 @@ export class GroupXToolBrokerApi implements ToolBrokerApi {
   async send(caller: ToolCallerContext, input: McpSendInput): Promise<McpSendResult> {
     throwIfAborted(caller.signal);
     const active = this.#turns.requireForCaller(caller);
+    this.#broker.assertObserverRouting(active.turnId, input.to);
     const accepted = await this.#broker.acceptMessage({
       bindingId: caller.bindingId,
       request: {
@@ -118,6 +128,7 @@ export class GroupXToolBrokerApi implements ToolBrokerApi {
   async ask(caller: ToolCallerContext, input: McpAskInput): Promise<McpAskResult> {
     throwIfAborted(caller.signal);
     const active = this.#turns.requireForCaller(caller);
+    this.#broker.assertObserverRouting(active.turnId, input.to);
     const accepted = await this.#broker.acceptMessage({
       bindingId: caller.bindingId,
       request: {
@@ -202,6 +213,37 @@ export class GroupXToolBrokerApi implements ToolBrokerApi {
         };
       })
     };
+  }
+
+  async watch(caller: ToolCallerContext, input: McpWatchInput): Promise<McpWatchResult> {
+    throwIfAborted(caller.signal);
+    const active = this.#turns.requireForCaller(caller);
+    return parseMcpWatchResult(
+      await this.#broker.watchSubject({
+        watchTurnId: active.turnId,
+        ...(input.subjectTurnId === undefined ? {} : { subjectTurnId: input.subjectTurnId }),
+        ...(input.afterSeq === undefined ? {} : { afterSeq: input.afterSeq }),
+        until: input.until,
+        ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
+        signal: caller.signal
+      })
+    );
+  }
+
+  async steer(caller: ToolCallerContext, input: McpSteerInput): Promise<McpSteerResult> {
+    throwIfAborted(caller.signal);
+    const active = this.#turns.requireForCaller(caller);
+    return parseMcpSteerResult(
+      await this.#broker.steerSubject({
+        bindingId: caller.bindingId,
+        watchTurnId: active.turnId,
+        ...(input.subjectTurnId === undefined ? {} : { subjectTurnId: input.subjectTurnId }),
+        action: input.action,
+        reason: input.reason,
+        content: input.content,
+        clientCommandId: input.clientCommandId
+      })
+    );
   }
 
   async read(caller: ToolCallerContext, input: McpReadInput): Promise<McpReadResult> {

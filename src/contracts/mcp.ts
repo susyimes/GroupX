@@ -86,6 +86,68 @@ export const McpAskResultSchema = z.object({
   }
 });
 
+export const McpWatchInputSchema = z.strictObject({
+  subjectTurnId: ReferenceIdSchema.optional(),
+  afterSeq: CursorParameterSchema.optional(),
+  until: z.enum(["next_milestone", "terminal"]).default("next_milestone"),
+  timeoutMs: z.number().int().positive().max(3_600_000).optional()
+});
+
+export const McpSupervisionSnapshotSchema = z
+  .object({
+    turnId: ReferenceIdSchema,
+    status: z.string().min(1).max(64),
+    deliveryCertainty: z.string().min(1).max(64).optional(),
+    lastSeq: z.number().int().nonnegative(),
+    watchCursor: z.number().int().nonnegative(),
+    terminal: z.boolean(),
+    subjectCancelled: z.boolean(),
+    task: z.object({
+      eventId: ReferenceIdSchema,
+      excerpt: z.string().max(MAX_MESSAGE_CONTENT_LENGTH)
+    }).passthrough(),
+    messages: z.array(
+      z.object({
+        eventId: ReferenceIdSchema,
+        excerpt: z.string().max(MAX_MESSAGE_CONTENT_LENGTH)
+      }).passthrough()
+    ).max(32),
+    tools: z.array(
+      z.object({
+        name: z.string().min(1).max(64),
+        status: z.enum(["started", "completed"]),
+        toolCallId: ReferenceIdSchema.optional()
+      }).passthrough()
+    ).max(64),
+    steerCount: z.number().int().nonnegative(),
+    lastSteerReason: z.string().max(500).optional()
+  })
+  .passthrough();
+
+export const McpWatchResultSchema = z.object({
+  snapshot: McpSupervisionSnapshotSchema,
+  until: z.enum(["next_milestone", "terminal"]),
+  timedOut: z.boolean()
+}).passthrough();
+
+export const McpSteerInputSchema = z.strictObject({
+  subjectTurnId: ReferenceIdSchema.optional(),
+  action: z.enum(["nudge", "interrupt"]),
+  reason: z.string().min(1).max(500),
+  content: MessageContentSchema,
+  clientCommandId: ClientCommandIdSchema
+});
+
+export const McpSteerResultSchema = z.object({
+  action: z.enum(["nudge", "interrupt"]),
+  reason: z.string().min(1).max(500),
+  subjectTurnId: ReferenceIdSchema,
+  messageEventId: ReferenceIdSchema,
+  correlationId: CorrelationIdSchema,
+  nextTurnId: ReferenceIdSchema.optional(),
+  steeredEventId: ReferenceIdSchema.optional()
+}).passthrough();
+
 export const McpReadInputSchema = z.strictObject({
   correlationId: CorrelationIdSchema.optional(),
   afterSeq: CursorParameterSchema.optional(),
@@ -169,6 +231,10 @@ export const McpIdentityRememberResultSchema = z.object({
   identity: IdentityRecordSchema
 }).passthrough();
 
+export type McpWatchInput = z.infer<typeof McpWatchInputSchema>;
+export type McpWatchResult = z.infer<typeof McpWatchResultSchema>;
+export type McpSteerInput = z.infer<typeof McpSteerInputSchema>;
+export type McpSteerResult = z.infer<typeof McpSteerResultSchema>;
 export type McpSendInput = z.infer<typeof McpSendInputSchema>;
 export type McpSendResult = z.infer<typeof McpSendResultSchema>;
 export type McpAskInput = z.infer<typeof McpAskInputSchema>;
@@ -196,6 +262,22 @@ export function parseMcpAskInput(input: unknown, options?: KnownTargetOptions): 
   const parsed = parseWriteRequest(McpAskInputSchema, input);
   assertKnownTargets(parsed.to, options);
   return parsed;
+}
+
+export function parseMcpWatchInput(input: unknown): McpWatchInput {
+  return parseWriteRequest(McpWatchInputSchema, input);
+}
+
+export function parseMcpSteerInput(input: unknown): McpSteerInput {
+  return parseWriteRequest(McpSteerInputSchema, input);
+}
+
+export function parseMcpWatchResult(input: unknown): McpWatchResult {
+  return parseContractOutput(McpWatchResultSchema, input);
+}
+
+export function parseMcpSteerResult(input: unknown): McpSteerResult {
+  return parseContractOutput(McpSteerResultSchema, input);
 }
 
 export function parseMcpReadInput(input: unknown): McpReadInput {

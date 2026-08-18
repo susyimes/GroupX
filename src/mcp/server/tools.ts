@@ -22,6 +22,10 @@ import {
   McpReadResultSchema,
   McpSendInputSchema,
   McpSendResultSchema,
+  McpSteerInputSchema,
+  McpSteerResultSchema,
+  McpWatchInputSchema,
+  McpWatchResultSchema,
   parseMcpAskInput,
   parseMcpAskResult,
   parseMcpCoreMemoryRememberInput,
@@ -38,6 +42,10 @@ import {
   parseMcpReadResult,
   parseMcpSendInput,
   parseMcpSendResult,
+  parseMcpSteerInput,
+  parseMcpSteerResult,
+  parseMcpWatchInput,
+  parseMcpWatchResult,
   toSafeErrorBody,
   type KnownTargetOptions
 } from "../../contracts/index.js";
@@ -54,6 +62,8 @@ export const GROUPX_MCP_SERVER_VERSION = "0.1.0" as const;
 export const GROUPX_MCP_TOOL_NAMES = [
   "send",
   "ask",
+  "watch",
+  "steer",
   "read",
   "memory_search",
   "memory_remember",
@@ -146,7 +156,10 @@ export function createGroupXMcpServer(options: CreateGroupXMcpServerOptions): Mc
         "automatically; keep polling read until the target turn is terminal, or hand off " +
         "explicitly with send before ending your turn. (3) Your prompt context is frozen at " +
         "dispatch time; call read to catch up on newer room messages before irreversible " +
-        "actions such as pushing commits or declaring agreement with another agent."
+        "actions such as pushing commits or declaring agreement with another agent. (4) watch " +
+        "and steer exist only on a live supervision watch turn: watch waits for a bounded " +
+        "worker milestone, and steer nudges or interrupts the whole worker turn. They are " +
+        "not an approval layer and cannot allow or deny a native tool."
     }
   );
 
@@ -190,6 +203,40 @@ export function createGroupXMcpServer(options: CreateGroupXMcpServerOptions): Mc
             parseMcpAskInput(input, knownTargetOptions)
           )
         )
+      )
+  );
+
+  server.registerTool(
+    "watch",
+    {
+      description:
+        "Wait for the next bounded milestone or terminal state of the worker you are " +
+        "watching. Only valid on a supervision watch turn. Returns a bounded snapshot: " +
+        "status, public message excerpts, and tool names/status. No reasoning text, raw " +
+        "tool arguments, or stderr. This is observation, not approval.",
+      inputSchema: McpWatchInputSchema,
+      outputSchema: McpWatchResultSchema
+    },
+    async (input, extra) =>
+      invoke(options.binding, extra, async (caller) =>
+        parseMcpWatchResult(await options.broker.watch(caller, parseMcpWatchInput(input)))
+      )
+  );
+
+  server.registerTool(
+    "steer",
+    {
+      description:
+        "Redirect the watched worker. nudge queues guidance after the current turn. " +
+        "interrupt cancels the whole current worker turn, then starts a new one with your " +
+        "guidance. Requires a public reason. You cannot approve, deny, or cancel a single " +
+        "native tool. Only valid on a supervision watch turn.",
+      inputSchema: McpSteerInputSchema,
+      outputSchema: McpSteerResultSchema
+    },
+    async (input, extra) =>
+      invoke(options.binding, extra, async (caller) =>
+        parseMcpSteerResult(await options.broker.steer(caller, parseMcpSteerInput(input)))
       )
   );
 

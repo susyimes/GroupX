@@ -14,7 +14,11 @@ import type {
   McpReadInput,
   McpReadResult,
   McpSendInput,
-  McpSendResult
+  McpSendResult,
+  McpSteerInput,
+  McpSteerResult,
+  McpWatchInput,
+  McpWatchResult
 } from "../../contracts/mcp.js";
 import type { McpBindingContext } from "../binding-registry.js";
 
@@ -67,6 +71,8 @@ export function toToolCallerContext(
 export interface ToolBrokerApi {
   send(caller: ToolCallerContext, input: McpSendInput): Promise<McpSendResult>;
   ask(caller: ToolCallerContext, input: McpAskInput): Promise<McpAskResult>;
+  watch(caller: ToolCallerContext, input: McpWatchInput): Promise<McpWatchResult>;
+  steer(caller: ToolCallerContext, input: McpSteerInput): Promise<McpSteerResult>;
   read(caller: ToolCallerContext, input: McpReadInput): Promise<McpReadResult>;
   memorySearch(
     caller: ToolCallerContext,

@@ -106,6 +106,31 @@ function brokerFixture() {
   };
   const broker: GroupXToolBrokerApiOptions["broker"] = {
     acceptMessage,
+    assertObserverRouting: vi.fn(),
+    watchSubject: vi.fn(async () => ({
+      until: "next_milestone" as const,
+      timedOut: false,
+      snapshot: {
+        turnId: "turn:child",
+        status: "running",
+        lastSeq: 3,
+        watchCursor: 1,
+        terminal: false,
+        subjectCancelled: false,
+        task: { eventId: "event:question", excerpt: "question" },
+        messages: [],
+        tools: [],
+        steerCount: 0
+      }
+    })),
+    steerSubject: vi.fn(async () => ({
+      action: "nudge" as const,
+      reason: "adjust",
+      subjectTurnId: "turn:child",
+      messageEventId: "event:steer",
+      correlationId: "corr:root",
+      nextTurnId: "turn:next"
+    })),
     readCorrelation,
     queryMemory,
     rememberIdentity,
@@ -133,6 +158,39 @@ function brokerFixture() {
 }
 
 describe("GroupXToolBrokerApi", () => {
+  it("forwards watch and steer through the active Watch Turn without a caller from field", async () => {
+    const fixture = brokerFixture();
+
+    await expect(
+      fixture.api.watch(caller(), { until: "next_milestone" })
+    ).resolves.toMatchObject({
+      until: "next_milestone",
+      snapshot: { turnId: "turn:child", tools: [] }
+    });
+    await expect(
+      fixture.api.steer(caller(), {
+        action: "nudge",
+        reason: "adjust",
+        content: "try another path",
+        clientCommandId: "command:steer"
+      })
+    ).resolves.toMatchObject({
+      action: "nudge",
+      subjectTurnId: "turn:child",
+      nextTurnId: "turn:next"
+    });
+    expect(fixture.broker.watchSubject).toHaveBeenCalledWith(
+      expect.objectContaining({ watchTurnId: "turn:parent", until: "next_milestone" })
+    );
+    expect(fixture.broker.steerSubject).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bindingId: "binding:codex",
+        watchTurnId: "turn:parent",
+        action: "nudge"
+      })
+    );
+  });
+
   it("binds child sends to the active root Turn and returns contract-safe output", async () => {
     const fixture = brokerFixture();
 

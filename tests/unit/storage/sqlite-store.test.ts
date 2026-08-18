@@ -1584,7 +1584,7 @@ describe.sequential("SqliteGroupXStore summaries and recovery", () => {
     });
     reopen(fixture);
 
-    expect(fixture.store.getSchemaVersion()).toBe(7);
+    expect(fixture.store.getSchemaVersion()).toBe(8);
     expect(fixture.store.getJournalMode()).toBe("wal");
     expect(fixture.store.getSessionBinding("binding:codex")?.capabilities).toEqual({
       prompt: true
@@ -1782,7 +1782,7 @@ describe.sequential("SqliteGroupXStore summaries and recovery", () => {
     raw.close();
 
     fixture.store = new SqliteGroupXStore(fixture.databasePath);
-    expect(fixture.store.getSchemaVersion()).toBe(7);
+    expect(fixture.store.getSchemaVersion()).toBe(8);
     expect(fixture.store.getTurnAttempt(claim.attempt.attemptId)).toMatchObject({
       dispatchPhase: "prompt_invoked",
       deliveryCertainty: "unknown"
@@ -1822,7 +1822,7 @@ describe.sequential("SqliteGroupXStore summaries and recovery", () => {
     raw.close();
 
     fixture.store = new SqliteGroupXStore(fixture.databasePath);
-    expect(fixture.store.getSchemaVersion()).toBe(7);
+    expect(fixture.store.getSchemaVersion()).toBe(8);
     expect(fixture.store.getMemory("memory:legacy-agent")).toMatchObject({
       scopeType: "agent",
       agentMemoryType: "core",
@@ -1843,7 +1843,7 @@ describe.sequential("SqliteGroupXStore summaries and recovery", () => {
     repair.pragma("user_version = 7");
     repair.close();
     fixture.store = new SqliteGroupXStore(fixture.databasePath);
-    expect(fixture.store.getSchemaVersion()).toBe(7);
+    expect(fixture.store.getSchemaVersion()).toBe(8);
     expect(fixture.store.integrityCheck()).toEqual({ ok: true, messages: ["ok"] });
   });
 

@@ -117,19 +117,28 @@ function sessionEventType(progress: SessionProgress) {
   return "session.failed" as const;
 }
 
-function contextProvider(engine: RoomContextEngine, config: GroupXConfig): BrokerContextProvider {
+function contextProvider(
+  engine: RoomContextEngine,
+  config: GroupXConfig,
+  store: Pick<GroupXStore, "getSupervisionTurnRole">
+): BrokerContextProvider {
   return {
     async prepare({ turn, sourceEvent }) {
       const agentId = turn.targetActorId.startsWith("agent:")
         ? turn.targetActorId.slice("agent:".length)
         : "";
       const configuredIdentity = config.agents[agentId]?.identity?.trim();
+      const packetKind =
+        store.getSupervisionTurnRole(turn.turnId) === "observer"
+          ? ("supervision_watch" as const)
+          : undefined;
       const packet = await engine.prepare({
         roomId: sourceEvent.roomId,
         targetActorId: turn.targetActorId,
         ...(configuredIdentity ? { configuredIdentity } : {}),
         throughSeq: sourceEvent.seq,
-        currentEvent: sourceEvent
+        currentEvent: sourceEvent,
+        ...(packetKind === undefined ? {} : { packetKind })
       });
       return {
         contextPacket: packet.text,
@@ -336,7 +345,9 @@ export class GroupXRuntime {
             await this.sessions.restart(actorId);
           }
         },
-        contextProvider: contextProvider(this.contextEngine, this.config),
+        contextProvider: contextProvider(this.contextEngine, this.config, this.store),
+        steerLimit: this.config.limits.steersPerSubjectTurn,
+        watchTimeoutMs: this.config.timeouts.watchMs,
         contextController: this.contextEngine,
         datedMemoryController: this.datedMemoryEngine,
         turnLifecycle: turns,

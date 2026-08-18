@@ -100,6 +100,8 @@ describe("GroupX configuration", () => {
     expect(defaults.server).toEqual({ host: "127.0.0.1", port: 4_310 });
     expect(defaults.storage.path).toBe(".groupx/groupx.db");
     expect(defaults.limits.contextCharacters).toBe(256_000);
+    expect(defaults.limits.steersPerSubjectTurn).toBe(3);
+    expect(defaults.timeouts.watchMs).toBe(120_000);
     expect(defaults.agents.codex!.command).toEqual({
       executable: nodeExecutable,
       prefixArgs: [codexEntrypoint]

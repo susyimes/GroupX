@@ -15,6 +15,17 @@ import {
   type GroupXEventType
 } from "../core/envelope.js";
 import { GroupXError, toGroupXError, type GroupXErrorCode } from "../core/errors.js";
+import {
+  DEFAULT_STEERS_PER_SUBJECT_TURN,
+  SUPERVISION_CONTENT_FLUSH_CHARS,
+  SUPERVISION_SNAPSHOT_MESSAGE_LIMIT,
+  excerptText,
+  isSupervisionWatchMessage,
+  toolNameFromDetails,
+  type SupervisionMilestone,
+  type SupervisionSnapshot,
+  type SupervisionSnapshotTool
+} from "../core/supervision.js";
 import type {
   AcceptMessageResult,
   ClaimedTurn,
@@ -44,6 +55,10 @@ import type {
   CorrelationReadResult,
   DispatchPreparation,
   ReadCorrelationInput,
+  SteerSubjectInput,
+  SteerSubjectResult,
+  WatchSubjectInput,
+  WatchSubjectResult,
   RememberIdentityFromBindingInput,
   RememberMemoryFromBindingInput,
   RetractRecordFromBindingInput,
@@ -71,6 +86,7 @@ interface ActiveDispatch {
   reasoningText: string;
   toolProgress: TerminalToolProgressInput[];
   checkpointedLength: number;
+  lastFlushedLength: number;
   chunkIndex: number;
   started: boolean;
   terminal: boolean;
@@ -160,6 +176,8 @@ export class GroupXBroker {
   readonly #datedMemoryController: BrokerDependencies["datedMemoryController"];
   readonly #turnLifecycle: BrokerDependencies["turnLifecycle"];
   readonly #acceptMessageLimits: BrokerDependencies["acceptMessageLimits"];
+  readonly #steerLimit: number;
+  readonly #watchTimeoutMs: number;
   readonly #selectedTransport: BrokerDependencies["selectedTransport"];
   readonly #clock: NonNullable<BrokerDependencies["clock"]>;
   readonly #idFactory: NonNullable<BrokerDependencies["idFactory"]>;
@@ -178,6 +196,8 @@ export class GroupXBroker {
     Promise<import("../memory/types.js").RoomContextCompactionResult>
   >();
   readonly #turnWaiters = new Map<string, Set<() => void>>();
+  readonly #milestoneWaiters = new Map<string, Set<(milestone: SupervisionMilestone) => void>>();
+  readonly #watchCursors = new Map<string, number>();
   readonly #closingController = new AbortController();
   #closePromise?: Promise<void>;
   #closed = false;
@@ -194,6 +214,8 @@ export class GroupXBroker {
     this.#datedMemoryController = dependencies.datedMemoryController;
     this.#turnLifecycle = dependencies.turnLifecycle;
     this.#acceptMessageLimits = dependencies.acceptMessageLimits;
+    this.#steerLimit = dependencies.steerLimit ?? DEFAULT_STEERS_PER_SUBJECT_TURN;
+    this.#watchTimeoutMs = dependencies.watchTimeoutMs ?? 120_000;
     this.#selectedTransport = dependencies.selectedTransport;
     this.#clock = dependencies.clock ?? { now: nowIso };
     this.#idFactory = dependencies.idFactory ?? createId;
@@ -214,6 +236,12 @@ export class GroupXBroker {
     if (!Number.isSafeInteger(this.#closeTimeoutMs) || this.#closeTimeoutMs < 1) {
       throw new RangeError("closeTimeoutMs must be a positive integer");
     }
+    if (!Number.isSafeInteger(this.#steerLimit) || this.#steerLimit < 1) {
+      throw new RangeError("steerLimit must be a positive integer");
+    }
+    if (!Number.isSafeInteger(this.#watchTimeoutMs) || this.#watchTimeoutMs < 1) {
+      throw new RangeError("watchTimeoutMs must be a positive integer");
+    }
     if (this.#selectedTransport !== "direct" && this.#selectedTransport !== "structured") {
       throw new RangeError("selectedTransport must be direct or structured");
     }
@@ -221,7 +249,7 @@ export class GroupXBroker {
 
   async acceptMessage(input: AcceptBrokerMessageInput): Promise<AcceptMessageResult> {
     this.#assertOpen();
-    const targets = input.request.to.map((actorId) => {
+    const toTarget = (actorId: string) => {
       const adapter = this.#adapters.getByActor(actorId);
       return {
         actorId,
@@ -230,7 +258,15 @@ export class GroupXBroker {
         ...(input.parentTurnId === undefined ? {} : { parentTurnId: input.parentTurnId }),
         ...(input.hopCount === undefined ? {} : { hopCount: input.hopCount })
       };
-    });
+    };
+    const targets = input.request.to.map(toTarget);
+    const supervision =
+      input.request.supervision === undefined
+        ? undefined
+        : {
+            mode: input.request.supervision.mode,
+            observers: input.request.supervision.observers.map(toTarget)
+          };
     const binding = this.#store.getSessionBinding(input.bindingId);
     const sourceKind = binding?.protocol === "local-rest" ? "web" : "mcp";
     const outcome = this.#store.acceptMessageWithDisposition({
@@ -249,7 +285,8 @@ export class GroupXBroker {
       provenance: { sourceKind },
       ...(this.#acceptMessageLimits === undefined
         ? {}
-        : { limits: this.#acceptMessageLimits })
+        : { limits: this.#acceptMessageLimits }),
+      ...(supervision === undefined ? {} : { supervision })
     });
 
     if (outcome.disposition === "accepted") {
@@ -259,15 +296,38 @@ export class GroupXBroker {
       }
       await this.#publishStored(source);
       if (this.#closed) return outcome.result;
-      for (const result of outcome.result.turns) {
+      const publishQueued = async (result: { turnId: string }): Promise<void> => {
         const turn = this.#store.getTurn(result.turnId);
         const queued = turn ? this.#store.getEvent(turn.queuedEventId) : undefined;
         if (!turn || !queued) {
           throw new GroupXError("STORE_UNAVAILABLE", "Accepted queued Turn evidence is missing");
         }
         await this.#publishStored(queued);
-        if (this.#closed) return outcome.result;
+        if (this.#closed) return;
         this.#scheduleActor(turn.targetActorId);
+      };
+      for (const result of outcome.result.turns) {
+        await publishQueued(result);
+        if (this.#closed) return outcome.result;
+      }
+      if (outcome.result.watchEventId !== undefined) {
+        const watchEvent = this.#store.getEvent(outcome.result.watchEventId);
+        if (!watchEvent) {
+          throw new GroupXError("STORE_UNAVAILABLE", "Accepted watch event is missing");
+        }
+        await this.#publishStored(watchEvent);
+        if (this.#closed) return outcome.result;
+      }
+      for (const result of outcome.result.watchTurns ?? []) {
+        await publishQueued(result);
+        if (this.#closed) return outcome.result;
+      }
+      if (outcome.result.pairEventId !== undefined) {
+        const pairEvent = this.#store.getEvent(outcome.result.pairEventId);
+        if (!pairEvent) {
+          throw new GroupXError("STORE_UNAVAILABLE", "Accepted supervision pair event is missing");
+        }
+        await this.#publishStored(pairEvent);
       }
     }
     return outcome.result;
@@ -1201,6 +1261,7 @@ export class GroupXBroker {
       reasoningText: "",
       toolProgress: [],
       checkpointedLength: 0,
+      lastFlushedLength: 0,
       chunkIndex: 0,
       started: false,
       terminal: false,
@@ -1452,6 +1513,19 @@ export class GroupXBroker {
             chunkIndex: active.chunkIndex,
             text
           });
+          if (
+            active.partialText.length - active.lastFlushedLength >=
+            SUPERVISION_CONTENT_FLUSH_CHARS
+          ) {
+            active.lastFlushedLength = active.partialText.length;
+            this.#emitMilestone({
+              kind: "content.flushed",
+              turnId: claim.turn.turnId,
+              watchCursor: this.#nextWatchCursor(claim.turn.turnId),
+              seq: null,
+              excerpt: excerptText(active.partialText.slice(-SUPERVISION_CONTENT_FLUSH_CHARS))
+            });
+          }
         }
         return;
       }
@@ -1484,6 +1558,17 @@ export class GroupXBroker {
             ? {}
             : { toolCallId: progress.toolCallId }),
           details: progress.details
+        });
+        this.#emitMilestone({
+          kind: event.type,
+          turnId: claim.turn.turnId,
+          watchCursor: this.#nextWatchCursor(claim.turn.turnId),
+          seq: null,
+          tool: {
+            name: toolNameFromDetails(progress.details),
+            status: event.type === "tool.started" ? "started" : "completed",
+            ...(progress.toolCallId === undefined ? {} : { toolCallId: progress.toolCallId })
+          }
         });
         return;
       }
@@ -1546,6 +1631,13 @@ export class GroupXBroker {
       }
     });
     await this.#publishStored(event);
+    this.#emitMilestone({
+      kind: "turn.started",
+      turnId: claim.turn.turnId,
+      watchCursor: this.#nextWatchCursor(claim.turn.turnId),
+      seq: event.seq,
+      status: "running"
+    });
   }
 
   #bindNativeTurnId(active: ActiveDispatch, nativeTurnId: string): void {
@@ -1841,9 +1933,334 @@ export class GroupXBroker {
   }
 
   #notifyTurnTerminal(turnId: string): void {
+    const turn = this.#store.getTurn(turnId);
+    this.#emitMilestone({
+      kind: "turn.terminal",
+      turnId,
+      watchCursor: this.#nextWatchCursor(turnId),
+      seq: null,
+      status: turn?.status
+    });
     const listeners = this.#turnWaiters.get(turnId);
     if (!listeners) return;
     for (const listener of [...listeners]) listener();
+  }
+
+  #nextWatchCursor(turnId: string): number {
+    const next = (this.#watchCursors.get(turnId) ?? 0) + 1;
+    this.#watchCursors.set(turnId, next);
+    return next;
+  }
+
+  #emitMilestone(milestone: SupervisionMilestone): void {
+    const listeners = this.#milestoneWaiters.get(milestone.turnId);
+    if (!listeners) return;
+    for (const listener of [...listeners]) listener(milestone);
+  }
+
+  #requireWatchTurn(watchTurnId: string): {
+    watch: TurnRecord;
+    pair: NonNullable<ReturnType<GroupXStore["getSupervisionPairByTurn"]>>;
+  } {
+    const watch = this.#store.getTurn(watchTurnId);
+    if (!watch) {
+      throw new GroupXError("UNKNOWN_TARGET", "The watch Turn does not exist");
+    }
+    if (this.#store.getSupervisionTurnRole(watchTurnId) !== "observer") {
+      throw new GroupXError(
+        "SUPERVISION_WATCH_REQUIRED",
+        "watch and steer are only available on a supervision watch turn"
+      );
+    }
+    const pair = this.#store.getSupervisionPairByTurn(watchTurnId);
+    if (!pair) {
+      throw new GroupXError("SUPERVISION_PAIR_INVALID", "The watch Turn has no supervision pair");
+    }
+    return { watch, pair };
+  }
+
+  #resolveWatchedWorker(pairId: string, watch: TurnRecord, subjectTurnId?: string): TurnRecord {
+    const members = this.#store.listSupervisionPairTurns(pairId).filter(
+      (member) => member.role === "worker"
+    );
+    if (members.length === 0) {
+      throw new GroupXError("SUPERVISION_PAIR_INVALID", "The supervision pair has no worker");
+    }
+    const chosen =
+      subjectTurnId === undefined
+        ? members.length === 1
+          ? members[0]
+          : members.find((member) => {
+              const turn = this.#store.getTurn(member.turnId);
+              return turn !== undefined && !TERMINAL_TURN_STATUSES.has(turn.status);
+            }) ?? members.at(-1)
+        : members.find((member) => member.turnId === subjectTurnId);
+    if (chosen === undefined) {
+      throw new GroupXError(
+        "SUPERVISION_PAIR_INVALID",
+        "The requested subject is not a worker in this supervision pair"
+      );
+    }
+    const turn = this.#store.getTurn(chosen.turnId);
+    if (!turn || turn.rootCorrelationId !== watch.rootCorrelationId) {
+      throw new GroupXError(
+        "SUPERVISION_PAIR_INVALID",
+        "The watched worker is not in the same correlation"
+      );
+    }
+    return turn;
+  }
+
+  #buildSupervisionSnapshot(subject: TurnRecord, afterSeq = 0): SupervisionSnapshot {
+    const source = this.#store.getEvent(subject.sourceEventId);
+    if (!source) {
+      throw new GroupXError("STORE_UNAVAILABLE", "The watched Turn source event is missing");
+    }
+    const attempt = this.#store.listTurnAttempts(subject.turnId).at(-1);
+    const active = this.#active.get(subject.turnId);
+    const tools = new Map<string, SupervisionSnapshotTool>();
+    for (const progress of active?.toolProgress ?? []) {
+      const key = progress.toolCallId ?? `${progress.nativeType}:${progress.occurredAt}`;
+      tools.set(key, {
+        name: toolNameFromDetails(progress.details),
+        status: progress.nativeType === "tool.started" ? "started" : "completed",
+        ...(progress.toolCallId === undefined ? {} : { toolCallId: progress.toolCallId })
+      });
+    }
+    for (const event of this.#store.listEvents({
+      roomId: source.roomId,
+      afterSeq,
+      limit: 200
+    }).events) {
+      if (event.eventType !== "tool.progress.recorded") continue;
+      if (!isRecord(event.body) || event.body.turnId !== subject.turnId) continue;
+      const toolCallId =
+        typeof event.body.toolCallId === "string" ? event.body.toolCallId : undefined;
+      const nativeType = event.body.nativeType === "tool.completed" ? "completed" : "started";
+      tools.set(toolCallId ?? event.eventId, {
+        name: toolNameFromDetails(event.body.details),
+        status: nativeType,
+        ...(toolCallId === undefined ? {} : { toolCallId })
+      });
+    }
+    const messages: SupervisionSnapshot["messages"] = [];
+    for (const event of this.#store.listEvents({
+      roomId: source.roomId,
+      afterSeq,
+      limit: 200
+    }).events) {
+      if (event.eventType !== "message.created" || isSupervisionWatchMessage(event.body)) {
+        continue;
+      }
+      if (event.correlationId !== subject.rootCorrelationId) continue;
+      const content = stringProperty(event.body, "content");
+      if (content === undefined) continue;
+      messages.push({ eventId: event.eventId, excerpt: excerptText(content) });
+      if (messages.length >= SUPERVISION_SNAPSHOT_MESSAGE_LIMIT) break;
+    }
+    let lastSteerReason: string | undefined;
+    for (const event of this.#store.listEvents({
+      roomId: source.roomId,
+      afterSeq: 0,
+      limit: 200
+    }).events) {
+      if (event.eventType !== "supervision.steered" || !isRecord(event.body)) continue;
+      if (event.body.subjectTurnId !== subject.turnId) continue;
+      const reason = stringProperty(event.body, "reason");
+      if (reason !== undefined) lastSteerReason = excerptText(reason, 500);
+    }
+    return {
+      turnId: subject.turnId,
+      status: subject.status,
+      ...(attempt === undefined ? {} : { deliveryCertainty: attempt.deliveryCertainty }),
+      lastSeq: this.#store.getRoomHighWaterSeq(source.roomId),
+      watchCursor: this.#watchCursors.get(subject.turnId) ?? 0,
+      terminal: TERMINAL_TURN_STATUSES.has(subject.status),
+      subjectCancelled: subject.status === "cancelled" || subject.status === "interrupted",
+      task: {
+        eventId: source.eventId,
+        excerpt: excerptText(stringProperty(source.body, "content") ?? "")
+      },
+      messages,
+      tools: [...tools.values()],
+      steerCount: this.#store.getSteerCount(subject.turnId),
+      ...(lastSteerReason === undefined ? {} : { lastSteerReason })
+    };
+  }
+
+  assertObserverRouting(watchTurnId: string, targets: readonly string[]): void {
+    if (this.#store.getSupervisionTurnRole(watchTurnId) !== "observer") return;
+    const pair = this.#store.getSupervisionPairByTurn(watchTurnId);
+    if (!pair) return;
+    const workers = new Set(
+      this.#store
+        .listSupervisionPairTurns(pair.pairId)
+        .filter((member) => member.role === "worker")
+        .map((member) => member.actorId)
+    );
+    const blocked = targets.find((target) => workers.has(target));
+    if (blocked !== undefined) {
+      throw new GroupXError(
+        "SUPERVISION_STEER_REQUIRED",
+        "Redirect a watched worker with steer, not send or ask",
+        { actorId: blocked }
+      );
+    }
+  }
+
+  async watchSubject(input: WatchSubjectInput): Promise<WatchSubjectResult> {
+    this.#assertOpen();
+    const timeoutMs = input.timeoutMs ?? this.#watchTimeoutMs;
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
+      throw new RangeError("timeoutMs must be a positive integer");
+    }
+    const { watch, pair } = this.#requireWatchTurn(input.watchTurnId);
+    const subject = this.#resolveWatchedWorker(pair.pairId, watch, input.subjectTurnId);
+    const afterSeq = input.afterSeq ?? 0;
+    const startCursor = this.#watchCursors.get(subject.turnId) ?? 0;
+    const alreadyTerminal = TERMINAL_TURN_STATUSES.has(subject.status);
+    const readyNow = (): boolean => {
+      const current = this.#store.getTurn(subject.turnId);
+      if (!current) return true;
+      if (input.until === "terminal") return TERMINAL_TURN_STATUSES.has(current.status);
+      return (this.#watchCursors.get(subject.turnId) ?? 0) > startCursor ||
+        TERMINAL_TURN_STATUSES.has(current.status);
+    };
+
+    let timedOut = false;
+    if (!alreadyTerminal && !readyNow()) {
+      const state = await new Promise<"milestone" | "timeout" | "aborted">((resolve) => {
+        let settled = false;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const finish = (result: "milestone" | "timeout" | "aborted"): void => {
+          if (settled) return;
+          settled = true;
+          if (timer) clearTimeout(timer);
+          input.signal?.removeEventListener("abort", onAbort);
+          this.#closingController.signal.removeEventListener("abort", onAbort);
+          const listeners = this.#milestoneWaiters.get(subject.turnId);
+          listeners?.delete(onMilestone);
+          if (listeners?.size === 0) this.#milestoneWaiters.delete(subject.turnId);
+          resolve(result);
+        };
+        const onMilestone = (): void => finish("milestone");
+        const onAbort = (): void => finish("aborted");
+        const listeners = this.#milestoneWaiters.get(subject.turnId) ?? new Set();
+        listeners.add(onMilestone);
+        this.#milestoneWaiters.set(subject.turnId, listeners);
+        if (readyNow()) {
+          finish("milestone");
+          return;
+        }
+        if (input.signal?.aborted || this.#closingController.signal.aborted) {
+          finish("aborted");
+          return;
+        }
+        input.signal?.addEventListener("abort", onAbort, { once: true });
+        this.#closingController.signal.addEventListener("abort", onAbort, { once: true });
+        timer = setTimeout(() => finish("timeout"), timeoutMs);
+      });
+      if (state === "aborted") {
+        throw new GroupXError("TURN_INTERRUPTED", "GroupX watch was aborted");
+      }
+      timedOut = state === "timeout";
+    }
+
+    const snapshot = this.#buildSupervisionSnapshot(subject, afterSeq);
+    const observed = this.#store.appendDurableEvent({
+      roomId: this.#defaultRoomId,
+      eventType: "supervision.observed",
+      actorId: watch.targetActorId,
+      targets: [subject.targetActorId],
+      causationId: watch.turnId,
+      correlationId: watch.rootCorrelationId,
+      occurredAt: this.#clock.now(),
+      body: {
+        watchTurnId: watch.turnId,
+        subjectTurnId: subject.turnId,
+        until: input.until,
+        timedOut,
+        snapshot
+      },
+      provenance: {
+        sourceKind: "supervision",
+        authorActorId: watch.targetActorId,
+        subjectActorId: subject.targetActorId,
+        sourceEventId: subject.sourceEventId
+      }
+    });
+    await this.#publishStored(observed);
+    return { snapshot, until: input.until, timedOut };
+  }
+
+  async steerSubject(input: SteerSubjectInput): Promise<SteerSubjectResult> {
+    this.#assertOpen();
+    const { watch, pair } = this.#requireWatchTurn(input.watchTurnId);
+    const subject = this.#resolveWatchedWorker(pair.pairId, watch, input.subjectTurnId);
+    if (input.action === "interrupt" && TERMINAL_TURN_STATUSES.has(subject.status)) {
+      throw new GroupXError(
+        "SUPERVISION_PAIR_INVALID",
+        "interrupt requires a still-running worker turn; use nudge for a follow-up"
+      );
+    }
+    this.#store.incrementSteerCount(subject.turnId, this.#steerLimit);
+    if (input.action === "interrupt") {
+      await this.cancelTurn(subject.turnId);
+    }
+    const accepted = await this.acceptMessage({
+      bindingId: input.bindingId,
+      request: {
+        clientCommandId: input.clientCommandId,
+        to: [subject.targetActorId],
+        content: input.content
+      },
+      roomId: this.#defaultRoomId,
+      commandType: "supervision.steer",
+      causationId: watch.turnId,
+      correlationId: watch.rootCorrelationId,
+      parentTurnId: watch.turnId,
+      hopCount: watch.hopCount + 1
+    });
+    const nextTurn = accepted.turns[0];
+    if (nextTurn !== undefined) {
+      this.#store.attachSupervisionWorkerTurn({
+        pairId: pair.pairId,
+        turnId: nextTurn.turnId,
+        actorId: nextTurn.target
+      });
+    }
+    const steered = this.#store.appendDurableEvent({
+      roomId: this.#defaultRoomId,
+      eventType: "supervision.steered",
+      actorId: watch.targetActorId,
+      targets: [subject.targetActorId],
+      causationId: watch.turnId,
+      correlationId: watch.rootCorrelationId,
+      occurredAt: this.#clock.now(),
+      body: {
+        action: input.action,
+        reason: input.reason,
+        subjectTurnId: subject.turnId,
+        nextTurnId: nextTurn?.turnId,
+        pairId: pair.pairId
+      },
+      provenance: {
+        sourceKind: "supervision",
+        authorActorId: watch.targetActorId,
+        subjectActorId: subject.targetActorId,
+        sourceEventId: accepted.messageEventId
+      }
+    });
+    await this.#publishStored(steered);
+    return {
+      action: input.action,
+      reason: input.reason,
+      subjectTurnId: subject.turnId,
+      messageEventId: accepted.messageEventId,
+      correlationId: accepted.correlationId,
+      ...(nextTurn === undefined ? {} : { nextTurnId: nextTurn.turnId }),
+      steeredEventId: steered.eventId
+    };
   }
 
   #assertOpen(): void {

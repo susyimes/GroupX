@@ -22,6 +22,7 @@
 | Structured fixture | App Server/ACP wire、session、cancel、resume、interaction detection | 否 |
 | native live | 核心 3 Agent Structured Gate；新增 driver 使用独立 matching evidence | 是 |
 | MCP integration | `send/ask/read`、binding、因果循环、native actual call；仅 Structured | fixture 必跑；Structured live 必跑 |
+| Supervision pairing | 并行 watch、里程碑有界、steer 改道/上限、观察隔离、无 approval | fixture 必跑；不作为 Structured Gate |
 | browser e2e | 发送、并行回复、sender、memory/identity、无审批 UI | fake 必跑；live 显式运行 |
 | performance | 测量 Structured Broker/session/stream 延迟 | native 模型耗时不计入 Broker 指标 |
 
@@ -98,6 +99,9 @@ binding 是 provenance/correlation handle，不是 secret、token 或本机抗�
 | R-004 | reply/forward | 原作者从引用 Envelope 读取；转发 actor 是当前调用方 |
 | R-005 | 重复 clientCommandId | 返回原结果，不重复派发 |
 | R-006 | Direct 配置请求 | 明确失败并指向 Structured，不创建 Turn |
+| R-007 | 监督配对 | 同一 `rootCorrelationId` 并行 worker Turn + Watch Turn；observer 提示词不是用户任务正文 |
+| R-008 | observer 与 worker 重叠 | `SUPERVISION_PAIR_INVALID` 或合同校验失败，不创建 Turn |
+| R-009 | 请求自报监督者/`from` | `SENDER_FIELD_FORBIDDEN`；actor/`sourceKind` 仍由 Broker 写入 |
 
 ## 7. Structured MCP `send/ask/read`
 
@@ -116,6 +120,12 @@ binding 是 provenance/correlation handle，不是 secret、token 或本机抗�
 | C-011 | B 异步 `mcp.send(A)`，A 是祖先 actor | 允许入队，不报 `CAUSAL_CYCLE`；仍应用 hop/root/actor/queue 限额 |
 | C-012 | child 伪造 parent/root/hop 或父链断裂 | Store 拒绝整个命令，不创建 message/Turn |
 | C-013 | 非 `mcp.ask` 或未进入 `waitsForChildren` 的命令命中祖先 actor | 不应用 `CAUSAL_CYCLE`；只同步等待 ask 禁止 |
+| C-014 | 普通业务 Turn 调用 `watch`/`steer` | `SUPERVISION_WATCH_REQUIRED` |
+| C-015 | Watch Turn `watch` | 返回有界 snapshot：无推理正文、无完整 argv/result/stderr |
+| C-016 | Watch Turn `steer(interrupt)` | cancel 当前 worker 整轮并入队新 Worker Turn；指导 `from` 来自 observer binding |
+| C-017 | Watch Turn 对正在观察的 worker `ask`/`send` | `SUPERVISION_STEER_REQUIRED` |
+| C-018 | 同一 subject 超过 `steersPerSubjectTurn` | `STEER_LIMIT_REACHED`，不静默丢弃 |
+| C-019 | 监督失败 | 不改 unrestricted argv，不产生 `approval.*`，不重放已可能交付的 prompt |
 
 ## 8. Turn、队列、取消与恢复
 
@@ -203,9 +213,9 @@ binding 是 provenance/correlation handle，不是 secret、token 或本机抗�
 | --- | --- | --- |
 | W-001 | 默认监听 | `127.0.0.1`；非 loopback 不属于 v0.1 |
 | W-002 | bootstrap | 回显 selected transport、Agent process/session health、capability、cursor |
-| W-003 | composer | 只能选择 recipients，不能设置 sender/transport/access |
-| W-004 | transcript | sender badge、final/partial/failed 状态正确 |
-| W-005 | approval surface | 没有批准/拒绝按钮、pending 卡片或 approval API 调用 |
+| W-003 | composer | 只能选择 recipients 与可选 observer chips，不能设置 sender/transport/access；observer 不得与本次 worker 重叠 |
+| W-004 | transcript | sender badge、final/partial/failed 状态正确；监督 pair/observed/steer 可见且无审批按钮 |
+| W-005 | approval surface | 没有批准/拒绝按钮、pending 卡片或 approval API 调用；steer 文案写明打断的是整轮 |
 | W-006 | 模型输出 | 作为普通文本节点，不执行 HTML/script |
 | W-007 | 未知 event type | 非保留类型 generic render，不导致 SSE 断流；`approval.*`/`permission.*`/`user_input.*` 拒绝且不渲染 |
 | W-008 | 首次 init/start | 无配置时打开 loopback 引导页；添加并保存后生成严格 groupx.json，再启动主 UI |
@@ -266,6 +276,12 @@ Broker 指标不含模型网络/推理；只测 Structured session startup/reuse
 - 仅 Structured：GroupX MCP `send/ask/read`、binding、因果循环、超时、取消、幂等通过；
 - 三 Agent native `tools/call` 与 provenance 全部 verified；
 - 不新增审批、权限或 user-input 系统。
+
+### M2+ 同步监督
+
+- 配对、watch/steer、观察隔离与「steer ≠ approval」由 fixture 锁定；
+- 不进入当前 Structured 三 Agent Gate；
+- 不把真实模型是否抓到漂移写成发布条件。
 
 ### M3
 
