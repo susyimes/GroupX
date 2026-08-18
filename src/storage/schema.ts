@@ -1,4 +1,4 @@
-export const CURRENT_SCHEMA_VERSION = 8;
+export const CURRENT_SCHEMA_VERSION = 9;
 
 export interface Migration {
   version: number;
@@ -461,6 +461,33 @@ export const MIGRATIONS: readonly Migration[] = [
         subject_turn_id TEXT PRIMARY KEY REFERENCES turns(turn_id),
         steer_count INTEGER NOT NULL CHECK (steer_count >= 0)
       );
+    `
+  },
+  {
+    version: 9,
+    name: "assistant_operator_surface",
+    sql: `
+      CREATE TABLE assistant_conversation_messages (
+        message_id TEXT PRIMARY KEY,
+        role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+        content TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        client_command_id TEXT UNIQUE
+      );
+
+      CREATE INDEX assistant_conversation_created_idx
+        ON assistant_conversation_messages(created_at, message_id);
+
+      CREATE TABLE context_resets (
+        reset_id TEXT PRIMARY KEY,
+        room_id TEXT NOT NULL,
+        through_seq INTEGER NOT NULL CHECK (through_seq >= 0),
+        reset_native_sessions INTEGER NOT NULL CHECK (reset_native_sessions IN (0, 1)),
+        created_at TEXT NOT NULL
+      );
+
+      CREATE INDEX context_resets_room_seq_idx
+        ON context_resets(room_id, through_seq DESC, created_at DESC);
     `
   }
 ];

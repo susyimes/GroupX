@@ -10,8 +10,8 @@
     <meta name="color-scheme" content="light dark">
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%233370ff'/%3E%3Ctext x='16' y='21.5' font-family='system-ui,sans-serif' font-size='12' font-weight='800' text-anchor='middle' fill='white' letter-spacing='1'%3EGX%3C/text%3E%3C/svg%3E">
     <title>GroupX</title>
-    <link rel="stylesheet" href="/styles.css?v=0.1.14-supervision1">
-    <script type="module" src="/app.js?v=0.1.14-supervision1"></script>
+    <link rel="stylesheet" href="/styles.css?v=0.1.15-assistant1">
+    <script type="module" src="/app.js?v=0.1.15-assistant1"></script>
   </head>
   <body>
     <div id="app" class="app-shell">
@@ -29,6 +29,9 @@
             <span id="connection-label">正在启动</span>
           </output>
           <span id="room-label" class="room-label">本地房间</span>
+          <button id="assistant-toggle" class="assistant-toggle" type="button" aria-expanded="false" aria-controls="assistant-drawer">
+            房间助理
+          </button>
           <a class="setup-link" href="/setup" aria-label="管理 Agent" title="管理 Agent">
             <span aria-hidden="true">⚙</span>
             <span class="setup-link-label">Agent 设置</span>
@@ -193,6 +196,32 @@
           </div>
         </form>
       </main>
+
+      <aside id="assistant-drawer" class="assistant-drawer" hidden>
+        <div class="assistant-drawer-header">
+          <div>
+            <p class="eyebrow">Operator</p>
+            <h2 id="assistant-drawer-title">房间助理</h2>
+            <p id="assistant-status" class="assistant-status">未启用</p>
+          </div>
+          <button id="assistant-close" class="assistant-close" type="button" aria-label="关闭房间助理">×</button>
+        </div>
+        <div id="assistant-guide" class="assistant-guide" hidden>
+          <p>尚未添加房间助理。到 Agent 设置页名册下方打开「房间助理」，保存后重启 GroupX。</p>
+          <a class="primary-link" href="/setup#assistant">前往设置</a>
+        </div>
+        <ol id="assistant-timeline" class="assistant-timeline" aria-live="polite"></ol>
+        <form id="assistant-form" class="assistant-form">
+          <textarea id="assistant-input" rows="3" maxlength="131072" placeholder="单独对助理说话，不会发到群里"></textarea>
+          <div class="assistant-form-row">
+            <span id="assistant-form-status">Enter 发送 · Shift+Enter 换行</span>
+            <div class="assistant-form-actions">
+              <button id="assistant-cancel" class="text-button" type="button" hidden>取消</button>
+              <button id="assistant-send" class="primary-button" type="submit">发送</button>
+            </div>
+          </div>
+        </form>
+      </aside>
 
     </div>
 

@@ -59,6 +59,7 @@ export function toMemoryRecordContract(record: MemoryRecord): MemoryRecordContra
   if (
     record.sourceKind !== "web" &&
     record.sourceKind !== "mcp" &&
+    record.sourceKind !== "operator" &&
     record.sourceKind !== "generated_summary" &&
     record.sourceKind !== "automatic_turn" &&
     record.sourceKind !== "automatic_rollup"
@@ -92,7 +93,8 @@ export function toIdentityRecordContract(record: IdentityRecord): IdentityRecord
   if (
     record.sourceKind !== "web" &&
     record.sourceKind !== "mcp" &&
-    record.sourceKind !== "adapter"
+    record.sourceKind !== "adapter" &&
+    record.sourceKind !== "operator"
   ) {
     throw new GroupXError("STORE_UNAVAILABLE", "Identity record has an invalid source kind");
   }

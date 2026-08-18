@@ -37,6 +37,7 @@
 | D-025 | ask 超时不加回送机制，harness 只以有界文本指导模型闭环 | Accepted |
 | D-026 | 放宽消息 wire 上限（131,072）、运行超时与互调链路默认值 | Accepted |
 | D-027 | 同步监督是房间协作配对，不是治理或审批层 | Accepted |
+| D-028 | 房间助理是 user:assistant 操作员客户端，不是名册 worker | Accepted |
 
 ## D-001：透明 Broker
 
@@ -375,7 +376,7 @@ Hermes 0.20.1 的 initialize 当前未声明 `mcpCapabilities.http`，但官方�
 
 决定：
 
-1. **第三条路由是配对，不是自然语言**。`POST /api/messages` 的可选 `supervision: { observers, mode: "live_steer" }` 在同一 `rootCorrelationId` 下并行创建 worker Turn 与 `supervision.watch` Turn。Observer 不复用用户正文当执行提示。角色只写在本次配对行，不进入 Agent 名册枚举。`sourceKind: "supervision"` 由 Broker 写入；请求方不能自报监督者。
+1. **第三条路由是配对，不是自然语言**。`POST /api/messages` 的可选 `supervision: { observers, mode: "live_steer" }` 在同一 `rootCorrelationId` 下并行创建 worker Turn 与 `supervision.watch` Turn。`local-operator` 的 `send` / `worker_dispatch` / `worker_ask` / `dispatch_event` 也可带同一字段。Observer 不复用用户正文当执行提示。角色只写在本次配对行，不进入 Agent 名册枚举。`sourceKind: "supervision"` 由 Broker 写入；请求方不能自报监督者。无群气泡时，pair 的任务引用是 `operator.dispatch` event id。助理自己不当 observer，也没有 `watch`/`steer`。
 2. **同步 = 并行 running + 有界里程碑**。`groupx.watch` 只在 Watch Turn 成功；等待 `next_milestone | terminal`，快照只含 status、deliveryCertainty、任务引用、公开消息摘要、工具名+status+toolCallId、steer 计数。不转发 token，不带推理正文或完整工具参数。
 3. **打断 = 整段 Turn cancel + 新 Worker Turn**。`steer(interrupt)` 复用现有 cancel 对账，再以 supervisor 公开指导为 `current_message` 入队；`nudge` 不打断，只在当前 worker 自然结束后 FIFO 入队。不能取消 Turn 内部某一次 native 工具。已 `delivered`/`unknown` 的原 prompt 不重放（D-016）。
 4. **steer ≠ approval**。不产生 `approval.*`，不出现允许/拒绝按钮，不改变 unrestricted argv/mode，不代答 `requestUserInput`。Watch Turn 对正在被观察的 worker 再 `ask`/`send` 返回 `SUPERVISION_STEER_REQUIRED`。
@@ -384,11 +385,32 @@ Hermes 0.20.1 的 initialize 当前未声明 `mcpCapabilities.http`，但官方�
 
 对原始需求的影响：R2 增加一条显式协作路由，不改变「自然语言不派发」。R3 不变——监督不是安全或审批层。R4 增加独立观察数据类，不与记忆层合并。R5 不把 memsuOS 治理内核搬进 Broker。
 
-协议/存储迁移：schema v8 增加 `supervision_pairs` / `supervision_pair_turns` / `supervision_steer_counts`；Envelope `sourceKind` 增加 `supervision`。
+协议/存储迁移：schema v8 增加 `supervision_pairs` / `supervision_pair_turns` / `supervision_steer_counts`；Envelope `sourceKind` 增加 `supervision`。schema v9 允许配对任务引用 `operator.dispatch`。
 
 复杂度与回滚：配对只在用户显式带 `supervision` 时创建；关闭开关即回到原两条路由。回滚可停用 watch/steer 工具面并停止写配对表，历史事件保留审计。
 
-完成标准：fixture 证明并行观察、里程碑有界、interrupt 改道、steer 上限、自报角色无效、观察包不进记忆/压缩、不产生 `approval.*`、不改 unrestricted argv。不把「真实模型抓到了漂移」写成发布 Gate。
+完成标准：fixture 证明并行观察、里程碑有界、interrupt 改道、steer 上限、自报角色无效、观察包不进记忆/压缩、不产生 `approval.*`、不改 unrestricted argv。不把「真实模型抓到了漂移」写成发布 Gate。操作员派活带 `supervision` 时复用同一 pair 合同，不新开审批面。
+
+## D-028：房间助理是操作员客户端
+
+触发：用户需要一个平级助手来控场和派活，但不能把它做成 Host Agent、第二房间或 Broker 内置模型。自然语言「清一下历史」不能直接触发房间命令。
+
+决定：
+
+1. **助理是 `user:assistant`，不是 `agent:assistant`**。binding 协议是 `local-operator`（`instance:operator` / `binding:operator`）。它与 `user:web` 平级，不进 `agents` 名册，不被 `@all` 唤醒，不吃 Context Packet，也不走成员当前回合 MCP。
+2. **用户直连助理**。侧边对话走 `/api/assistant*`，不经 Broker composer，不先落房间 `message.created`，不创建 Agent Turn。默认提示词是产品常量，每次注入；`extraInstructions` 只能追加，不能绕过禁止项。
+3. **控场默默做，派活留下有界来源**。cancel / compact / reset / restart / memory / setup 直接打 Broker，时间线没有助理发言。默认派活是 `worker_dispatch` / `worker_ask`：创建 Turn，写 durable `operator.dispatch`（可重放、可进目标 Context Packet、计入房间 usage/compact），不先造群聊气泡。禁止 prompt 只活在内存里。`send` 仅在用户明确要求发到群里时使用，作者不能伪造成 `user:web`。助理写入的 memory/identity 记录 `sourceKind` 是 `operator`，必须能经 REST/MCP 合同回读。`context.reset` 是后续上下文下限：压缩不得把 reset 前的 transcript 或检查点滚进新摘要；仅有 reset 审计事件、没有新的房间上下文时再次 reset 为 no-op。
+4. **监督可启动，但不能自己观察**。派活或 `send` 可带与 Web 相同的 `supervision`。助理没有 `watch`/`steer`，也不能把自己放进 observers。
+5. **配置在顶层 `assistant`**。禁止 `agents.assistant` 和保留 id `__assistant__`。首次引导默认启用；旧配置缺省该项时保持未启用。至少仍要有一个启用的房间 Agent。
+6. **成员 MCP 面不变**。`/mcp` 仍要求当前 Turn，仍有 watch/steer。`/mcp/operator` 是独立入口，不要求 Agent Turn。
+
+对原始需求的影响：R1 增加一个用户表面入口，不把助理做成房间成员。R2 不变——自然语言仍不派发。R3 不变——助理不是安全或审批层。R5 增加独立 operator 客户端，不把 LLM 放进 Broker 内核。
+
+协议/存储迁移：schema v9 增加 `assistant_conversation_messages` 与 `context_resets`；Envelope 增加 `operator.dispatch` / `context.reset`；`sourceKind` 增加 `operator`；预置 actor `user:assistant`。
+
+复杂度与回滚：未启用助理时房间行为与 v0.1.14 相同。回滚可停 `/api/assistant` 与 `/mcp/operator`，历史 `operator.dispatch` 和侧边对话行保留审计。
+
+完成标准：schema `documented`；无模型 fixture `probed`；用户→助理不经 `POST /api/messages`；派活可无群气泡但有可重放 `operator.dispatch`；作者是 `user:assistant`；`from`/`actor`/`provenance` 与 dated 写入失败；真实 operator `tools/call` 才 `verified`。
 
 ## 决策变更规则
 

@@ -5,6 +5,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { toSafeErrorBody, type KnownTargetOptions } from "../../contracts/index.js";
 import { McpBindingRegistry } from "../binding-registry.js";
+import type { McpBindingContext } from "../binding-registry.js";
 import type { ToolBrokerApi } from "./broker-api.js";
 import { createGroupXMcpServer } from "./tools.js";
 
@@ -32,8 +33,12 @@ export interface GroupXMcpHttpHandler {
 }
 
 export interface CreateGroupXMcpHttpHandlerOptions extends KnownTargetOptions {
-  readonly broker: ToolBrokerApi;
+  readonly broker?: ToolBrokerApi;
   readonly bindings: McpBindingRegistry;
+  readonly createServer?: (input: {
+    binding: McpBindingContext;
+    knownTargets?: KnownTargetOptions["knownTargets"];
+  }) => McpServer;
 }
 
 function readBindingId(request: IncomingMessage): string {
@@ -130,11 +135,17 @@ export function createGroupXMcpHttpHandler(
         return;
       }
 
-      const server = createGroupXMcpServer({
-        broker: options.broker,
-        binding,
-        ...(options.knownTargets === undefined ? {} : { knownTargets: options.knownTargets })
-      });
+      const server =
+        options.createServer === undefined
+          ? createGroupXMcpServer({
+              broker: options.broker!,
+              binding,
+              ...(options.knownTargets === undefined ? {} : { knownTargets: options.knownTargets })
+            })
+          : options.createServer({
+              binding,
+              ...(options.knownTargets === undefined ? {} : { knownTargets: options.knownTargets })
+            });
       const transport = new StreamableHTTPServerTransport({
         enableJsonResponse: true
       });

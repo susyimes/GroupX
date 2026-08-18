@@ -10,5 +10,6 @@ export type {
   MemoryMutationAccepted,
   MemoryPage,
   McpHttpHandler,
-  SetupApi
+  SetupApi,
+  AssistantApi
 } from "./types.js";

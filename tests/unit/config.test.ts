@@ -409,6 +409,36 @@ describe("GroupX configuration", () => {
     });
   });
 
+  it("rejects reserved assistant roster ids and loads a top-level assistant", async () => {
+    const reserved = validConfig();
+    (reserved.agents as Record<string, unknown>).assistant = {
+      driver: "codex",
+      command: "codex",
+      cwd: ".",
+      enabled: true
+    };
+    const reservedFile = await writeConfig(reserved);
+    await expect(loadConfig(reservedFile.configPath, process.cwd(), commandDependencies())).rejects.toMatchObject({
+      code: "INVALID_ENVELOPE"
+    });
+
+    const withAssistant = validConfig();
+    withAssistant.assistant = {
+      enabled: true,
+      name: "房间助理",
+      brain: { driver: "codex", command: "codex", cwd: "." },
+      extraInstructions: "先 roster"
+    };
+    const { configPath, directory } = await writeConfig(withAssistant);
+    const loaded = await loadConfig(configPath, process.cwd(), commandDependencies());
+    expect(loaded.assistant).toMatchObject({
+      enabled: true,
+      name: "房间助理",
+      extraInstructions: "先 roster"
+    });
+    expect(loaded.assistant?.brain.cwd).toBe(directory);
+  });
+
   it("parses both supported --config forms and rejects a missing path", () => {
     expect(parseConfigPath(["node", "groupx", "--config", "local.json"])).toBe("local.json");
     expect(parseConfigPath(["node", "groupx", "--config=other.json"])).toBe("other.json");

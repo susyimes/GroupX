@@ -8,6 +8,7 @@ import { AdapterRegistry } from "../adapters/registry.js";
 import {
   asTransientEnvelope,
   BUILTIN_ACTORS,
+  createCorrelationId,
   createId,
   DEFAULT_ROOM_ID,
   GROUPX_SCHEMA,
@@ -51,6 +52,8 @@ import type {
   CancelTurnFromBindingInput,
   CancelTurnOutcome,
   CompactContextFromBindingInput,
+  ResetContextFromBindingInput,
+  SupervisionStatusQuery,
   CorrelationWaitResult,
   CorrelationReadResult,
   DispatchPreparation,
@@ -195,6 +198,10 @@ export class GroupXBroker {
     string,
     Promise<import("../memory/types.js").RoomContextCompactionResult>
   >();
+  readonly #resetCommandFlights = new Map<
+    string,
+    Promise<import("../memory/types.js").RoomContextResetResult>
+  >();
   readonly #turnWaiters = new Map<string, Set<() => void>>();
   readonly #milestoneWaiters = new Map<string, Set<(milestone: SupervisionMilestone) => void>>();
   readonly #watchCursors = new Map<string, number>();
@@ -268,7 +275,12 @@ export class GroupXBroker {
             observers: input.request.supervision.observers.map(toTarget)
           };
     const binding = this.#store.getSessionBinding(input.bindingId);
-    const sourceKind = binding?.protocol === "local-rest" ? "web" : "mcp";
+    const sourceKind =
+      binding?.protocol === "local-rest"
+        ? "web"
+        : binding?.protocol === "local-operator"
+          ? "operator"
+          : "mcp";
     const outcome = this.#store.acceptMessageWithDisposition({
       sourceBindingId: input.bindingId,
       clientCommandId: input.request.clientCommandId,
@@ -286,7 +298,12 @@ export class GroupXBroker {
       ...(this.#acceptMessageLimits === undefined
         ? {}
         : { limits: this.#acceptMessageLimits }),
-      ...(supervision === undefined ? {} : { supervision })
+      ...(supervision === undefined ? {} : { supervision }),
+      ...(input.sourceEventType === undefined ? {} : { sourceEventType: input.sourceEventType }),
+      ...(input.operation === undefined ? {} : { operation: input.operation }),
+      ...(input.existingSourceEventId === undefined
+        ? {}
+        : { existingSourceEventId: input.existingSourceEventId })
     });
 
     if (outcome.disposition === "accepted") {
@@ -371,6 +388,133 @@ export class GroupXBroker {
       if (this.#contextCommandFlights.get(commandKey) === flight) {
         this.#contextCommandFlights.delete(commandKey);
       }
+    }
+  }
+
+  async resetContextFromBinding(
+    input: ResetContextFromBindingInput
+  ): Promise<import("../memory/types.js").RoomContextResetResult> {
+    this.#assertOpen();
+    if (!this.#contextController) {
+      throw new GroupXError("SESSION_NOT_AVAILABLE", "Room context controller is unavailable");
+    }
+    const roomId = input.roomId ?? this.#defaultRoomId;
+    const resetNativeSessions = input.resetNativeSessions === true;
+    const command = this.#store.beginClientCommand<
+      import("../memory/types.js").RoomContextResetResult
+    >({
+      sourceBindingId: input.bindingId,
+      clientCommandId: input.clientCommandId,
+      commandType: "context.reset",
+      canonicalPayload: { roomId, resetNativeSessions },
+      acceptedAt: this.#clock.now()
+    });
+    if (command.disposition === "replayed") return command.result;
+
+    const commandKey = JSON.stringify([input.bindingId, input.clientCommandId]);
+    const existingFlight = this.#resetCommandFlights.get(commandKey);
+    if (existingFlight) return existingFlight;
+    const flight = this.#completeResetCommand({
+      ...input,
+      roomId,
+      resetNativeSessions
+    });
+    this.#resetCommandFlights.set(commandKey, flight);
+    try {
+      return await flight;
+    } finally {
+      if (this.#resetCommandFlights.get(commandKey) === flight) {
+        this.#resetCommandFlights.delete(commandKey);
+      }
+    }
+  }
+
+  supervisionStatus(input: SupervisionStatusQuery): {
+    pairId: string;
+    correlationId: string;
+    mode: "live_steer";
+    workers: import("../core/supervision.js").SupervisionSnapshot[];
+    observers: Array<{ actorId: string; turnId: string; status: string }>;
+  } {
+    this.#assertOpen();
+    const pair =
+      input.pairId !== undefined
+        ? this.#store.getSupervisionPair(input.pairId)
+        : input.correlationId !== undefined
+          ? this.#store.getSupervisionPairByCorrelation(input.correlationId)
+          : undefined;
+    if (!pair) {
+      throw new GroupXError("SUPERVISION_PAIR_INVALID", "The supervision pair was not found");
+    }
+    const members = this.#store.listSupervisionPairTurns(pair.pairId);
+    const workers = members
+      .filter((member) => member.role === "worker")
+      .map((member) => {
+        const turn = this.#store.getTurn(member.turnId);
+        if (!turn) {
+          throw new GroupXError("STORE_UNAVAILABLE", "A supervision worker Turn is missing");
+        }
+        return this.#buildSupervisionSnapshot(turn);
+      });
+    const observers = members
+      .filter((member) => member.role === "observer")
+      .map((member) => {
+        const turn = this.#store.getTurn(member.turnId);
+        return {
+          actorId: member.actorId,
+          turnId: member.turnId,
+          status: turn?.status ?? "unknown"
+        };
+      });
+    return {
+      pairId: pair.pairId,
+      correlationId: pair.correlationId,
+      mode: pair.mode,
+      workers,
+      observers
+    };
+  }
+
+  async #completeResetCommand(
+    input: ResetContextFromBindingInput & { roomId: string; resetNativeSessions: boolean }
+  ): Promise<import("../memory/types.js").RoomContextResetResult> {
+    try {
+      const result = this.#contextController!.resetNow(input.roomId, input.resetNativeSessions);
+      if (result.reset) {
+        const event = this.#store.appendDurableEvent({
+          roomId: input.roomId,
+          eventType: "context.reset",
+          actorId: BUILTIN_ACTORS.system.actorId,
+          targets: [],
+          correlationId: createCorrelationId(),
+          occurredAt: this.#clock.now(),
+          body: {
+            throughSeq: result.throughSeq,
+            resetNativeSessions: input.resetNativeSessions
+          },
+          provenance: { sourceKind: "operator", labels: ["context-reset"] }
+        });
+        await this.#publishStored(event);
+        if (input.resetNativeSessions && this.#agentController) {
+          for (const adapter of this.#adapters.list()) {
+            await this.#agentController.restart(adapter.actorId);
+          }
+        }
+      }
+      if (this.#storeWritesFenced) {
+        throw new GroupXError(
+          "SESSION_NOT_AVAILABLE",
+          "Broker closed before the context command receipt was persisted"
+        );
+      }
+      return this.#store.completeClientCommand({
+        sourceBindingId: input.bindingId,
+        clientCommandId: input.clientCommandId,
+        result
+      });
+    } catch (error) {
+      this.#report(error, { operation: "context" });
+      throw error;
     }
   }
 
@@ -1014,7 +1158,8 @@ export class GroupXBroker {
       ...this.#pumps.values(),
       ...this.#cancelFlights.values(),
       ...this.#cancelCommandFlights.values(),
-      ...this.#contextCommandFlights.values()
+      ...this.#contextCommandFlights.values(),
+      ...this.#resetCommandFlights.values()
     ]).then(() => true);
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timedOut = new Promise<boolean>((resolve) => {
@@ -1884,8 +2029,10 @@ export class GroupXBroker {
     return binding;
   }
 
-  #sourceKindForBinding(binding: { protocol: string }): "web" | "mcp" {
-    return binding.protocol === "local-rest" ? "web" : "mcp";
+  #sourceKindForBinding(binding: { protocol: string }): "web" | "mcp" | "operator" {
+    if (binding.protocol === "local-rest") return "web";
+    if (binding.protocol === "local-operator") return "operator";
+    return "mcp";
   }
 
   #identityRecordForBinding(

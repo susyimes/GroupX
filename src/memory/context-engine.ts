@@ -1,5 +1,5 @@
 import { createId } from "../core/envelope.js";
-import { isRoomContextMessage } from "./context-messages.js";
+import { contentFromRoomContextMessage, isRoomContextMessage } from "./context-messages.js";
 import { GroupXError, toGroupXError } from "../core/errors.js";
 import type { StoredEventRecord, SummaryRecord } from "../storage/types.js";
 import { ContextPacketBuilder } from "./context-packet.js";
@@ -8,6 +8,7 @@ import type {
   ContextPacket,
   ContextPacketStore,
   RoomContextCompactionResult,
+  RoomContextResetResult,
   RoomContextUsage
 } from "./types.js";
 
@@ -107,6 +108,12 @@ export interface RoomContextEngineOptions {
       expectedPreviousSummaryId?: string;
       createdAt?: string;
     }): SummaryRecord;
+    recordContextReset(input: {
+      roomId: string;
+      throughSeq: number;
+      resetNativeSessions?: boolean;
+      createdAt?: string;
+    }): import("../storage/types.js").ContextResetRecord;
   };
   summarizer: RoomContextSummarizer;
   maxChars: number;
@@ -144,17 +151,6 @@ function waitForRetry(delayMs: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-function messageContent(event: StoredEventRecord): string {
-  if (event.eventType !== "message.created") {
-    throw new GroupXError("INVALID_ENVELOPE", "Compaction source must be a message event");
-  }
-  const body = event.body as Record<string, unknown> | null;
-  if (body === null || typeof body.content !== "string") {
-    throw new GroupXError("STORE_UNAVAILABLE", "Compaction message has no string content");
-  }
-  return body.content;
-}
-
 function toSummaryMessage(event: StoredEventRecord): RoomSummaryMessage {
   return {
     seq: event.seq,
@@ -162,7 +158,7 @@ function toSummaryMessage(event: StoredEventRecord): RoomSummaryMessage {
     actorId: event.actorId,
     actorDisplayName: event.actorDisplayName,
     occurredAt: event.occurredAt,
-    content: messageContent(event)
+    content: contentFromRoomContextMessage(event)
   };
 }
 
@@ -323,13 +319,14 @@ export class RoomContextEngine {
   inspectUsage(roomId: string): RoomContextUsage {
     this.#assertOpen();
     const throughSeq = this.#store.getRoomHighWaterSeq(roomId);
-    const summary = this.#store.getActiveSummary(roomId, throughSeq);
+    const resetThroughSeq = this.#store.getLatestContextResetThroughSeq(roomId);
+    const summary = this.#usableSummary(roomId, throughSeq, resetThroughSeq);
     let estimatedCharacters = CONTEXT_PACKET_ESTIMATE_BASE_CHARS;
-    if (summary) {
+    if (summary && summary.throughSeq > resetThroughSeq) {
       estimatedCharacters += summary.content.length + SUMMARY_ESTIMATE_OVERHEAD_CHARS;
     }
     let uncompactedMessageCount = 0;
-    let cursor = summary?.throughSeq ?? 0;
+    let cursor = Math.max(summary?.throughSeq ?? 0, resetThroughSeq);
     while (cursor < throughSeq) {
       const pageStart = cursor;
       const page = this.#store.listEventsThrough({
@@ -361,7 +358,33 @@ export class RoomContextEngine {
       utilizationPercent,
       uncompactedMessageCount,
       ...(summary === undefined ? {} : { summaryThroughSeq: summary.throughSeq }),
+      ...(resetThroughSeq > 0 ? { resetThroughSeq } : {}),
       compactable: uncompactedMessageCount > this.#manualRetainMessages
+    };
+  }
+
+  resetNow(roomId: string, resetNativeSessions = false): RoomContextResetResult {
+    this.#assertOpen();
+    const throughSeq = this.#store.getRoomHighWaterSeq(roomId);
+    const current = this.#store.getLatestContextResetThroughSeq(roomId);
+    if (
+      throughSeq < 1 ||
+      current >= throughSeq ||
+      (current > 0 && !this.#hasRoomContextMessageAfter(roomId, current, throughSeq))
+    ) {
+      return {
+        reset: false,
+        throughSeq,
+        resetNativeSessions,
+        usage: this.inspectUsage(roomId)
+      };
+    }
+    this.#store.recordContextReset({ roomId, throughSeq, resetNativeSessions });
+    return {
+      reset: true,
+      throughSeq,
+      resetNativeSessions,
+      usage: this.inspectUsage(roomId)
     };
   }
 
@@ -370,10 +393,11 @@ export class RoomContextEngine {
   async compactNow(roomId: string): Promise<RoomContextCompactionResult> {
     this.#assertOpen();
     const throughSeq = this.#store.getRoomHighWaterSeq(roomId);
-    const before = this.#store.getActiveSummary(roomId, throughSeq);
+    const resetThroughSeq = this.#store.getLatestContextResetThroughSeq(roomId);
+    const before = this.#usableSummary(roomId, throughSeq, resetThroughSeq);
     const cutoff = this.#manualCompactionCutoff(
       roomId,
-      before?.throughSeq ?? 0,
+      Math.max(before?.throughSeq ?? 0, resetThroughSeq),
       throughSeq
     );
     if (cutoff === undefined) {
@@ -381,15 +405,15 @@ export class RoomContextEngine {
     }
 
     for (let pass = 0; pass < this.#maxPasses; pass += 1) {
-      const current = this.#store.getActiveSummary(roomId, throughSeq);
+      const current = this.#usableSummary(roomId, throughSeq, resetThroughSeq);
       if ((current?.throughSeq ?? 0) >= cutoff) break;
       const previousThroughSeq = current?.throughSeq ?? 0;
       await this.#compactSingleFlight(roomId, throughSeq, undefined, cutoff);
-      const advanced = this.#store.getActiveSummary(roomId, throughSeq)?.throughSeq ?? 0;
+      const advanced = this.#usableSummary(roomId, throughSeq, resetThroughSeq)?.throughSeq ?? 0;
       if (advanced <= previousThroughSeq) break;
     }
 
-    const after = this.#store.getActiveSummary(roomId, throughSeq);
+    const after = this.#usableSummary(roomId, throughSeq, resetThroughSeq);
     return {
       compacted:
         after !== undefined &&
@@ -432,14 +456,15 @@ export class RoomContextEngine {
     packet: ContextPacket | undefined,
     forcedCutoff?: number
   ): Promise<void> {
-    const previous = this.#store.getActiveSummary(roomId, throughSeq);
+    const resetThroughSeq = this.#store.getLatestContextResetThroughSeq(roomId);
+    const previous = this.#usableSummary(roomId, throughSeq, resetThroughSeq);
     const firstRetainedSeq =
       packet?.sections.unreadTranscript.reduce(
         (minimum, entry) => Math.min(minimum, entry.seq ?? Number.MAX_SAFE_INTEGER),
         throughSeq
       ) ?? throughSeq;
     const desiredCutoff = forcedCutoff ?? Math.max(0, firstRetainedSeq - 1);
-    const afterSeq = previous?.throughSeq ?? 0;
+    const afterSeq = Math.max(previous?.throughSeq ?? 0, resetThroughSeq);
     if (desiredCutoff <= afterSeq) {
       throw new GroupXError(
         "CONTEXT_BUDGET_EXCEEDED",
@@ -603,8 +628,10 @@ export class RoomContextEngine {
   #hasCompactableHistory(input: Omit<BuildContextPacketInput, "maxChars">): boolean {
     const cursorSeq =
       this.#store.getDeliveryCursor(input.targetActorId, input.roomId)?.lastDeliveredSeq ?? 0;
-    const summarySeq = this.#store.getActiveSummary(input.roomId, input.throughSeq)?.throughSeq ?? 0;
-    let afterSeq = Math.max(cursorSeq, summarySeq);
+    const resetSeq = this.#store.getLatestContextResetThroughSeq(input.roomId);
+    const summarySeq =
+      this.#usableSummary(input.roomId, input.throughSeq, resetSeq)?.throughSeq ?? 0;
+    let afterSeq = Math.max(cursorSeq, summarySeq, resetSeq);
     const currentEventId = input.currentEvent?.eventId;
     while (afterSeq < input.throughSeq) {
       const page = this.#store.listEventsThrough({
@@ -622,6 +649,28 @@ export class RoomContextEngine {
       }
       if (page.nextAfterSeq <= afterSeq || !page.hasMore) return false;
       afterSeq = page.nextAfterSeq;
+    }
+    return false;
+  }
+
+  #usableSummary(roomId: string, throughSeq: number, resetThroughSeq: number) {
+    const summary = this.#store.getActiveSummary(roomId, throughSeq);
+    if (!summary || summary.throughSeq <= resetThroughSeq) return undefined;
+    return summary;
+  }
+
+  #hasRoomContextMessageAfter(roomId: string, afterSeq: number, throughSeq: number): boolean {
+    let cursor = afterSeq;
+    while (cursor < throughSeq) {
+      const page = this.#store.listEventsThrough({
+        roomId,
+        afterSeq: cursor,
+        throughSeq,
+        limit: EVENT_PAGE_LIMIT
+      });
+      if (page.events.some((event) => isRoomContextMessage(event))) return true;
+      if (page.nextAfterSeq <= cursor || !page.hasMore) return false;
+      cursor = page.nextAfterSeq;
     }
     return false;
   }

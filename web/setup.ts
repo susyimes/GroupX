@@ -15,10 +15,25 @@ interface AgentDraft {
   enabled: boolean;
 }
 
+interface AssistantDraft {
+  enabled: boolean;
+  name: string;
+  brain: {
+    driver: AgentDriver;
+    command: {
+      executable: string;
+      prefixArgs: string[];
+    };
+    cwd: string;
+  };
+  extraInstructions?: string;
+}
+
 interface ConfigDraft {
   serverPort: number;
   storagePath: string;
   agents: AgentDraft[];
+  assistant?: AssistantDraft;
 }
 
 interface SetupSnapshot {
@@ -94,9 +109,26 @@ const savedPath = requiredElement<HTMLElement>("saved-path");
 const successRoomLink = requiredElement<HTMLAnchorElement>("success-room-link");
 const editAgain = requiredElement<HTMLButtonElement>("edit-again");
 const themeToggle = requiredElement<HTMLButtonElement>("theme-toggle");
+const assistantEnabled = requiredElement<HTMLInputElement>("assistant-enabled");
+const assistantName = requiredElement<HTMLInputElement>("assistant-name");
+const assistantDriver = requiredElement<HTMLSelectElement>("assistant-driver");
+const assistantCwd = requiredElement<HTMLInputElement>("assistant-cwd");
+const assistantCommand = requiredElement<HTMLInputElement>("assistant-command");
+const assistantEntrypoint = requiredElement<HTMLInputElement>("assistant-entrypoint");
+const assistantExtra = requiredElement<HTMLTextAreaElement>("assistant-extra");
+const assistantCard = requiredElement<HTMLElement>("assistant");
 
 let snapshot: SetupSnapshot | undefined;
 let agents: AgentDraft[] = [];
+let assistant: AssistantDraft = {
+  enabled: false,
+  name: "房间助理",
+  brain: {
+    driver: "codex",
+    command: { executable: "codex", prefixArgs: [] },
+    cwd: "."
+  }
+};
 let saving = false;
 let agentMemoriesLoading = false;
 let agentMemoriesLoaded = false;
@@ -157,6 +189,46 @@ function cloneAgent(agent: AgentDraft): AgentDraft {
     ...agent,
     command: { executable: agent.command.executable, prefixArgs: [...agent.command.prefixArgs] }
   };
+}
+
+function cloneAssistant(value: AssistantDraft): AssistantDraft {
+  return {
+    enabled: value.enabled,
+    name: value.name,
+    brain: {
+      driver: value.brain.driver,
+      command: {
+        executable: value.brain.command.executable,
+        prefixArgs: [...value.brain.command.prefixArgs]
+      },
+      cwd: value.brain.cwd
+    },
+    ...(value.extraInstructions === undefined ? {} : { extraInstructions: value.extraInstructions })
+  };
+}
+
+function defaultAssistant(drivers: SetupSnapshot["drivers"]): AssistantDraft {
+  const driver = drivers.find((probe) => probe.found)?.driver ?? "codex";
+  return {
+    enabled: false,
+    name: "房间助理",
+    brain: {
+      driver,
+      command: { executable: driver, prefixArgs: [] },
+      cwd: "."
+    }
+  };
+}
+
+function fillAssistantForm(): void {
+  assistantEnabled.checked = assistant.enabled;
+  assistantName.value = assistant.name;
+  assistantDriver.value = assistant.brain.driver;
+  assistantCwd.value = assistant.brain.cwd;
+  assistantCommand.value = assistant.brain.command.executable;
+  assistantEntrypoint.value = assistant.brain.command.prefixArgs[0] ?? "";
+  assistantExtra.value = assistant.extraInstructions ?? "";
+  assistantCard.classList.toggle("is-disabled", !assistant.enabled);
 }
 
 function uniqueId(driver: AgentDriver): string {
@@ -682,6 +754,9 @@ async function loadSetup(): Promise<void> {
     if (!response.ok) throw new Error(await readError(response));
     snapshot = await response.json() as SetupSnapshot;
     agents = snapshot.config.agents.map(cloneAgent);
+    assistant = snapshot.config.assistant
+      ? cloneAssistant(snapshot.config.assistant)
+      : defaultAssistant(snapshot.drivers);
     runtimeAgentIds.clear();
     for (const agent of snapshot.config.agents) runtimeAgentIds.add(agent.id);
     serverPort.value = String(snapshot.config.serverPort);
@@ -690,6 +765,7 @@ async function loadSetup(): Promise<void> {
     configPath.title = snapshot.configPath;
     renderProbes(snapshot.drivers);
     renderAgents();
+    fillAssistantForm();
     if (snapshot.runtimeActive) {
       backRoom.hidden = false;
       successRoomLink.hidden = false;
@@ -706,6 +782,9 @@ async function loadSetup(): Promise<void> {
     }
     loadingState.hidden = true;
     form.hidden = false;
+    if (window.location.hash === "#assistant") {
+      assistantCard.scrollIntoView({ block: "start" });
+    }
     void loadAgentMemories();
   } catch (error) {
     loadingState.hidden = true;
@@ -724,10 +803,24 @@ async function saveSetup(): Promise<void> {
     return;
   }
   const port = Number(serverPort.value);
+  const extra = assistantExtra.value.trim();
   const config: ConfigDraft = {
     serverPort: port,
     storagePath: storagePath.value,
-    agents: agents.map(cloneAgent)
+    agents: agents.map(cloneAgent),
+    assistant: {
+      enabled: assistant.enabled,
+      name: assistantName.value.trim() || "房间助理",
+      brain: {
+        driver: assistant.brain.driver,
+        command: {
+          executable: assistantCommand.value.trim() || assistant.brain.driver,
+          prefixArgs: assistantEntrypoint.value.trim().length === 0 ? [] : [assistantEntrypoint.value.trim()]
+        },
+        cwd: assistantCwd.value.trim() || "."
+      },
+      ...(extra.length === 0 ? {} : { extraInstructions: extra })
+    }
   };
   saving = true;
   saveButton.disabled = true;
@@ -792,6 +885,41 @@ document.querySelectorAll<HTMLButtonElement>("[data-add-driver]").forEach((butto
   });
 });
 requiredElement<HTMLButtonElement>("add-agent").addEventListener("click", () => addAgent("codex"));
+assistantEnabled.addEventListener("change", () => {
+  assistant.enabled = assistantEnabled.checked;
+  assistantCard.classList.toggle("is-disabled", !assistant.enabled);
+});
+assistantName.addEventListener("input", () => {
+  assistant.name = assistantName.value;
+});
+assistantDriver.addEventListener("change", () => {
+  if (!isDriver(assistantDriver.value)) return;
+  const previous = assistant.brain.driver;
+  assistant.brain.driver = assistantDriver.value;
+  if (assistantCommand.value === previous && assistantEntrypoint.value.trim().length === 0) {
+    assistant.brain.command.executable = assistant.brain.driver;
+    assistantCommand.value = assistant.brain.driver;
+  }
+});
+assistantCwd.addEventListener("input", () => {
+  assistant.brain.cwd = assistantCwd.value;
+});
+assistantCommand.addEventListener("input", () => {
+  assistant.brain.command.executable = assistantCommand.value;
+});
+assistantEntrypoint.addEventListener("input", () => {
+  assistant.brain.command.prefixArgs = assistantEntrypoint.value.trim().length === 0
+    ? []
+    : [assistantEntrypoint.value.trim()];
+});
+assistantExtra.addEventListener("input", () => {
+  const extra = assistantExtra.value.trim();
+  if (extra.length === 0) {
+    delete assistant.extraInstructions;
+  } else {
+    assistant.extraInstructions = extra;
+  }
+});
 editAgain.addEventListener("click", () => {
   successState.hidden = true;
   form.hidden = false;

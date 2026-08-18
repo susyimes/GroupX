@@ -40,6 +40,12 @@ import {
   parseRetractMemoryRequest,
   parseSupersedeIdentityRequest,
   parseSupersedeMemoryRequest,
+  parseAssistantCancelRequest,
+  parseAssistantCancelResult,
+  parseAssistantConversationPage,
+  parseAssistantMessageAccepted,
+  parseAssistantMessageRequest,
+  parseAssistantSnapshot,
   resolveEventCursor,
   toSafeErrorBody
 } from "../../contracts/index.js";
@@ -391,7 +397,9 @@ export class GroupXHttpServer {
     readonly maxRequestBodyBytes: number;
     readonly gracefulCloseTimeoutMs: number;
     readonly mcpHandler?: McpHttpHandler;
+    readonly operatorMcpHandler?: McpHttpHandler;
     readonly setupApi?: GroupXHttpServerOptions["setupApi"];
+    readonly assistantApi?: GroupXHttpServerOptions["assistantApi"];
     readonly runtimeIdentity?: GroupXHttpServerOptions["runtimeIdentity"];
   };
   readonly #server: Server;
@@ -422,7 +430,11 @@ export class GroupXHttpServer {
         "gracefulCloseTimeoutMs"
       ),
       ...(options.mcpHandler === undefined ? {} : { mcpHandler: options.mcpHandler }),
+      ...(options.operatorMcpHandler === undefined
+        ? {}
+        : { operatorMcpHandler: options.operatorMcpHandler }),
       ...(options.setupApi === undefined ? {} : { setupApi: options.setupApi }),
+      ...(options.assistantApi === undefined ? {} : { assistantApi: options.assistantApi }),
       ...(options.runtimeIdentity === undefined
         ? {}
         : { runtimeIdentity: options.runtimeIdentity })
@@ -558,6 +570,15 @@ export class GroupXHttpServer {
       return;
     }
 
+    if (url.pathname === "/mcp/operator" && this.#options.operatorMcpHandler) {
+      if (method !== "GET" && method !== "POST" && method !== "DELETE") {
+        methodNotAllowed(response, ["GET", "POST", "DELETE"]);
+        return;
+      }
+      await this.#options.operatorMcpHandler.handle(request, response);
+      return;
+    }
+
     if (url.pathname === "/api/events") {
       if (method !== "GET") {
         methodNotAllowed(response, ["GET"]);
@@ -651,6 +672,70 @@ export class GroupXHttpServer {
           return;
         }
         return methodNotAllowed(response, ["GET", "POST"]);
+      }
+      if (url.pathname === "/api/assistant") {
+        if (!this.#options.assistantApi) {
+          writeProblem(response, 404, "The assistant API is not available.");
+          return;
+        }
+        if (method !== "GET") return methodNotAllowed(response, ["GET"]);
+        writeJson(
+          response,
+          200,
+          validateBrokerOutput(parseAssistantSnapshot, await this.#options.assistantApi.snapshot(abort.signal))
+        );
+        return;
+      }
+      if (url.pathname === "/api/assistant/messages") {
+        if (!this.#options.assistantApi) {
+          writeProblem(response, 404, "The assistant API is not available.");
+          return;
+        }
+        if (method === "GET") {
+          writeJson(
+            response,
+            200,
+            validateBrokerOutput(
+              parseAssistantConversationPage,
+              await this.#options.assistantApi.listMessages(abort.signal)
+            )
+          );
+          return;
+        }
+        if (method === "POST") {
+          const body = parseAssistantMessageRequest(
+            await readJsonBody(request, this.#options.maxRequestBodyBytes)
+          );
+          writeJson(
+            response,
+            200,
+            validateBrokerOutput(
+              parseAssistantMessageAccepted,
+              await this.#options.assistantApi.postMessage(body, abort.signal)
+            )
+          );
+          return;
+        }
+        return methodNotAllowed(response, ["GET", "POST"]);
+      }
+      if (url.pathname === "/api/assistant/cancel") {
+        if (!this.#options.assistantApi) {
+          writeProblem(response, 404, "The assistant API is not available.");
+          return;
+        }
+        if (method !== "POST") return methodNotAllowed(response, ["POST"]);
+        const body = parseAssistantCancelRequest(
+          await readJsonBody(request, this.#options.maxRequestBodyBytes)
+        );
+        writeJson(
+          response,
+          200,
+          validateBrokerOutput(
+            parseAssistantCancelResult,
+            await this.#options.assistantApi.cancel(body, abort.signal)
+          )
+        );
+        return;
       }
       if (url.pathname === "/api/messages") {
         if (method !== "POST") return methodNotAllowed(response, ["POST"]);

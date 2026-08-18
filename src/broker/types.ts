@@ -48,6 +48,9 @@ export interface AcceptBrokerMessageInput {
   correlationId?: string;
   parentTurnId?: string;
   hopCount?: number;
+  sourceEventType?: "message.created" | "operator.dispatch";
+  operation?: "send" | "worker_dispatch" | "worker_ask" | "dispatch_event";
+  existingSourceEventId?: string;
 }
 
 export interface BrokerSessionProvider {
@@ -75,6 +78,10 @@ export interface BrokerContextProvider {
 export interface BrokerContextController {
   inspectUsage(roomId: string): import("../memory/types.js").RoomContextUsage;
   compactNow(roomId: string): Promise<import("../memory/types.js").RoomContextCompactionResult>;
+  resetNow(
+    roomId: string,
+    resetNativeSessions?: boolean
+  ): import("../memory/types.js").RoomContextResetResult;
 }
 
 export interface BrokerDatedMemoryController {
@@ -164,6 +171,18 @@ export interface CompactContextFromBindingInput {
   bindingId: string;
   clientCommandId: string;
   roomId?: string;
+}
+
+export interface ResetContextFromBindingInput {
+  bindingId: string;
+  clientCommandId: string;
+  roomId?: string;
+  resetNativeSessions?: boolean;
+}
+
+export interface SupervisionStatusQuery {
+  pairId?: string;
+  correlationId?: string;
 }
 
 export interface CorrelationReadResult {

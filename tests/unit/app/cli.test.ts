@@ -160,6 +160,11 @@ describe("GroupX browser setup service", () => {
       { driver: "hermes", found: false },
       { driver: "claude", found: false }
     ]);
+    expect(snapshot.config.assistant).toMatchObject({
+      enabled: true,
+      name: "房间助理",
+      brain: { driver: "codex" }
+    });
   });
 
   it("still returns an editable starter when no default CLI command is detected", async () => {
@@ -273,6 +278,80 @@ describe("GroupX browser setup service", () => {
     expect(result.restartRequired).toBe(true);
     expect(config.limits.queuePerAgent).toBe(7);
     expect(config.timeouts.askMs).toBe(45_000);
+
+    const snapshot = await service.snapshot(new AbortController().signal);
+    expect(snapshot.config.assistant).toMatchObject({ enabled: false });
+  });
+
+  it("does not enable the assistant when an existing config omitted it", async () => {
+    const written = new Map<string, string>();
+    const target = path.resolve("C:\\workspace", "groupx.json");
+    written.set(target, JSON.stringify({
+      agents: { codex: { command: "codex", cwd: ".", enabled: true } }
+    }));
+    const service = new GroupXConfigSetupService({
+      configPath: target,
+      dependencies: setupDependencies(written)
+    });
+
+    const snapshot = await service.snapshot(new AbortController().signal);
+    expect(snapshot.config.assistant).toMatchObject({ enabled: false });
+  });
+
+  it("preserves a stored assistant when the save draft omits the card", async () => {
+    const written = new Map<string, string>();
+    const target = path.resolve("C:\\workspace", "groupx.json");
+    written.set(target, JSON.stringify({
+      agents: { codex: { command: "codex", cwd: ".", enabled: true } },
+      assistant: {
+        enabled: true,
+        name: "调度员",
+        brain: { driver: "codex", command: "codex", cwd: "." }
+      }
+    }));
+    const service = new GroupXConfigSetupService({
+      configPath: target,
+      runtimeActive: true,
+      dependencies: setupDependencies(written)
+    });
+
+    await service.save(
+      saveRequest([{
+        id: "codex",
+        driver: "codex",
+        name: "",
+        command: { executable: "codex", prefixArgs: [] },
+        cwd: ".",
+        enabled: true
+      }]),
+      new AbortController().signal
+    );
+
+    const config = JSON.parse(written.get(target) ?? "{}") as {
+      assistant?: { enabled: boolean; name: string };
+    };
+    expect(config.assistant).toMatchObject({ enabled: true, name: "调度员" });
+  });
+
+  it("rejects reserved assistant roster ids", async () => {
+    const written = new Map<string, string>();
+    const target = path.resolve("C:\\workspace", "groupx.json");
+    const service = new GroupXConfigSetupService({
+      configPath: target,
+      dependencies: setupDependencies(written)
+    });
+
+    expect(() => service.save(
+      saveRequest([{
+        id: "assistant",
+        driver: "codex",
+        name: "",
+        command: { executable: "codex", prefixArgs: [] },
+        cwd: ".",
+        enabled: true
+      }]),
+      new AbortController().signal
+    )).toThrowError(expect.objectContaining({ code: "INVALID_ENVELOPE" }));
   });
 
   it("falls back to a repairable starter snapshot when an existing command cannot be represented", async () => {

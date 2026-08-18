@@ -213,7 +213,7 @@ binding 是 provenance/correlation handle，不是 secret、token 或本机抗�
 | --- | --- | --- |
 | W-001 | 默认监听 | `127.0.0.1`；非 loopback 不属于 v0.1 |
 | W-002 | bootstrap | 回显 selected transport、Agent process/session health、capability、cursor |
-| W-003 | composer | 只能选择 recipients 与可选 observer chips，不能设置 sender/transport/access；observer 不得与本次 worker 重叠 |
+| W-003 | composer | 只能选择 recipients 与可选 observer chips，不能设置 sender/transport/access；observer 不得与本次 worker 重叠；助理不进目标芯片 |
 | W-004 | transcript | sender badge、final/partial/failed 状态正确；监督 pair/observed/steer 可见且无审批按钮 |
 | W-005 | approval surface | 没有批准/拒绝按钮、pending 卡片或 approval API 调用；steer 文案写明打断的是整轮 |
 | W-006 | 模型输出 | 作为普通文本节点，不执行 HTML/script |
@@ -221,6 +221,8 @@ binding 是 provenance/correlation handle，不是 secret、token 或本机抗�
 | W-008 | 首次 init/start | 无配置时打开 loopback 引导页；添加并保存后生成严格 groupx.json，再启动主 UI |
 | W-009 | 多实例名册 | 可添加两个以上 Codex App Server，稳定 id 唯一，name/cwd 独立；保存后 runtime 各有独立 actor/binding/session |
 | W-010 | 运行中 Agent 设置 | `/setup` 载入现有名册，保存返回 restartRequired；主房间立即把新增启用项计入总数并显示 `pending_restart`，不可作为消息目标；不热换当前 session，不出现 access/approval/sandbox 控件 |
+| W-014 | 房间助理侧边对话 | 用户→助理走 `/api/assistant*`，不经 `POST /api/messages`，不落房间气泡；未启用时引导 `/setup#assistant` |
+| W-015 | 助理配置 | 首次引导默认启用顶层 `assistant`；旧配置缺省该项保持未启用；拒绝 `agents.assistant` / `__assistant__` |
 | W-011 | `groupx update` | 查询 npm latest；已最新/本地更高不安装，`--check` 无副作用，有更新时锁定精确版本并通过 shell-free npm 入口全局安装 |
 | W-012 | 单房间上下文控件 | 输入窗口右上角显示明确标注的字符估算；手动压缩经 Broker/clientCommandId 单飞，保留最近消息与完整 transcript，reasoning/tool 记录不进入摘要 |
 | W-013 | Agent 设置两层记忆 | core 独立展示并可维护；dated 只读按本地日期分组并允许显式移除；公共记忆仍在群聊左栏 |
@@ -253,7 +255,22 @@ Broker 指标不含模型网络/推理；只测 Structured session startup/reuse
 
 未实际测量前不得写成达到。
 
-## 15. 里程碑 Gate
+## 15. 房间助理与操作员面
+
+| ID | 用例 | 通过标准 |
+| --- | --- | --- |
+| O-001 | 侧边对话 | 用户正文只进 `assistant_conversation_messages`，Broker 不因此创建房间 Turn |
+| O-002 | 默认派活 | `worker_dispatch` 写可重放 `operator.dispatch`，无 `message.created` 聊天气泡；content 可进目标 Context Packet |
+| O-003 | 作者 | send / dispatch 的 actor 是 `user:assistant`，不能写成 `user:web` |
+| O-004 | 禁止字段 | 操作员写请求带 `from`/`actor`/`provenance` 返回 `SENDER_FIELD_FORBIDDEN`；extraInstructions 不能绕过 |
+| O-005 | dated | 助理不能生成或改写 dated memory；只能 search 或 retract |
+| O-006 | 监督 | 助理可带 `supervision` 启动配对，但不能当 observer，也没有 watch/steer |
+| O-007 | 验收语言 | schema `documented`；无模型 fixture `probed`；真实 operator `tools/call` 才 `verified` |
+| O-008 | 派活后上下文 | `operator.dispatch` 计入 `context_usage` / compact，不抛 `INVALID_ENVELOPE` |
+| O-009 | 操作员记忆 | 助理写入的 memory/identity `sourceKind` 为 `operator`，REST/MCP 与 Web 列表可回读 |
+| O-010 | reset 下限 | reset 后 compact/usage 不读 `throughSeq <= resetThroughSeq` 的摘要或更早房间消息；仅有 `context.reset` 审计事件时再次 reset 为 no-op |
+
+## 16. 里程碑 Gate
 
 ### M0
 
@@ -289,7 +306,7 @@ Broker 指标不含模型网络/推理；只测 Structured session startup/reuse
 - A2A 只作为边缘 Adapter；
 - 不改变 fixed unrestricted 与 native interaction fail-turn 合同，除非另立版本决策。
 
-## 16. 测试交付
+## 17. 测试交付
 
 每次 Gate 交付：
 

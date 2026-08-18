@@ -58,6 +58,7 @@ actors(
 
 ```text
 user:web
+user:assistant
 agent:codex
 agent:grok
 agent:kimi
@@ -270,7 +271,7 @@ memory_records(
 )
 ```
 
-`agent_memory_type` 只允许 `core | dated`，仅在 `scope_type=agent` 时非空。schema v6 把升级前已有的 Agent 独立记忆迁移为 `core`，room/correlation memory 保持空值。
+`agent_memory_type` 只允许 `core | dated`，仅在 `scope_type=agent` 时非空。schema v6 把升级前已有的 Agent 独立记忆迁移为 `core`，room/correlation memory 保持空值。调用方写入的 `source_kind` 是 `web | mcp | operator`；系统生成行使用 `generated_summary`、`automatic_turn` 或 `automatic_rollup`。
 
 `scope_type`：
 
@@ -310,6 +311,8 @@ identity_records(
 )
 ```
 
+调用方写入的 `source_kind` 是 `web | mcp | adapter | operator`。`local-operator` 写入的作者是 `user:assistant`。
+
 物理上 identity 也可复用 memory 表，但逻辑和 API 必须保持独立，避免公共闲聊声明自动成为身份事实。
 
 ### 3.11 summaries
@@ -348,6 +351,15 @@ schema v8 新增三张协作状态表：
 
 角色只存在于这些行，不进入 `actors` 枚举。观察快照写在 `supervision.observed` 的有界 body 里，不复制进 memory 表。Watch brief 是 `message.created` 且 `body.kind=supervision.watch`，供 observer 当前消息使用，不作为房间 unread/压缩/dated-memory 源。
 
+### 3.14 assistant_conversation_messages / context_resets
+
+schema v9 新增：
+
+- `assistant_conversation_messages`：用户与房间助理的侧边对话。不进房间 transcript、Context Packet、压缩输入或 dated-memory。`client_command_id` 只对用户行做幂等。
+- `context_resets`：`context.reset` 的下限游标。不删除 events。写入 reset 时同时 supersede `throughSeq <= resetThroughSeq` 的 active summary。后续 Context Packet / usage / compact 只使用越过该下限的检查点，否则从 `resetThroughSeq` 起读；仅有 `context.reset` 审计事件、没有新的 `message.created` / `operator.dispatch` 时，再次 reset 是 no-op。
+
+`operator.dispatch` 是房间 durable event，不是侧边对话行。body 只含 `content`、`operation`、`promptLength`、`targets`；作者是 `user:assistant`。它可重放，并作为被叫醒 worker 的当前任务；UI 默认折叠，不当普通聊天气泡。监督 pair 在无 `message.created` 任务时引用该 event id。
+
 ## 4. 事务不变量
 
 ### 4.1 接受消息
@@ -355,7 +367,7 @@ schema v8 新增三张协作状态表：
 一次用户或 Agent 发送必须在一个事务中完成：
 
 1. 插入或命中 `client_commands`；
-2. 插入 source `message.created` event；
+2. 插入 source `message.created` 或 `operator.dispatch` event；`dispatch_event` 可复用已有 `message.created`，不能复用 watch brief，也不能新造 `operator.dispatch` 来改原作者；
 3. 为每个目标插入唯一 `turn.queued` event，以其 durable `seq` 作为 `enqueue_seq`；
 4. 为每个目标插入唯一 Turn，引用 `queued_event_id/enqueue_seq`，并快照当前 Broker transport；
 5. 若带 `supervision`：插入系统 watch brief（不复用用户正文）、observer Turns、`supervision.paired` 与 pair/turn 行；observer 不得与 worker 重叠；幂等 hash 包含 observer 集合，不含 watch brief 正文（其中有随机 turn id）；

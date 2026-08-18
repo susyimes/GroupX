@@ -9,17 +9,17 @@
     >
     <meta name="color-scheme" content="light dark">
     <title>GroupX · Agent 配置</title>
-    <link rel="stylesheet" href="/setup.css?v=0.1.13-claude1">
-    <script type="module" src="/setup.js?v=0.1.13-claude1"></script>
+    <link rel="stylesheet" href="/setup.css?v=0.1.15-assistant1">
+    <script type="module" src="/setup.js?v=0.1.15-assistant1"></script>
   </head>
   <body>
     <header class="setup-header">
-      <a class="brand" href="/?v=0.1.13-claude1" aria-label="GroupX">
+      <a class="brand" href="/?v=0.1.15-assistant1" aria-label="GroupX">
         <span class="brand-mark" aria-hidden="true">GX</span>
         <span><strong>GroupX</strong><small>Agent room setup</small></span>
       </a>
       <div class="header-actions">
-        <a id="back-room" class="quiet-link" href="/?v=0.1.13-claude1" hidden>返回群聊</a>
+        <a id="back-room" class="quiet-link" href="/?v=0.1.15-assistant1" hidden>返回群聊</a>
         <button id="theme-toggle" class="theme-toggle" type="button" aria-label="切换到夜间模式">☾</button>
       </div>
     </header>
@@ -76,6 +76,61 @@
           <div id="agent-list" class="agent-editor-list"></div>
           <button id="add-agent" class="add-agent-button" type="button">＋ 添加一个 Agent</button>
 
+          <section id="assistant" class="assistant-editor-card">
+            <header>
+              <div class="agent-avatar assistant-avatar" aria-hidden="true">助</div>
+              <div class="agent-card-title">
+                <strong>房间助理</strong>
+                <code class="actor-preview">user:assistant · 不进 Agent 名册</code>
+              </div>
+              <label class="enabled-toggle">
+                <input id="assistant-enabled" type="checkbox">
+                <span>启用</span>
+              </label>
+            </header>
+            <p class="assistant-duty">
+              助理和用户平级，单独听你说话，再用工具控场或派活。默认不发群消息，也不出现在 @all 或目标芯片里。
+              下面的默认职责每次都会注入；附加说明只能追加，不能改禁止项。
+            </p>
+            <ul class="assistant-duty-list">
+              <li>控场：取消、压缩、重启、记忆、setup，直接调 Broker</li>
+              <li>派活：默认 worker_dispatch / worker_ask，留下 operator.dispatch</li>
+              <li>公开说话：只有你明确要求发到群里时才 send，作者是 user:assistant</li>
+            </ul>
+            <div class="agent-fields">
+              <label>
+                <span>显示名</span>
+                <input id="assistant-name" type="text" maxlength="64" required>
+              </label>
+              <label>
+                <span>脑模型 Driver</span>
+                <select id="assistant-driver">
+                  <option value="codex">Codex App Server</option>
+                  <option value="grok">Grok ACP</option>
+                  <option value="kimi">Kimi ACP</option>
+                  <option value="hermes">Hermes ACP</option>
+                  <option value="claude">Claude Code stream-json</option>
+                </select>
+              </label>
+              <label>
+                <span>工作目录</span>
+                <input id="assistant-cwd" type="text" maxlength="4096" required>
+              </label>
+              <label>
+                <span>CLI 命令</span>
+                <input id="assistant-command" type="text" maxlength="4096" required>
+              </label>
+              <label>
+                <span>CLI 入口 <small>可选</small></span>
+                <input id="assistant-entrypoint" type="text" maxlength="4096">
+              </label>
+              <label class="wide-field">
+                <span>附加说明 <small>可选，只能追加</small></span>
+                <textarea id="assistant-extra" maxlength="32768" rows="4" placeholder="例如：派活前先 roster；回复尽量短。"></textarea>
+              </label>
+            </div>
+          </section>
+
           <details class="advanced-settings">
             <summary>本地服务与存储</summary>
             <div class="settings-grid">
@@ -108,7 +163,7 @@
           <p id="success-copy"></p>
           <code id="saved-path"></code>
           <div class="success-actions">
-            <a id="success-room-link" class="primary-link" href="/?v=0.1.13-claude1" hidden>返回群聊</a>
+            <a id="success-room-link" class="primary-link" href="/?v=0.1.15-assistant1" hidden>返回群聊</a>
             <button id="edit-again" class="secondary-button" type="button">继续编辑</button>
           </div>
         </section>

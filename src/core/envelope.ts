@@ -41,6 +41,8 @@ export type GroupXEventType =
   | "supervision.paired"
   | "supervision.observed"
   | "supervision.steered"
+  | "operator.dispatch"
+  | "context.reset"
   | "system.error";
 
 export interface ActorRef {
@@ -51,7 +53,7 @@ export interface ActorRef {
 }
 
 export interface PublicProvenance {
-  sourceKind: "web" | "adapter" | "mcp" | "system" | "generated_summary" | "supervision";
+  sourceKind: "web" | "adapter" | "mcp" | "system" | "generated_summary" | "supervision" | "operator";
   authorActorId?: string;
   subjectActorId?: string;
   sourceEventId?: string;
@@ -80,6 +82,7 @@ export interface GroupXEnvelope<TBody = unknown> {
 
 export const BUILTIN_ACTORS = {
   web: { actorId: "user:web", kind: "user", displayName: "You" },
+  assistant: { actorId: "user:assistant", kind: "user", displayName: "房间助理" },
   codex: { actorId: "agent:codex", kind: "agent", displayName: "Codex" },
   grok: { actorId: "agent:grok", kind: "agent", displayName: "Grok" },
   kimi: { actorId: "agent:kimi", kind: "agent", displayName: "Kimi" },

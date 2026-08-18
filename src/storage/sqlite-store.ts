@@ -13,7 +13,8 @@ import {
 import { GroupXError, toGroupXError } from "../core/errors.js";
 import {
   SUPERVISION_WATCH_KIND,
-  buildSupervisionWatchBrief
+  buildSupervisionWatchBrief,
+  isSupervisionWatchMessage
 } from "../core/supervision.js";
 import { CURRENT_SCHEMA_VERSION, MIGRATIONS } from "./schema.js";
 import { DEFAULT_ACCEPT_MESSAGE_LIMITS } from "./types.js";
@@ -25,6 +26,8 @@ import type {
   AcceptMessageResult,
   ActorRecord,
   AgentDatedMemoryRollupRecord,
+  AppendAssistantMessageInput,
+  AssistantConversationMessageRecord,
   AgentDatedMemorySourceRecord,
   AgentInstanceRecord,
   BeginClientCommandInput,
@@ -32,6 +35,7 @@ import type {
   ClaimedTurn,
   ClientCommandRecord,
   CommitAgentDatedMemoryRollupInput,
+  ContextResetRecord,
   CommitAgentDatedMemoryRollupResult,
   CompleteClientCommandInput,
   CreateAgentInstanceInput,
@@ -324,6 +328,18 @@ function mapSupervisionPairTurn(row: Row): SupervisionPairTurnRecord {
     role: requiredString(row.role, "role") as SupervisionTurnRole,
     actorId: requiredString(row.actor_id, "actor_id"),
     createdAt: requiredString(row.created_at, "created_at")
+  };
+}
+
+function mapAssistantMessage(row: Row): AssistantConversationMessageRecord {
+  return {
+    messageId: requiredString(row.message_id, "message_id"),
+    role: requiredString(row.role, "role") as AssistantConversationMessageRecord["role"],
+    content: requiredString(row.content, "content"),
+    createdAt: requiredString(row.created_at, "created_at"),
+    ...(row.client_command_id == null
+      ? {}
+      : { clientCommandId: requiredString(row.client_command_id, "client_command_id") })
   };
 }
 
@@ -1207,6 +1223,9 @@ export class SqliteGroupXStore implements GroupXStore {
       correlationId: input.correlationId ?? null,
       idempotencyKey: input.idempotencyKey ?? null,
       provenance: input.provenance ?? null,
+      sourceEventType: input.sourceEventType ?? "message.created",
+      operation: input.operation ?? null,
+      existingSourceEventId: input.existingSourceEventId ?? null,
       supervision:
         input.supervision === undefined
           ? null
@@ -1296,22 +1315,68 @@ export class SqliteGroupXStore implements GroupXStore {
           commandType
         });
 
-        const event = this.#insertEventUnsafe({
-          roomId: input.roomId,
-          eventType: "message.created",
-          actorId: binding.actorId,
-          instanceId: binding.instanceId,
-          targets: normalizedTargets.map((target) => target.actorId),
-          ...(input.replyToEventId === undefined
-            ? {}
-            : { replyToEventId: input.replyToEventId }),
-          ...(input.causationId === undefined ? {} : { causationId: input.causationId }),
-          correlationId,
-          ...(input.idempotencyKey === undefined ? {} : { idempotencyKey: input.idempotencyKey }),
-          occurredAt: acceptedAt,
-          body: { content: input.content },
-          ...(input.provenance === undefined ? {} : { provenance: input.provenance })
-        });
+        const sourceEventType = input.sourceEventType ?? "message.created";
+        if (sourceEventType !== "message.created" && sourceEventType !== "operator.dispatch") {
+          throw new GroupXError("INVALID_ENVELOPE", "Unsupported source event type");
+        }
+        if (
+          input.existingSourceEventId !== undefined &&
+          sourceEventType === "operator.dispatch"
+        ) {
+          throw new GroupXError(
+            "INVALID_ENVELOPE",
+            "dispatch_event cannot create an operator.dispatch source"
+          );
+        }
+
+        let event: StoredEventRecord;
+        if (input.existingSourceEventId !== undefined) {
+          const existing = this.getEvent(input.existingSourceEventId);
+          if (!existing || existing.roomId !== input.roomId) {
+            throw new GroupXError("UNKNOWN_TARGET", "The source event does not exist in this room");
+          }
+          if (existing.eventType !== "message.created") {
+            throw new GroupXError(
+              "INVALID_ENVELOPE",
+              "dispatch_event can only reference a public room message"
+            );
+          }
+          if (isSupervisionWatchMessage(existing.body)) {
+            throw new GroupXError(
+              "INVALID_ENVELOPE",
+              "dispatch_event cannot reuse a supervision watch brief"
+            );
+          }
+          event = existing;
+        } else {
+          const operation =
+            input.operation ??
+            (sourceEventType === "operator.dispatch" ? "worker_dispatch" : "send");
+          event = this.#insertEventUnsafe({
+            roomId: input.roomId,
+            eventType: sourceEventType,
+            actorId: binding.actorId,
+            instanceId: binding.instanceId,
+            targets: normalizedTargets.map((target) => target.actorId),
+            ...(input.replyToEventId === undefined
+              ? {}
+              : { replyToEventId: input.replyToEventId }),
+            ...(input.causationId === undefined ? {} : { causationId: input.causationId }),
+            correlationId,
+            ...(input.idempotencyKey === undefined ? {} : { idempotencyKey: input.idempotencyKey }),
+            occurredAt: acceptedAt,
+            body:
+              sourceEventType === "operator.dispatch"
+                ? {
+                    content: input.content,
+                    operation,
+                    promptLength: input.content.length,
+                    targets: normalizedTargets.map((target) => target.actorId)
+                  }
+                : { content: input.content },
+            ...(input.provenance === undefined ? {} : { provenance: input.provenance })
+          });
+        }
 
         const workerTurns = normalizedTargets.map((target) => {
           const turn = this.#insertTurnUnsafe({
@@ -3631,7 +3696,12 @@ export class SqliteGroupXStore implements GroupXStore {
           occurredAt,
           body: { record },
           provenance: {
-            sourceKind: binding.protocol === "local-rest" ? "web" : "mcp",
+            sourceKind:
+              binding.protocol === "local-rest"
+                ? "web"
+                : binding.protocol === "local-operator"
+                  ? "operator"
+                  : "mcp",
             authorActorId: binding.actorId,
             ...(record.subjectActorId === undefined
               ? {}
@@ -3947,7 +4017,12 @@ export class SqliteGroupXStore implements GroupXStore {
           occurredAt,
           body: { record },
           provenance: {
-            sourceKind: binding.protocol === "local-rest" ? "web" : "mcp",
+            sourceKind:
+              binding.protocol === "local-rest"
+                ? "web"
+                : binding.protocol === "local-operator"
+                  ? "operator"
+                  : "mcp",
             authorActorId: binding.actorId,
             subjectActorId: record.subjectActorId,
             ...(record.sourceEventId === undefined
@@ -4160,6 +4235,171 @@ export class SqliteGroupXStore implements GroupXStore {
   getSupervisionPairByTurn(turnId: string): SupervisionPairRecord | undefined {
     this.#assertOpen();
     return this.#getSupervisionPairByTurnUnsafe(turnId);
+  }
+
+  getSupervisionPairByCorrelation(correlationId: string): SupervisionPairRecord | undefined {
+    this.#assertOpen();
+    const row = this.#database
+      .prepare(
+        "SELECT * FROM supervision_pairs WHERE correlation_id = ? ORDER BY created_at DESC, pair_id DESC LIMIT 1"
+      )
+      .get(correlationId) as Row | undefined;
+    return row ? mapSupervisionPair(row) : undefined;
+  }
+
+  listSupervisionPairs(input: { roomId?: string; correlationId?: string } = {}): SupervisionPairRecord[] {
+    this.#assertOpen();
+    const predicates: string[] = [];
+    const parameters: string[] = [];
+    if (input.roomId !== undefined) {
+      predicates.push("room_id = ?");
+      parameters.push(input.roomId);
+    }
+    if (input.correlationId !== undefined) {
+      predicates.push("correlation_id = ?");
+      parameters.push(input.correlationId);
+    }
+    const where = predicates.length === 0 ? "" : `WHERE ${predicates.join(" AND ")}`;
+    return (
+      this.#database
+        .prepare(`SELECT * FROM supervision_pairs ${where} ORDER BY created_at DESC, pair_id DESC`)
+        .all(...parameters) as Row[]
+    ).map(mapSupervisionPair);
+  }
+
+  appendAssistantMessage(input: AppendAssistantMessageInput): AssistantConversationMessageRecord {
+    this.#assertOpen();
+    const content = input.content.trim();
+    if (content.length === 0) {
+      throw new GroupXError("INVALID_ENVELOPE", "Assistant conversation content must not be blank");
+    }
+    const createdAt = input.createdAt ?? nowIso();
+    const messageId = input.messageId ?? createId("asst");
+    if (input.clientCommandId !== undefined) {
+      const existing = this.getAssistantMessageByClientCommandId(input.clientCommandId);
+      if (existing) return existing;
+    }
+    this.#database
+      .prepare(`
+        INSERT INTO assistant_conversation_messages(
+          message_id, role, content, created_at, client_command_id
+        ) VALUES (?, ?, ?, ?, ?)
+      `)
+      .run(messageId, input.role, content, createdAt, input.clientCommandId ?? null);
+    return this.#requireAssistantMessage(messageId);
+  }
+
+  listAssistantMessages(limit = 200): AssistantConversationMessageRecord[] {
+    this.#assertOpen();
+    const bounded = Number.isSafeInteger(limit) && limit > 0 ? Math.min(limit, 200) : 200;
+    return (
+      this.#database
+        .prepare(`
+          SELECT * FROM assistant_conversation_messages
+          ORDER BY created_at DESC, message_id DESC
+          LIMIT ?
+        `)
+        .all(bounded) as Row[]
+    )
+      .reverse()
+      .map(mapAssistantMessage);
+  }
+
+  getAssistantMessageByClientCommandId(
+    clientCommandId: string
+  ): AssistantConversationMessageRecord | undefined {
+    this.#assertOpen();
+    const row = this.#database
+      .prepare("SELECT * FROM assistant_conversation_messages WHERE client_command_id = ?")
+      .get(clientCommandId) as Row | undefined;
+    return row ? mapAssistantMessage(row) : undefined;
+  }
+
+  getAssistantReplyAfter(messageId: string): AssistantConversationMessageRecord | undefined {
+    this.#assertOpen();
+    const current = this.#requireAssistantMessage(messageId);
+    const row = this.#database
+      .prepare(
+        `
+          SELECT * FROM assistant_conversation_messages
+          WHERE created_at > ?
+             OR (created_at = ? AND message_id > ?)
+          ORDER BY created_at ASC, message_id ASC
+          LIMIT 1
+        `
+      )
+      .get(current.createdAt, current.createdAt, current.messageId) as Row | undefined;
+    if (!row) return undefined;
+    const next = mapAssistantMessage(row);
+    return next.role === "assistant" ? next : undefined;
+  }
+
+  #requireAssistantMessage(messageId: string): AssistantConversationMessageRecord {
+    const row = this.#database
+      .prepare("SELECT * FROM assistant_conversation_messages WHERE message_id = ?")
+      .get(messageId) as Row | undefined;
+    if (!row) {
+      throw new GroupXError("STORE_UNAVAILABLE", "Assistant conversation message is missing");
+    }
+    return mapAssistantMessage(row);
+  }
+
+  recordContextReset(input: {
+    roomId: string;
+    throughSeq: number;
+    resetNativeSessions?: boolean;
+    createdAt?: string;
+  }): ContextResetRecord {
+    this.#assertOpen();
+    if (input.roomId.trim().length === 0) {
+      throw new GroupXError("INVALID_ENVELOPE", "roomId must not be blank");
+    }
+    if (!Number.isSafeInteger(input.throughSeq) || input.throughSeq < 0) {
+      throw new GroupXError("INVALID_ENVELOPE", "throughSeq must be a non-negative integer");
+    }
+    const createdAt = input.createdAt ?? nowIso();
+    const resetId = createId("reset");
+    return this.#withImmediateTransaction(() => {
+      this.#database
+        .prepare(`
+          UPDATE summaries SET status = 'superseded'
+          WHERE room_id = ? AND status = 'active' AND through_seq <= ?
+        `)
+        .run(input.roomId, input.throughSeq);
+      this.#database
+        .prepare(`
+          INSERT INTO context_resets(
+            reset_id, room_id, through_seq, reset_native_sessions, created_at
+          ) VALUES (?, ?, ?, ?, ?)
+        `)
+        .run(
+          resetId,
+          input.roomId,
+          input.throughSeq,
+          input.resetNativeSessions === true ? 1 : 0,
+          createdAt
+        );
+      return {
+        resetId,
+        roomId: input.roomId,
+        throughSeq: input.throughSeq,
+        createdAt,
+        resetNativeSessions: input.resetNativeSessions === true
+      };
+    });
+  }
+
+  getLatestContextResetThroughSeq(roomId: string): number {
+    this.#assertOpen();
+    const row = this.#database
+      .prepare(`
+        SELECT through_seq FROM context_resets
+        WHERE room_id = ?
+        ORDER BY through_seq DESC, created_at DESC
+        LIMIT 1
+      `)
+      .get(roomId) as Row | undefined;
+    return row ? requiredNumber(row.through_seq, "through_seq") : 0;
   }
 
   getSupervisionTurnRole(turnId: string): SupervisionTurnRole | undefined {

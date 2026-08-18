@@ -87,6 +87,34 @@ describe("supervision observation isolation", () => {
     expect(packet.sections.unreadTranscript.map((entry) => entry.id)).not.toContain("evt_watch_brief");
   });
 
+  it("builds an observer packet from a watch brief current event", () => {
+    const fixture = createMemoryTestFixture();
+    const watch = fixture.store.appendDurableEvent({
+      eventId: "evt_watch_current",
+      roomId: "room:main",
+      eventType: "message.created",
+      actorId: "system:groupx",
+      targets: ["agent:grok"],
+      correlationId: "corr_memory_tests",
+      occurredAt: "2026-08-11T00:00:01.000Z",
+      body: { kind: SUPERVISION_WATCH_KIND, content: "observer brief for live steer" },
+      provenance: { sourceKind: "supervision", labels: ["supervision.watch"] }
+    });
+
+    const packet = new ContextPacketBuilder(fixture.store).buildContextPacket({
+      roomId: "room:main",
+      targetActorId: "agent:grok",
+      throughSeq: watch.seq,
+      maxChars: 8_000,
+      currentEvent: watch,
+      packetKind: "supervision_watch"
+    });
+
+    expect(packet.text).toContain("observer brief for live steer");
+    expect(packet.text).toContain(SUPERVISION_WATCH_PROTOCOL_NOTE);
+    expect(packet.sections.currentMessage.content).toBe("observer brief for live steer");
+  });
+
   it("renders a distinct watch packet note without changing unrestricted language into approval language", () => {
     const text = renderContextPacket({
       roomId: "room:main",

@@ -110,4 +110,43 @@ describe("setup contracts", () => {
       restartRequired: false
     })).toThrowError(expect.objectContaining({ code: "INVALID_ENVELOPE" }));
   });
+
+  it("rejects reserved assistant roster ids and accepts a top-level assistant card", () => {
+    expect(() => parseSetupSaveRequest({
+      config: {
+        serverPort: 4_310,
+        storagePath: ".groupx/groupx.db",
+        agents: [{ ...agent(), id: "assistant" }]
+      }
+    })).toThrowError(expect.objectContaining({ code: "INVALID_ENVELOPE" }));
+    expect(() => parseSetupSaveRequest({
+      config: {
+        serverPort: 4_310,
+        storagePath: ".groupx/groupx.db",
+        agents: [{ ...agent(), id: "__assistant__" }]
+      }
+    })).toThrowError(expect.objectContaining({ code: "INVALID_ENVELOPE" }));
+
+    const request = parseSetupSaveRequest({
+      config: {
+        serverPort: 4_310,
+        storagePath: ".groupx/groupx.db",
+        agents: [agent()],
+        assistant: {
+          enabled: true,
+          name: "房间助理",
+          brain: {
+            driver: "codex",
+            command: { executable: "codex", prefixArgs: [] },
+            cwd: "."
+          },
+          extraInstructions: "先 roster"
+        }
+      }
+    });
+    expect(request.config.assistant).toMatchObject({
+      enabled: true,
+      extraInstructions: "先 roster"
+    });
+  });
 });

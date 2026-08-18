@@ -113,7 +113,7 @@ export const ActorRefSchema = z
 
 export const PublicProvenanceSchema = z
   .object({
-    sourceKind: z.enum(["web", "adapter", "mcp", "system", "generated_summary", "supervision"]),
+    sourceKind: z.enum(["web", "adapter", "mcp", "system", "generated_summary", "supervision", "operator"]),
     authorActorId: ActorIdSchema.optional(),
     subjectActorId: ActorIdSchema.optional(),
     sourceEventId: ReferenceIdSchema.optional(),

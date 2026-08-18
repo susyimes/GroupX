@@ -191,6 +191,8 @@ const DOCUMENTED_EVENT_TYPES = [
   "supervision.paired",
   "supervision.observed",
   "supervision.steered",
+  "operator.dispatch",
+  "context.reset",
   "system.error",
   "adapter.heartbeat",
 ] as const;
@@ -246,6 +248,18 @@ const memorySubmit = byId<HTMLButtonElement>("memory-submit");
 const publicMemoryCount = byId<HTMLSpanElement>("public-memory-count");
 const publicMemorySection = byId<HTMLDetailsElement>("public-memory-section");
 const themeToggle = byId<HTMLButtonElement>("theme-toggle");
+const assistantToggle = byId<HTMLButtonElement>("assistant-toggle");
+const assistantDrawer = byId<HTMLElement>("assistant-drawer");
+const assistantClose = byId<HTMLButtonElement>("assistant-close");
+const assistantStatus = byId<HTMLParagraphElement>("assistant-status");
+const assistantGuide = byId<HTMLDivElement>("assistant-guide");
+const assistantTimeline = byId<HTMLOListElement>("assistant-timeline");
+const assistantForm = byId<HTMLFormElement>("assistant-form");
+const assistantInput = byId<HTMLTextAreaElement>("assistant-input");
+const assistantFormStatus = byId<HTMLSpanElement>("assistant-form-status");
+const assistantSend = byId<HTMLButtonElement>("assistant-send");
+const assistantCancel = byId<HTMLButtonElement>("assistant-cancel");
+const ASSISTANT_DRAWER_KEY = "groupx-assistant-open";
 const targetPicker = byId<HTMLFieldSetElement>("target-picker");
 const observerPicker = byId<HTMLFieldSetElement>("observer-picker");
 const supervisionEnabled = byId<HTMLInputElement>("supervision-enabled");
@@ -1817,9 +1831,38 @@ function dispatchEnvelope(envelope: GroupXEnvelope): void {
     case "supervision.steered":
       renderSupervisionEvent(envelope);
       return;
+    case "operator.dispatch":
+      renderOperatorDispatch(envelope);
+      return;
     default:
       renderGeneric(envelope);
   }
+}
+
+function renderOperatorDispatch(envelope: GroupXEnvelope): void {
+  if (eventNodes.has(envelope.eventId)) return;
+  const item = document.createElement("li");
+  item.className = "timeline-item";
+  const article = document.createElement("article");
+  article.className = "event-card operator-dispatch-card";
+  article.dataset.eventId = envelope.eventId;
+  const body = isRecord(envelope.body) ? envelope.body : {};
+  const targets = Array.isArray(body.targets)
+    ? body.targets.filter((value): value is string => typeof value === "string").join(", ")
+    : envelope.to.join(", ");
+  const length = typeof body.promptLength === "number" ? body.promptLength : 0;
+  const operation = typeof body.operation === "string" ? body.operation : "worker_dispatch";
+  const details = document.createElement("details");
+  const summary = document.createElement("summary");
+  summary.textContent = `助理派活 · ${operation} · ${targets || "workers"} · ${length} 字`;
+  const pre = document.createElement("pre");
+  pre.textContent = typeof body.content === "string" ? body.content : "";
+  details.append(summary, pre);
+  article.append(details);
+  item.append(article);
+  timeline.append(item);
+  eventNodes.set(envelope.eventId, article);
+  timelineEmpty.hidden = true;
 }
 
 function acceptEnvelope(envelope: GroupXEnvelope, source: "bootstrap" | "live"): boolean {
@@ -2548,7 +2591,7 @@ async function bootstrap(): Promise<void> {
     state.agents.clear();
     for (const value of extractCollection(decoded, ["agents"])) {
       const agent = normalizeAgent(value);
-      if (agent) {
+      if (agent && agent.actorId.startsWith("agent:")) {
         state.agents.set(agent.actorId, agent);
       }
     }
@@ -2585,6 +2628,7 @@ async function bootstrap(): Promise<void> {
 
     void loadMemoryRecords();
     void refreshContextUsage();
+    void refreshAssistant();
     connectEventSource(supportedEventTypesFromBootstrap(decoded));
     void refreshHealth();
     if (healthTimer === null) {
@@ -2685,6 +2729,173 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 
+interface AssistantSnapshotView {
+  enabled: boolean;
+  name: string;
+  status: string;
+  detail?: string;
+}
+
+interface AssistantMessageView {
+  messageId: string;
+  role: "user" | "assistant";
+  content: string;
+  createdAt: string;
+}
+
+let assistantSnapshot: AssistantSnapshotView | null = null;
+let assistantMessages: AssistantMessageView[] = [];
+let assistantSubmitting = false;
+
+function assistantStatusLabel(status: string): string {
+  switch (status) {
+    case "disabled":
+      return "未启用";
+    case "starting":
+      return "正在启动";
+    case "ready":
+      return "就绪";
+    case "busy":
+      return "处理中";
+    case "failed":
+      return "失败";
+    case "restart_required":
+      return "需要重启";
+    default:
+      return status;
+  }
+}
+
+function applyAssistantSnapshot(snapshot: AssistantSnapshotView): void {
+  assistantSnapshot = snapshot;
+  assistantToggle.textContent = snapshot.enabled ? snapshot.name : "房间助理";
+  const title = document.getElementById("assistant-drawer-title");
+  if (title) title.textContent = snapshot.name;
+  const detail = snapshot.detail ? ` · ${snapshot.detail}` : "";
+  assistantStatus.textContent = snapshot.enabled
+    ? `${assistantStatusLabel(snapshot.status)}${detail}`
+    : "未启用";
+  assistantGuide.hidden = snapshot.enabled;
+  assistantForm.hidden = !snapshot.enabled;
+  assistantInput.disabled = !snapshot.enabled || assistantSubmitting;
+  assistantSend.disabled = !snapshot.enabled || assistantSubmitting;
+  assistantCancel.hidden = !assistantSubmitting;
+}
+
+function renderAssistantMessages(): void {
+  assistantTimeline.replaceChildren();
+  for (const message of assistantMessages) {
+    const item = document.createElement("li");
+    item.className = `assistant-bubble${message.role === "user" ? " is-user" : ""}`;
+    item.textContent = message.content;
+    assistantTimeline.append(item);
+  }
+  const last = assistantTimeline.lastElementChild;
+  if (last) last.scrollIntoView({ block: "end" });
+}
+
+async function refreshAssistant(): Promise<void> {
+  try {
+    const [snapshot, page] = await Promise.all([
+      requestJson<AssistantSnapshotView>("/api/assistant"),
+      requestJson<{ messages?: AssistantMessageView[] }>("/api/assistant/messages")
+    ]);
+    applyAssistantSnapshot({
+      enabled: snapshot.enabled === true,
+      name: snapshot.name || "房间助理",
+      status: snapshot.status || "disabled",
+      ...(typeof snapshot.detail === "string" ? { detail: snapshot.detail } : {})
+    });
+    assistantMessages = Array.isArray(page.messages) ? page.messages : [];
+    renderAssistantMessages();
+  } catch (error) {
+    assistantStatus.textContent = errorMessage(error);
+  }
+}
+
+function setAssistantDrawerOpen(open: boolean): void {
+  assistantDrawer.hidden = !open;
+  assistantToggle.setAttribute("aria-expanded", String(open));
+  try {
+    sessionStorage.setItem(ASSISTANT_DRAWER_KEY, open ? "1" : "0");
+  } catch {
+    // sessionStorage is best-effort
+  }
+  if (open) {
+    void refreshAssistant();
+    if (!assistantInput.disabled) assistantInput.focus();
+  }
+}
+
+async function submitAssistantMessage(): Promise<void> {
+  const content = assistantInput.value.trim();
+  if (!content || assistantSubmitting || assistantSnapshot?.enabled !== true) return;
+  assistantSubmitting = true;
+  applyAssistantSnapshot(assistantSnapshot);
+  assistantFormStatus.textContent = "助理处理中…";
+  const retryKey = `assistant:${content}`;
+  try {
+    const accepted = await requestJson<{
+      userMessage?: AssistantMessageView;
+      assistantMessage?: AssistantMessageView;
+      status?: string;
+      detail?: string;
+    }>("/api/assistant/messages", {
+      method: "POST",
+      body: JSON.stringify({
+        clientCommandId: retryableCommandId(retryKey, "web-assistant"),
+        content
+      })
+    });
+    retryCommandIds.delete(retryKey);
+    assistantInput.value = "";
+    if (accepted.userMessage && !assistantMessages.some((message) => message.messageId === accepted.userMessage?.messageId)) {
+      assistantMessages.push(accepted.userMessage);
+    }
+    if (accepted.assistantMessage && !assistantMessages.some((message) => message.messageId === accepted.assistantMessage?.messageId)) {
+      assistantMessages.push(accepted.assistantMessage);
+    }
+    renderAssistantMessages();
+    if (accepted.status) {
+      applyAssistantSnapshot({
+        enabled: true,
+        name: assistantSnapshot?.name ?? "房间助理",
+        status: accepted.status,
+        ...(typeof accepted.detail === "string" ? { detail: accepted.detail } : {})
+      });
+    }
+    assistantFormStatus.textContent = "Enter 发送 · Shift+Enter 换行";
+  } catch (error) {
+    assistantFormStatus.textContent = errorMessage(error);
+  } finally {
+    assistantSubmitting = false;
+    if (assistantSnapshot) applyAssistantSnapshot(assistantSnapshot);
+  }
+}
+
+async function cancelAssistant(): Promise<void> {
+  try {
+    await requestJson("/api/assistant/cancel", {
+      method: "POST",
+      body: JSON.stringify({ clientCommandId: makeClientCommandId("web-assistant-cancel") })
+    });
+    assistantFormStatus.textContent = "已请求取消";
+    void refreshAssistant();
+  } catch (error) {
+    assistantFormStatus.textContent = errorMessage(error);
+  }
+}
+
+function restoreAssistantDrawer(): void {
+  try {
+    if (sessionStorage.getItem(ASSISTANT_DRAWER_KEY) === "1") {
+      setAssistantDrawerOpen(true);
+    }
+  } catch {
+    // sessionStorage is best-effort
+  }
+}
+
 type ThemeName = "light" | "dark";
 
 function applyTheme(theme: ThemeName): void {
@@ -2716,8 +2927,29 @@ themeToggle.addEventListener("click", () => {
   }
 });
 
+assistantToggle.addEventListener("click", () => {
+  setAssistantDrawerOpen(assistantDrawer.hidden === true);
+});
+assistantClose.addEventListener("click", () => {
+  setAssistantDrawerOpen(false);
+});
+assistantForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  void submitAssistantMessage();
+});
+assistantCancel.addEventListener("click", () => {
+  void cancelAssistant();
+});
+assistantInput.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || event.isComposing || event.shiftKey) return;
+  event.preventDefault();
+  if (assistantInput.value.trim().length === 0) return;
+  assistantForm.requestSubmit();
+});
+
 initTheme();
 restoreDraft();
+restoreAssistantDrawer();
 updateCharacterCount();
 autoresizeComposer();
 syncSendButton();

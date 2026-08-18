@@ -23,7 +23,13 @@ import type {
   SupersedeMemoryRequest,
   SetupSaveRequest,
   SetupSaveResponse,
-  SetupSnapshot
+  SetupSnapshot,
+  AssistantCancelRequest,
+  AssistantCancelResult,
+  AssistantConversationPage,
+  AssistantMessageAccepted,
+  AssistantMessageRequest,
+  AssistantSnapshot
 } from "../../contracts/index.js";
 import type { SseRuntime } from "../sse/index.js";
 import type { GroupXRuntimeIdentity } from "../../core/runtime-instance.js";
@@ -61,6 +67,16 @@ export interface McpHttpHandler {
 export interface SetupApi {
   snapshot(signal: AbortSignal): Awaitable<SetupSnapshot>;
   save(request: SetupSaveRequest, signal: AbortSignal): Awaitable<SetupSaveResponse>;
+}
+
+export interface AssistantApi {
+  snapshot(signal: AbortSignal): Awaitable<AssistantSnapshot>;
+  listMessages(signal: AbortSignal): Awaitable<AssistantConversationPage>;
+  postMessage(
+    request: AssistantMessageRequest,
+    signal: AbortSignal
+  ): Awaitable<AssistantMessageAccepted>;
+  cancel(request: AssistantCancelRequest, signal: AbortSignal): Awaitable<AssistantCancelResult>;
 }
 
 /**
@@ -133,7 +149,9 @@ export interface GroupXHttpServerOptions {
   readonly maxRequestBodyBytes?: number;
   readonly gracefulCloseTimeoutMs?: number;
   readonly mcpHandler?: McpHttpHandler;
+  readonly operatorMcpHandler?: McpHttpHandler;
   readonly setupApi?: SetupApi;
+  readonly assistantApi?: AssistantApi;
   /** Present on the product runtime; optional only for embedded/test servers. */
   readonly runtimeIdentity?: GroupXRuntimeIdentity;
 }
