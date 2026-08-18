@@ -1,4 +1,6 @@
+import { SUPERVISION_WATCH_PROTOCOL_NOTE } from "../core/supervision.js";
 import { GroupXError } from "../core/errors.js";
+import { isRoomContextMessage } from "./context-messages.js";
 import type {
   IdentityRecord,
   MemoryRecord,
@@ -205,10 +207,18 @@ export function renderContextPacket(input: {
   afterSeq: number;
   throughSeq: number;
   sections: ContextPacketSections;
+  packetKind?: "business" | "supervision_watch";
 }): string {
+  const note =
+    input.packetKind === "supervision_watch" ? SUPERVISION_WATCH_PROTOCOL_NOTE : PROTOCOL_NOTE;
   const parts = [
-    `[groupx_protocol]\nschema=${CONTEXT_SCHEMA}\nroom=${input.roomId}\ntarget=${input.targetActorId}\nafter_seq=${input.afterSeq}\nthrough_seq=${input.throughSeq}\nnote=${PROTOCOL_NOTE}`
+    `[groupx_protocol]\nschema=${CONTEXT_SCHEMA}\nroom=${input.roomId}\ntarget=${input.targetActorId}\nafter_seq=${input.afterSeq}\nthrough_seq=${input.throughSeq}\nnote=${note}`
   ];
+  if (input.packetKind === "supervision_watch") {
+    parts.push(
+      "[supervision_watch]\nUse groupx.watch and groupx.steer only. Do not execute the user task."
+    );
+  }
   pushSection(parts, "configured_agent_identity", input.sections.configuredIdentity);
   pushSection(parts, "self_identity", input.sections.selfIdentity);
   pushSection(parts, "user_authored_identity", input.sections.userAuthoredIdentity);
@@ -364,7 +374,8 @@ export class ContextPacketBuilder {
         targetActorId: input.targetActorId,
         afterSeq,
         throughSeq: input.throughSeq,
-        sections
+        sections,
+        ...(input.packetKind === undefined ? {} : { packetKind: input.packetKind })
       });
 
     let text = render();
@@ -508,7 +519,7 @@ export class ContextPacketBuilder {
       });
       if (page.events.length === 0) break;
       for (const event of page.events) {
-        if (event.eventType === "message.created" && !excludedEventIds.has(event.eventId)) {
+        if (isRoomContextMessage(event) && !excludedEventIds.has(event.eventId)) {
           events.push(eventEntry(event));
         }
       }

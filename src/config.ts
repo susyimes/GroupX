@@ -136,6 +136,7 @@ const groupXConfigSchema = z
         rootTurns: z.number().int().min(1).max(1_000).default(48),
         hopCount: z.number().int().min(1).max(1_000).default(24),
         actorCallsPerRoot: z.number().int().min(1).max(1_000).default(16),
+        steersPerSubjectTurn: z.number().int().min(1).max(16).default(3),
         // Cross-Agent room budget. This is a deterministic character bound,
         // not a claim about any provider's token window (Codex may expose a
         // much larger model-specific window). RoomContextEngine compacts at a
@@ -159,6 +160,7 @@ const groupXConfigSchema = z
         rootTurns: 48,
         hopCount: 24,
         actorCallsPerRoot: 16,
+        steersPerSubjectTurn: 3,
         contextCharacters: DEFAULT_CONTEXT_CHARACTERS,
         sseEvents: 512,
         sseBytes: 2_097_152
@@ -171,7 +173,8 @@ const groupXConfigSchema = z
         idleMs: z.number().int().min(100).max(3_600_000).default(300_000),
         cancelMs: z.number().int().min(100).max(300_000).default(10_000),
         closeMs: z.number().int().min(100).max(300_000).default(5_000),
-        askMs: z.number().int().min(100).max(3_600_000).default(120_000)
+        askMs: z.number().int().min(100).max(3_600_000).default(120_000),
+        watchMs: z.number().int().min(100).max(3_600_000).default(120_000)
       })
       .strict()
       .default({
@@ -181,7 +184,8 @@ const groupXConfigSchema = z
         idleMs: 300_000,
         cancelMs: 10_000,
         closeMs: 5_000,
-        askMs: 120_000
+        askMs: 120_000,
+        watchMs: 120_000
       })
   })
   .strict();

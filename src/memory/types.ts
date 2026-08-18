@@ -65,6 +65,7 @@ interface BuildContextPacketBase {
   configuredIdentity?: string;
   throughSeq: number;
   maxChars: number;
+  packetKind?: "business" | "supervision_watch";
 }
 
 export type BuildContextPacketInput = BuildContextPacketBase &

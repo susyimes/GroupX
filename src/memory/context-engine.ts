@@ -1,4 +1,5 @@
 import { createId } from "../core/envelope.js";
+import { isRoomContextMessage } from "./context-messages.js";
 import { GroupXError, toGroupXError } from "../core/errors.js";
 import type { StoredEventRecord, SummaryRecord } from "../storage/types.js";
 import { ContextPacketBuilder } from "./context-packet.js";
@@ -255,6 +256,7 @@ export class RoomContextEngine {
                 : { configuredIdentity: input.configuredIdentity }),
               throughSeq: input.throughSeq,
               maxChars,
+              ...(input.packetKind === undefined ? {} : { packetKind: input.packetKind }),
               currentMessage:
                 input.currentMessage ??
                 (() => {
@@ -269,6 +271,7 @@ export class RoomContextEngine {
                 : { configuredIdentity: input.configuredIdentity }),
               throughSeq: input.throughSeq,
               maxChars,
+              ...(input.packetKind === undefined ? {} : { packetKind: input.packetKind }),
               currentEvent: input.currentEvent
             }
       );
@@ -338,7 +341,7 @@ export class RoomContextEngine {
       if (page.events.length === 0) break;
       for (const event of page.events) {
         cursor = event.seq;
-        if (event.eventType !== "message.created") continue;
+        if (!isRoomContextMessage(event)) continue;
         estimatedCharacters += renderedMessageChars(toSummaryMessage(event));
         uncompactedMessageCount += 1;
       }
@@ -612,7 +615,7 @@ export class RoomContextEngine {
       });
       if (
         page.events.some(
-          (event) => event.eventType === "message.created" && event.eventId !== currentEventId
+          (event) => isRoomContextMessage(event) && event.eventId !== currentEventId
         )
       ) {
         return true;
@@ -642,7 +645,7 @@ export class RoomContextEngine {
       if (page.events.length === 0) break;
       for (const event of page.events) {
         cursor = event.seq;
-        if (event.eventType !== "message.created") continue;
+        if (!isRoomContextMessage(event)) continue;
         const message = toSummaryMessage(event);
         const nextChars = renderedMessageChars(message);
         if (messages.length > 0 && selectedChars + nextChars > sourceBudget) return messages;
@@ -673,7 +676,7 @@ export class RoomContextEngine {
       if (page.events.length === 0) break;
       for (const event of page.events) {
         cursor = event.seq;
-        if (event.eventType !== "message.created") continue;
+        if (!isRoomContextMessage(event)) continue;
         messageCount += 1;
         recentMessageSeqs.push(event.seq);
         if (recentMessageSeqs.length > this.#manualRetainMessages + 1) {

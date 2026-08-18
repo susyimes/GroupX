@@ -49,7 +49,7 @@ type ActorRef = {
 };
 
 type PublicProvenance = {
-  sourceKind: "web" | "adapter" | "mcp" | "system" | "generated_summary";
+  sourceKind: "web" | "adapter" | "mcp" | "system" | "generated_summary" | "supervision";
   authorActorId?: string;
   subjectActorId?: string;
   sourceEventId?: string;
@@ -101,10 +101,13 @@ identity.remembered
 identity.superseded
 identity.retracted
 routing.loop_stopped
+supervision.paired
+supervision.observed
+supervision.steered
 system.error
 ```
 
-`session.*` 表达 native session lineage，而不是进程是否长驻：Structured 在长驻连接上产生；Direct 只有实际解析到 native session ID 或 resume 成功时才产生相应事件。`session.resumed` 只在原生 resume/load 真实成功时产生。Codex 使用 App Server `thread/resume`，ACP driver 使用 `session/load`。Active Kimi ACP 不以 global config preflight 为启动门禁；`session/set_mode(auto)` 必须在 new/load 后、首 prompt 前完成。Hermes 必须以 `--yolo acp` 启动，并在 new/load 后、首 prompt 前完成 `session/set_mode(dont_ask)`。协议中不存在 `approval.*` 事件。
+`session.*` 表达 native session lineage，而不是进程是否长驻：Structured 在长驻连接上产生；Direct 只有实际解析到 native session ID 或 resume 成功时才产生相应事件。`session.resumed` 只在原生 resume/load 真实成功时产生。Codex 使用 App Server `thread/resume`，ACP driver 使用 `session/load`。Active Kimi ACP 不以 global config preflight 为启动门禁；`session/set_mode(auto)` 必须在 new/load 后、首 prompt 前完成。Hermes 必须以 `--yolo acp` 启动，并在 new/load 后、首 prompt 前完成 `session/set_mode(dont_ask)`。协议中不存在 `approval.*` 事件。`supervision.*` 是房间协作投影，不是记忆层，也不是审批记录。
 
 `session.retrying` 与 `context.compaction.*` 是 transient 运行进度，重连后不回放。body 只包含 operation/Agent、attempt/maxAttempts、下一次退避时间、覆盖序号及稳定错误码等有界投影，不包含 prompt、摘要正文、raw stderr 或 CLI 配置。
 
@@ -201,9 +204,10 @@ GroupX 将两个概念分开：
 路由来源只有：
 
 1. Web UI 的结构化 recipients；
-2. Structured CLI 在已绑定的原生会话中显式调用 `groupx.send` 或 `groupx.ask`。
+2. Structured CLI 在已绑定的原生会话中显式调用 `groupx.send` 或 `groupx.ask`；
+3. Web UI 的可选监督配对：`to[]` 仍是 workers，`supervision.observers` 另建 Watch Turn。请求方不能自报「我是监督者」；`sourceKind: "supervision"` 由 Broker 写入。
 
-普通 CLI 回复和自然语言 `@name` 不触发新 Turn。
+普通 CLI 回复和自然语言 `@name` 不触发新 Turn。把 worker 与 observer 同时放进同一条 `to[]` 只是并行执行同一任务，不是观察。
 
 ### 4.1 `@all`
 
@@ -219,6 +223,24 @@ GroupX 将两个概念分开：
 - forward 使用对原消息的引用，不允许调用方填写可修改的 `forwardedFrom`；
 - UI 从原消息 Envelope 读取原作者；
 - 转发者仍然是当前 actor。
+
+### 4.3 同步监督配对
+
+监督是房间协作模式，不是治理、审批或第二套权限。用户打开监督并指定本次 worker 与 observer 后，一条用户消息在同一 `rootCorrelationId` 下创建一对并行 Turn：
+
+- **Worker Turn**：普通 Context Packet，执行用户任务；native CLI 仍是固定 `unrestricted`；
+- **Supervisor Watch Turn**：专用观察包 + `groupx.watch` / `groupx.steer`，不复用用户正文当执行提示。
+
+角色只存在于本次命令的配对行，不写进 Agent 名册枚举。同一个 Agent 可以在不同命令里当 worker 或 observer，但不能在同一命令里身兼两职。
+
+```ts
+type SupervisionPair = {
+  observers: AgentActorId[]; // 1..4，必须已启用且不等于本次 worker
+  mode: "live_steer";        // v1 只这一个值
+};
+```
+
+`POST /api/messages` 在现有 `to`（workers）之外带可选 `supervision`。Observer 由 Broker 另建 `commandType` 可区分的 Watch Turn；公开 `actor` 仍是 `user:web`（用户任务）或 observer binding（watch/steer 产出）。继续工作只来自：本次 steer 改道、supervisor 之后显式 `send`/`ask`、或用户再发。Broker 不在 steer 之后自动再开「监督循环第 N 轮」。
 
 ## 5. Turn 状态机
 
@@ -331,6 +353,42 @@ errorCode = CAUSAL_CYCLE
 
 B 仍可使用异步 `groupx.send(A)`；它可以回发祖先 actor，该消息进入公共房间并排队，但不阻塞 B 当前工具调用。异步 send 仍必须通过 parent/root/hop 完整性、root-turn、actor-call、hop 和 queue 限额；不得对它误报 `CAUSAL_CYCLE`。
 
+### 6.5 `groupx.watch` / `groupx.steer`（仅 Watch Turn）
+
+现有 `send`/`ask`/`read` 不够：`ask(worker)` 只会在 worker 当前 lane FIFO 之后再排一条 Turn，打断不了正在跑的 Turn。只给本次 `supervision.watch` 的调用方成功执行：
+
+```ts
+type WatchInput = {
+  subjectTurnId?: string; // 省略=配对中当前被观察的 worker
+  afterSeq?: number;
+  until: "next_milestone" | "terminal";
+  timeoutMs?: number;
+};
+
+type SteerInput = {
+  subjectTurnId?: string;
+  action: "nudge" | "interrupt";
+  reason: string;          // 必须公开
+  content: string;         // 指导正文，进入公共 transcript
+  clientCommandId: string;
+};
+```
+
+合同：
+
+- **同步观察**：supervisor 与 worker 同时 `running`；`watch` 阻塞等待有界里程碑（turn started、工具名+status、内容抽稀、terminal），不是逐 token 转发。
+- **打断**：`steer(interrupt)` = 现有 native cancel/interrupt 作用在被观察 Turn 整段上，再排队一条新的 Worker Turn。不能取消「Turn 内部的某一次工具调用」而不取消整段 Turn。
+- **指导**：打断后的新 Turn 以 supervisor 的公开指导为 `current_message`，`causationId` 指向 steer 事件。不把指导伪装成用户发言；`from` 仍由 binding 决定。
+- **不是审批**：steer 不出现 allow/deny 按钮，不产生 `approval.*`，不改变 unrestricted，不代答 native `requestUserInput`。
+- 普通业务 Turn 调用 `watch`/`steer` 返回 `SUPERVISION_WATCH_REQUIRED`。
+- Watch Turn 默认可继续 `read`；对正在被观察的 worker 再 `ask`/`send` 返回 `SUPERVISION_STEER_REQUIRED`。
+- 同一被观察 Turn 的 steer 次数受 `limits.steersPerSubjectTurn`（默认 3）限制；超出返回 `STEER_LIMIT_REACHED`，不静默丢弃。
+- 用户 Web 取消 worker 时，watch 以 `subject_cancelled` 结束，不自动改道。
+
+快照**可以**带：被观察 `turnId`、status、`deliveryCertainty`、用户任务原文引用（event id + 有界摘要）、已持久化的 worker 公开 `message.created` 增量（截断）、工具**名字 + status + 稳定 toolCallId**、已发生的 steer 次数与最近 reason。
+
+快照**不可以**带：`turn.reasoning.recorded` 正文、完整 tool arguments/result、stderr、native payload；也不得把快照写进 Context Packet 的 memory / dated-memory / 房间压缩输入。
+
 ## 7. 循环、资源与背压
 
 自然语言正文不触发路由。Structured GroupX MCP 显式工具可能形成长链，因此 Envelope/Turn 保留以下可靠性字段：
@@ -349,9 +407,10 @@ Broker 必须支持可配置的：
 - 每个 Agent 在同一因果链的调用次数；
 - 每 Agent 队列长度；
 - message 字节数和 attachment 引用数；
-- ask timeout 和 Turn idle timeout。
+- ask timeout、watch timeout 和 Turn idle timeout；
+- 同一被观察 Turn 的 steer 次数。
 
-达到限制时创建可见的 `routing.loop_stopped` 或 `turn.failed`，绝不静默丢弃。上述是资源可靠性约束，不判断 Agent 是否有权执行 CLI 工具。
+达到限制时创建可见的 `routing.loop_stopped`、`STEER_LIMIT_REACHED` 或 `turn.failed`，绝不静默丢弃。上述是资源可靠性约束，不判断 Agent 是否有权执行 CLI 工具，也不表示 supervisor 有权改文件。
 
 ## 8. 幂等与顺序
 
@@ -411,11 +470,17 @@ Content-Type: application/json
 
 {
   "clientCommandId": "web-uuid",
-  "to": ["agent:codex", "agent:grok"],
+  "to": ["agent:codex"],
   "content": "请分别评审这个方案",
-  "replyToEventId": null
+  "replyToEventId": null,
+  "supervision": {
+    "observers": ["agent:grok"],
+    "mode": "live_steer"
+  }
 }
 ```
+
+`supervision` 可选。有配对时返回额外的 `watchTurns` / `watchEventId` / `pairEventId`；`turns` 仍只含 workers。observer 不得与本次 `to` 重叠。请求不得携带 `from`、`actor`、`provenance`、`transport` 或 `access`。
 
 返回 `202 Accepted`：
 
@@ -424,9 +489,13 @@ Content-Type: application/json
   "messageEventId": "evt_...",
   "correlationId": "corr_...",
   "turns": [
-    { "target": "agent:codex", "turnId": "turn_...", "status": "queued", "transport": "structured" },
+    { "target": "agent:codex", "turnId": "turn_...", "status": "queued", "transport": "structured" }
+  ],
+  "watchTurns": [
     { "target": "agent:grok", "turnId": "turn_...", "status": "queued", "transport": "structured" }
-  ]
+  ],
+  "watchEventId": "evt_...",
+  "pairEventId": "evt_..."
 }
 ```
 
@@ -517,6 +586,8 @@ selected transport 不是 Structured、对应 Adapter 的 native MCP capability 
 ```text
 groupx.send
 groupx.ask
+groupx.watch
+groupx.steer
 groupx.read
 groupx.memory.search
 groupx.memory.remember
@@ -524,6 +595,8 @@ groupx.core_memory_remember
 groupx.identity.read
 groupx.identity.remember
 ```
+
+`watch`/`steer` 在工具发现面上对 Structured session 可见，但只有当前 Turn 是本次配对的 observer Watch Turn 时才能成功执行。它们不是审批层，不能 allow/deny 单次原生工具。
 
 `core_memory_remember` 不接受 scope、subject、author 或 binding 参数；Broker 从当前 session binding 固定 `scope_id=subject=author=调用 Agent` 以及 `agentMemoryType=core`。`identity.remember` 的 subject 同样固定为调用方自身。其他 Agent 对该身份的描述可以进入普通公共 memory，记录 `author != subject`，不能冒充对方的自我记忆。
 
@@ -556,6 +629,10 @@ HOP_LIMIT_REACHED
 QUEUE_CAPACITY_REACHED
 MESSAGE_TOO_LARGE
 ASK_TIMEOUT
+STEER_LIMIT_REACHED
+SUPERVISION_WATCH_REQUIRED
+SUPERVISION_STEER_REQUIRED
+SUPERVISION_PAIR_INVALID
 TRANSPORT_MODE_MISMATCH
 UNEXPECTED_NATIVE_INTERACTION
 NATIVE_POLICY_BLOCKED

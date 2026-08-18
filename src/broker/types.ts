@@ -22,11 +22,17 @@ import type {
   TurnStatus
 } from "../storage/types.js";
 
+export interface BrokerSupervisionPair {
+  observers: readonly string[];
+  mode: "live_steer";
+}
+
 export interface BrokerMessageRequest {
   clientCommandId: string;
   to: readonly string[];
   content: string;
   replyToEventId?: string;
+  supervision?: BrokerSupervisionPair;
 }
 
 /**
@@ -130,6 +136,8 @@ export interface BrokerDependencies {
   datedMemoryController?: BrokerDatedMemoryController;
   turnLifecycle?: BrokerTurnLifecycle;
   acceptMessageLimits?: AcceptMessageLimits;
+  steerLimit?: number;
+  watchTimeoutMs?: number;
   selectedTransport: RuntimeTransport;
   clock?: BrokerClock;
   idFactory?: BrokerIdFactory;
@@ -176,6 +184,41 @@ export interface ReadCorrelationInput {
   roomId?: string;
   afterSeq?: number;
   limit?: number;
+}
+
+export interface WatchSubjectInput {
+  watchTurnId: string;
+  subjectTurnId?: string;
+  afterSeq?: number;
+  until: "next_milestone" | "terminal";
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
+
+export interface WatchSubjectResult {
+  snapshot: import("../core/supervision.js").SupervisionSnapshot;
+  until: "next_milestone" | "terminal";
+  timedOut: boolean;
+}
+
+export interface SteerSubjectInput {
+  bindingId: string;
+  watchTurnId: string;
+  subjectTurnId?: string;
+  action: "nudge" | "interrupt";
+  reason: string;
+  content: string;
+  clientCommandId: string;
+}
+
+export interface SteerSubjectResult {
+  action: "nudge" | "interrupt";
+  reason: string;
+  subjectTurnId: string;
+  messageEventId: string;
+  correlationId: string;
+  nextTurnId?: string;
+  steeredEventId?: string;
 }
 
 export interface WaitForCorrelationInput {
@@ -276,6 +319,9 @@ export interface RetractRecordFromBindingInput {
 
 export interface BrokerFacade {
   acceptMessage(input: AcceptBrokerMessageInput): Promise<import("../storage/types.js").AcceptMessageResult>;
+  assertObserverRouting(watchTurnId: string, targets: readonly string[]): void;
+  watchSubject(input: WatchSubjectInput): Promise<WatchSubjectResult>;
+  steerSubject(input: SteerSubjectInput): Promise<SteerSubjectResult>;
   cancelTurn(turnId: string): Promise<CancelTurnOutcome>;
   cancelFromBinding(input: CancelTurnFromBindingInput): Promise<CancelTurnOutcome>;
   contextUsage(roomId?: string): import("../memory/types.js").RoomContextUsage;

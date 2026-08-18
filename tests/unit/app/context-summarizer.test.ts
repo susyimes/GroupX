@@ -124,7 +124,8 @@ describe("FirstAvailableAgentSummarizer", () => {
         idleMs: 100,
         cancelMs: 100,
         closeMs: 100,
-        askMs: 100
+        askMs: 100,
+        watchMs: 100
       }
     };
     const summarizer = new FirstAvailableAgentSummarizer({
@@ -193,7 +194,8 @@ describe("FirstAvailableAgentSummarizer", () => {
         idleMs: 100,
         cancelMs: 100,
         closeMs: 100,
-        askMs: 100
+        askMs: 100,
+        watchMs: 100
       }
     };
     const summarizer = new FirstAvailableAgentSummarizer({
@@ -250,7 +252,8 @@ describe("FirstAvailableAgentSummarizer", () => {
       },
       timeouts: {
         handshakeMs: 100, requestMs: 100, firstEventMs: 100, idleMs: 100,
-        cancelMs: 100, closeMs: 100, askMs: 100
+        cancelMs: 100, closeMs: 100, askMs: 100,
+        watchMs: 100
       }
     };
     const summarizer = new FirstAvailableAgentSummarizer({
@@ -294,7 +297,8 @@ describe("FirstAvailableAgentSummarizer", () => {
       },
       timeouts: {
         handshakeMs: 100, requestMs: 100, firstEventMs: 100, idleMs: 100,
-        cancelMs: 100, closeMs: 100, askMs: 100
+        cancelMs: 100, closeMs: 100, askMs: 100,
+        watchMs: 100
       }
     };
     const summarizer = new FirstAvailableAgentSummarizer({
@@ -355,7 +359,8 @@ describe("OwningAgentDatedMemorySummarizer", () => {
       idleMs: 100,
       cancelMs: 100,
       closeMs: 100,
-      askMs: 100
+      askMs: 100,
+        watchMs: 100
     }
   };
 

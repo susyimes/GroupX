@@ -1801,6 +1801,51 @@ input:disabled {
   box-shadow: none;
 }
 
+.supervision-controls {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.supervision-toggle span {
+  border-style: dashed;
+}
+
+.observer-picker {
+  flex: 1 1 12rem;
+}
+
+.supervision-hint {
+  margin: 0 0 8px;
+  color: var(--subtle);
+  font-size: 0.68rem;
+  line-height: 1.4;
+}
+
+.supervision-card {
+  max-width: min(42rem, 100%);
+  padding: 10px 12px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent) 6%, var(--card-bg));
+}
+
+.supervision-title {
+  color: var(--text);
+  font-size: 0.78rem;
+  font-weight: 650;
+}
+
+.supervision-reason {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+
 .reply-context {
   display: flex;
   align-items: center;

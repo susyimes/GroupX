@@ -34,6 +34,7 @@ SQLite/WAL 是 GroupX 唯一权威事实源。Broker 是唯一写入者。
 | configured Agent identity | 配置 | 是 | 存在 `groupx.json`，每轮注入，不写入 memory 表 |
 | generated summary | 派生 | 是 | 标记 summary，可重新生成 |
 | native interaction failure summary | 是 | 是 | 只保存 request kind、错误码与有界 native reason；没有 pending/options/decision |
+| supervision observation | 是 | 是 | `supervision.paired|observed|steered` 与 pair/steer 计数表；第四类可见数据，可回放但不是 memory |
 | raw stderr/env/config | 否 | 否 | 不属于 GroupX 数据模型，不主动采集 |
 
 ## 3. 初始逻辑 schema
@@ -337,6 +338,16 @@ schema v7 新增两张内部派生状态表：
 
 这两张表不是第二份聊天正文。正文仍以 events 为事实源；sources 只保存外键和计数，rollup 可在崩溃后从外键重新构造。每个日期最多一条由引擎管理的 active dated MemoryRecord，同日后续批次通过 CAS/supersede 替换它。
 
+### 3.13 supervision_pairs / pair_turns / steer_counts
+
+schema v8 新增三张协作状态表：
+
+- `supervision_pairs`：一次用户命令的配对主键，引用用户任务 event、watch brief event 和 `supervision.paired` event；`mode` 只允许 `live_steer`；
+- `supervision_pair_turns`：该 pair 上的 `worker | observer` 行；steer 产生的新 Worker Turn 必须挂回同一 pair 与同一 `correlation_id`；
+- `supervision_steer_counts`：按被观察 `subject_turn_id` 计数，CAS 递增到配置上限后失败。
+
+角色只存在于这些行，不进入 `actors` 枚举。观察快照写在 `supervision.observed` 的有界 body 里，不复制进 memory 表。Watch brief 是 `message.created` 且 `body.kind=supervision.watch`，供 observer 当前消息使用，不作为房间 unread/压缩/dated-memory 源。
+
 ## 4. 事务不变量
 
 ### 4.1 接受消息
@@ -347,8 +358,9 @@ schema v7 新增两张内部派生状态表：
 2. 插入 source `message.created` event；
 3. 为每个目标插入唯一 `turn.queued` event，以其 durable `seq` 作为 `enqueue_seq`；
 4. 为每个目标插入唯一 Turn，引用 `queued_event_id/enqueue_seq`，并快照当前 Broker transport；
-5. 写入 command result；
-6. commit。
+5. 若带 `supervision`：插入系统 watch brief（不复用用户正文）、observer Turns、`supervision.paired` 与 pair/turn 行；observer 不得与 worker 重叠；幂等 hash 包含 observer 集合，不含 watch brief 正文（其中有随机 turn id）；
+6. 写入 command result；
+7. commit。
 
 只有 commit 成功后才能向 Adapter 派发。这样不会出现“CLI 已收到但消息账本不存在”。
 
@@ -360,7 +372,7 @@ Turn terminal transaction 先对 `terminal_event_id IS NULL` 和当前 non-termi
 2. 为已观察到的工具 started/completed 写入有界 `tool.progress.recorded` 投影；不保存未建模 native payload；
 3. 成功时插入唯一 response `message.created`；失败时不伪造 response；
 4. 以统一 idempotency key `turn:<turnId>:terminal` 插入唯一 durable terminal event，不论 event type 为 completed/failed/cancelled/interrupted；
-5. 成功时只在 `agent_dated_memory_sources/rollups` 登记该 source/response 外键、日期和计数；不生成 MemoryRecord/event，不读取 reasoning/tool 记录；
+5. 成功时只在 `agent_dated_memory_sources/rollups` 登记该 source/response 外键、日期和计数；不生成 MemoryRecord/event，不读取 reasoning/tool 记录；observer Watch Turn 不登记 dated-memory source；
 6. 更新 Turn terminal 状态、错误码及 event 引用；
 7. 更新当前 attempt 的 `dispatch_phase=terminal`、delivery certainty 和 `terminal_at`；
 8. 仅在 confirmed delivered 时把 delivery cursor 最多推进到该 attempt 的 `context_through_seq`；若 attempt 带 `summary_through_seq`，同事务推进 `last_summary_seq`；
@@ -494,7 +506,7 @@ IdentityRecord 没有以下专用字段：
 
 Agent 设置中的稳定身份、滚动摘要、当前消息和完整 reply chain 是强制区段。滚动摘要是已省略旧 transcript 的覆盖证明，因此不能先推进 cursor 再丢掉摘要。其余可选区段优先保留 Agent core，再保留近期 room delta、Agent daily dated rollup、公共记忆和兼容身份记录。
 
-`turn.reasoning.recorded` 与 `tool.progress.recorded` 是可回放的 UI/审计记录，不是 Context Packet 区段。未读 transcript、reply chain 与压缩输入都只从 `message.created` 投影；两类记录不得被摘要、自动记忆或再次发送给任一 Agent。
+`turn.reasoning.recorded` 与 `tool.progress.recorded` 是可回放的 UI/审计记录，不是 Context Packet 区段。未读 transcript、reply chain 与压缩输入都只从房间业务 `message.created` 投影；watch brief（`kind=supervision.watch`）与 `supervision.*` 事件不得进入这些区段、摘要或自动记忆。监督快照是独立投影；Worker 业务包不自动塞进监督评语。Observer 的 Context Packet 使用同一 `groupx.context/0.4` schema，另加 `supervision_watch` 分段与观察协议说明。
 
 `memory_records.scope_type=agent` 且 `scope_id=agent:<id>` 的记录只进入该目标 Agent 的 Context Packet。Web 在 Agent 设置中把 core 独立列出，把 dated 按 `created_at` 的本地日期分组；公共记忆仍使用 `scope_type=room` 并位于群聊左栏，三者不会相互提升或复制。Agent 稳定身份同样在 Agent 设置中写入配置，主界面不保留右侧记忆栏。
 
@@ -573,3 +585,5 @@ GroupX 诊断日志只记录实现合同需要的有界字段：
 18. 推理 delta 不逐条落库；terminal transaction 最多生成一条聚合 `turn.reasoning.recorded`，刷新后可回放。
 19. live `tool.progress` 不直接落库；terminal transaction 保存其 started/completed 有界投影，刷新后仍合并为折叠记录。
 20. `turn.reasoning.recorded` 与 `tool.progress.recorded` 均不进入 Context Packet、reply chain、房间压缩或自动记忆。
+21. 监督配对与 worker/watch Turns 原子提交；观察快照与 steer 记录可回放，但不进入 memory/dated-memory/压缩输入。
+22. schema 中不存在 approval table；steer 不写 `approval.*`，不改 Turn transport 或 unrestricted 合同。

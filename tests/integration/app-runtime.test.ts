@@ -144,6 +144,7 @@ function config(transport: "direct" | "structured"): GroupXConfig {
       rootTurns: 24,
       hopCount: 12,
       actorCallsPerRoot: 8,
+      steersPerSubjectTurn: 3,
       contextCharacters: 256_000,
       sseEvents: 64,
       sseBytes: 65_536
@@ -155,7 +156,8 @@ function config(transport: "direct" | "structured"): GroupXConfig {
       idleMs: 100,
       cancelMs: 100,
       closeMs: 500,
-      askMs: 100
+      askMs: 100,
+      watchMs: 100
     }
   };
 }
