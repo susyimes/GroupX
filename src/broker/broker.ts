@@ -1939,7 +1939,7 @@ export class GroupXBroker {
       turnId,
       watchCursor: this.#nextWatchCursor(turnId),
       seq: null,
-      status: turn?.status
+      ...(turn === undefined ? {} : { status: turn.status })
     });
     const listeners = this.#turnWaiters.get(turnId);
     if (!listeners) return;
@@ -1990,10 +1990,7 @@ export class GroupXBroker {
       subjectTurnId === undefined
         ? members.length === 1
           ? members[0]
-          : members.find((member) => {
-              const turn = this.#store.getTurn(member.turnId);
-              return turn !== undefined && !TERMINAL_TURN_STATUSES.has(turn.status);
-            }) ?? members.at(-1)
+          : this.#preferredWatchedWorker(members)
         : members.find((member) => member.turnId === subjectTurnId);
     if (chosen === undefined) {
       throw new GroupXError(
@@ -2009,6 +2006,29 @@ export class GroupXBroker {
       );
     }
     return turn;
+  }
+
+  #preferredWatchedWorker(
+    members: readonly { turnId: string }[]
+  ): { turnId: string } | undefined {
+    const rank = (status: TurnStatus | undefined): number => {
+      switch (status) {
+        case "running":
+        case "cancelling":
+          return 0;
+        case "dispatching":
+          return 1;
+        case "queued":
+          return 2;
+        default:
+          return 3;
+      }
+    };
+    return [...members]
+      .map((member) => ({ member, turn: this.#store.getTurn(member.turnId) }))
+      .sort((left, right) => rank(left.turn?.status) - rank(right.turn?.status))
+      .find((entry) => entry.turn !== undefined && !TERMINAL_TURN_STATUSES.has(entry.turn.status))
+      ?.member ?? members.at(-1);
   }
 
   #buildSupervisionSnapshot(subject: TurnRecord, afterSeq = 0): SupervisionSnapshot {

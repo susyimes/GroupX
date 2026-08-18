@@ -201,9 +201,14 @@ function createFixture(input: { steerLimit?: number } = {}): Fixture {
     steerLimit: input.steerLimit ?? 3,
     watchTimeoutMs: 250,
     sessions: { resolve: ({ adapterId }) => sessionFor(String(adapterId)) },
-    publisher: { publish: (event) => published.push(event) },
+    publisher: {
+      publish: (event) => {
+        published.push(event);
+      }
+    },
     contextProvider: { prepare: ({ sourceEvent }) => ({ contextThroughSeq: sourceEvent.seq }) },
     nativeCancelTimeoutMs: 50,
+    closeTimeoutMs: 50,
     clock: { now: () => "2026-08-11T00:00:02.000Z" },
     idFactory: (() => {
       let sequence = 0;
@@ -267,11 +272,11 @@ describe.sequential("live supervision pairing", () => {
 
   it("returns a bounded milestone snapshot and refuses watch on a business turn", async () => {
     const fixture = createFixture();
-    const releaseStart = deferred();
+    const releaseTool = deferred();
     const workerHold = deferred();
     fixture.adapters.codex.handler = async function* (_session, input) {
-      await releaseStart.promise;
       yield nativeEvent("codex", "turn.started", {}, `${input.turnId}:start`);
+      await releaseTool.promise;
       yield nativeEvent(
         "codex",
         "tool.started",
@@ -298,7 +303,7 @@ describe.sequential("live supervision pairing", () => {
     });
     const watchTurnId = accepted.watchTurns![0]!.turnId;
     const workerTurnId = accepted.turns[0]!.turnId;
-    await waitUntil(() => fixture.adapters.codex.prompts.length === 1);
+    await waitUntil(() => fixture.store.getTurn(workerTurnId)?.status === "running");
 
     const watchedPromise = fixture.broker.watchSubject({
       watchTurnId,
@@ -306,15 +311,16 @@ describe.sequential("live supervision pairing", () => {
       timeoutMs: 500
     });
     await new Promise((resolve) => setTimeout(resolve, 10));
-    releaseStart.resolve();
+    releaseTool.resolve();
     const watched = await watchedPromise;
     expect(watched.snapshot.turnId).toBe(workerTurnId);
     expect(watched.snapshot.task.excerpt).toBe("implement the feature");
     expect(watched.snapshot.tools).toEqual([
       expect.objectContaining({ name: "bash", status: "started" })
     ]);
+    expect(watched.snapshot.tools[0]).not.toHaveProperty("arguments");
+    expect(watched.snapshot.tools[0]).not.toHaveProperty("argv");
     expect(JSON.stringify(watched.snapshot)).not.toContain("/secret");
-    expect(JSON.stringify(watched.snapshot)).not.toContain("rm");
     expect(fixture.published.some((event) => event.type === "supervision.observed")).toBe(true);
 
     await expect(
@@ -374,11 +380,11 @@ describe.sequential("live supervision pairing", () => {
     expect(fixture.store.getEvent(steered.messageEventId)?.actorId).toBe("agent:grok");
     expect(fixture.published.some((event) => event.type === "supervision.steered")).toBe(true);
     expect(fixture.published.some((event) => event.type.startsWith("approval."))).toBe(false);
-    expect(
-      fixture.adapters.codex.prompts.some((prompt) => prompt.content === "rewrite the plan first")
-    ).toBe(true);
-
     workerHold.resolve();
+    await waitUntil(() =>
+      fixture.adapters.codex.prompts.some((prompt) => prompt.content === "rewrite the plan first")
+    );
+
     await fixture.broker.waitForIdle();
   });
 

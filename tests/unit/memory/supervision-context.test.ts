@@ -48,12 +48,11 @@ describe("supervision observation isolation", () => {
 
   it("does not inject watch briefs into unread transcript or compaction-facing room history", () => {
     const fixture = createMemoryTestFixture();
-    const current = appendMessage(fixture, {
-      eventId: "evt_current",
-      actorId: "user:web",
-      content: "implement the feature",
-      targets: ["agent:codex"],
-      occurredAt: "2026-08-11T00:00:02.000Z"
+    const publicReply = appendMessage(fixture, {
+      eventId: "evt_public",
+      actorId: "agent:kimi",
+      content: "public sibling note",
+      occurredAt: "2026-08-11T00:00:00.500Z"
     });
     fixture.store.appendDurableEvent({
       eventId: "evt_watch_brief",
@@ -65,11 +64,12 @@ describe("supervision observation isolation", () => {
       occurredAt: "2026-08-11T00:00:01.000Z",
       body: { kind: SUPERVISION_WATCH_KIND, content: "You are a live GroupX observer" }
     });
-    const publicReply = appendMessage(fixture, {
-      eventId: "evt_public",
-      actorId: "agent:kimi",
-      content: "public sibling note",
-      occurredAt: "2026-08-11T00:00:00.500Z"
+    const current = appendMessage(fixture, {
+      eventId: "evt_current",
+      actorId: "user:web",
+      content: "implement the feature",
+      targets: ["agent:codex"],
+      occurredAt: "2026-08-11T00:00:02.000Z"
     });
 
     const packet = new ContextPacketBuilder(fixture.store).buildContextPacket({
@@ -119,7 +119,6 @@ describe("supervision observation isolation", () => {
     expect(text).toContain(SUPERVISION_WATCH_PROTOCOL_NOTE);
     expect(text).toContain("[supervision_watch]");
     expect(text).toContain("Do not execute the user task");
-    expect(text).not.toContain("approve");
-    expect(text).not.toContain("deny");
+    expect(text).toContain("cannot approve or deny a single native tool");
   });
 });

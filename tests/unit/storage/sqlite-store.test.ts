@@ -1775,6 +1775,9 @@ describe.sequential("SqliteGroupXStore summaries and recovery", () => {
       ALTER TABLE memory_records DROP COLUMN agent_memory_type;
       DROP TABLE agent_dated_memory_sources;
       DROP TABLE agent_dated_memory_rollups;
+      DROP TABLE IF EXISTS supervision_steer_counts;
+      DROP TABLE IF EXISTS supervision_pair_turns;
+      DROP TABLE IF EXISTS supervision_pairs;
       DELETE FROM schema_migrations WHERE version > 1;
       PRAGMA user_version = 1;
       COMMIT;
@@ -1805,8 +1808,12 @@ describe.sequential("SqliteGroupXStore summaries and recovery", () => {
       ALTER TABLE memory_records DROP COLUMN agent_memory_type;
       DROP TABLE agent_dated_memory_sources;
       DROP TABLE agent_dated_memory_rollups;
+      DROP TABLE IF EXISTS supervision_steer_counts;
+      DROP TABLE IF EXISTS supervision_pair_turns;
+      DROP TABLE IF EXISTS supervision_pairs;
       DELETE FROM schema_migrations WHERE version = 6;
       DELETE FROM schema_migrations WHERE version = 7;
+      DELETE FROM schema_migrations WHERE version = 8;
       PRAGMA user_version = 5;
       INSERT INTO memory_records(
         memory_id, scope_type, scope_id, kind, author_actor_id, subject_actor_id,
@@ -1840,6 +1847,12 @@ describe.sequential("SqliteGroupXStore summaries and recovery", () => {
     expectGroupXCode(() => new SqliteGroupXStore(fixture.databasePath), "STORE_UNAVAILABLE");
 
     const repair = new Database(fixture.databasePath);
+    repair.exec(`
+      DROP TABLE IF EXISTS supervision_steer_counts;
+      DROP TABLE IF EXISTS supervision_pair_turns;
+      DROP TABLE IF EXISTS supervision_pairs;
+      DELETE FROM schema_migrations WHERE version = 8;
+    `);
     repair.pragma("user_version = 7");
     repair.close();
     fixture.store = new SqliteGroupXStore(fixture.databasePath);

@@ -32,6 +32,12 @@ function createBroker(callers: ToolCallerContext[]): ToolBrokerApi {
     async ask() {
       throw new Error("unexpected ask");
     },
+    async watch() {
+      throw new Error("unexpected watch");
+    },
+    async steer() {
+      throw new Error("unexpected steer");
+    },
     async read() {
       throw new Error("unexpected read");
     },
