@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { GroupXAssistantHost, type OperatorBrain } from "../../../src/app/operator-runtime.js";
 import type { AssistantStatus } from "../../../src/contracts/assistant.js";
 import type { GroupXConfig } from "../../../src/config.js";
+import { GroupXError } from "../../../src/core/errors.js";
 import { SqliteGroupXStore } from "../../../src/storage/sqlite-store.js";
 
 class Deferred<T> {
@@ -24,6 +25,10 @@ class FakeBrain implements OperatorBrain {
   readonly prompts: string[] = [];
   next?: Deferred<string>;
   #status: AssistantStatus = "ready";
+
+  setStatus(status: AssistantStatus): void {
+    this.#status = status;
+  }
 
   status(): AssistantStatus {
     return this.#status;
@@ -114,5 +119,31 @@ describe("GroupXAssistantHost", () => {
     expect(
       store.listAssistantMessages().filter((message) => message.role === "user")
     ).toHaveLength(1);
+  });
+
+  it("maps a protocol line overflow to a bounded assistant reply", async () => {
+    const brain = new FakeBrain();
+    brain.prompt = async () => {
+      throw new GroupXError("PROTOCOL_INVALID_MESSAGE", "Protocol stdout line exceeded 1048576 bytes");
+    };
+    const host = createHost(brain);
+    const accepted = await host.postMessage(
+      { clientCommandId: "asst-cmd-overflow", content: "look at the room" },
+      new AbortController().signal
+    );
+    expect(accepted.assistantMessage?.content).toContain("房间记录太大");
+    expect(accepted.assistantMessage?.content).not.toContain("1048576");
+  });
+
+  it("still posts when the brain snapshot is failed", async () => {
+    const brain = new FakeBrain();
+    brain.setStatus("failed");
+    const host = createHost(brain);
+    const accepted = await host.postMessage(
+      { clientCommandId: "asst-cmd-retry", content: "try again" },
+      new AbortController().signal
+    );
+    expect(brain.prompts).toHaveLength(1);
+    expect(accepted.assistantMessage?.content).toBe("assistant reply");
   });
 });

@@ -20,7 +20,8 @@ import {
   MemoryScopeSchema,
   WritableMemoryKindSchema,
   IdentityRecordSchema,
-  QueuedTurnResultsSchema
+  QueuedTurnResultsSchema,
+  SupervisionPairSchema
 } from "./rest.js";
 import {
   assertKnownTargets,
@@ -29,12 +30,35 @@ import {
   type KnownTargetOptions
 } from "./validation.js";
 
-export const McpSendInputSchema = z.strictObject({
-  to: MessageTargetsSchema,
-  content: MessageContentSchema,
-  replyToEventId: ReferenceIdSchema.optional(),
-  clientCommandId: ClientCommandIdSchema
-});
+function addSupervisionOverlapIssues(
+  workers: readonly string[],
+  observers: readonly string[] | undefined,
+  context: z.RefinementCtx
+): void {
+  if (observers === undefined) return;
+  const workerSet = new Set(workers);
+  for (const [index, observer] of observers.entries()) {
+    if (workerSet.has(observer)) {
+      context.addIssue({
+        code: "custom",
+        message: "a supervision observer cannot also be a worker in the same command",
+        path: ["supervision", "observers", index]
+      });
+    }
+  }
+}
+
+export const McpSendInputSchema = z
+  .strictObject({
+    to: MessageTargetsSchema,
+    content: MessageContentSchema,
+    replyToEventId: ReferenceIdSchema.optional(),
+    clientCommandId: ClientCommandIdSchema,
+    supervision: SupervisionPairSchema.optional()
+  })
+  .superRefine((request, context) => {
+    addSupervisionOverlapIssues(request.to, request.supervision?.observers, context);
+  });
 
 export const McpSendResultSchema = z.object({
   messageEventId: ReferenceIdSchema,
@@ -42,14 +66,19 @@ export const McpSendResultSchema = z.object({
   turns: QueuedTurnResultsSchema
 }).passthrough();
 
-export const McpAskInputSchema = z.strictObject({
-  to: MessageTargetsSchema,
-  content: MessageContentSchema,
-  replyToEventId: ReferenceIdSchema.optional(),
-  clientCommandId: ClientCommandIdSchema,
-  timeoutMs: z.number().int().positive().max(3_600_000).optional(),
-  cancelOnTimeout: z.boolean().optional()
-});
+export const McpAskInputSchema = z
+  .strictObject({
+    to: MessageTargetsSchema,
+    content: MessageContentSchema,
+    replyToEventId: ReferenceIdSchema.optional(),
+    clientCommandId: ClientCommandIdSchema,
+    timeoutMs: z.number().int().positive().max(3_600_000).optional(),
+    cancelOnTimeout: z.boolean().optional(),
+    supervision: SupervisionPairSchema.optional()
+  })
+  .superRefine((request, context) => {
+    addSupervisionOverlapIssues(request.to, request.supervision?.observers, context);
+  });
 
 export const McpAskTargetResultSchema = z
   .object({
@@ -254,13 +283,13 @@ export type McpIdentityRememberResult = z.infer<typeof McpIdentityRememberResult
 
 export function parseMcpSendInput(input: unknown, options?: KnownTargetOptions): McpSendInput {
   const parsed = parseWriteRequest(McpSendInputSchema, input);
-  assertKnownTargets(parsed.to, options);
+  assertKnownTargets([...parsed.to, ...(parsed.supervision?.observers ?? [])], options);
   return parsed;
 }
 
 export function parseMcpAskInput(input: unknown, options?: KnownTargetOptions): McpAskInput {
   const parsed = parseWriteRequest(McpAskInputSchema, input);
-  assertKnownTargets(parsed.to, options);
+  assertKnownTargets([...parsed.to, ...(parsed.supervision?.observers ?? [])], options);
   return parsed;
 }
 

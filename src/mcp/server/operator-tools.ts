@@ -165,7 +165,8 @@ export function createGroupXOperatorMcpServer(
   server.registerTool(
     "read",
     {
-      description: "Read durable room events and turn state by correlation or sequence cursor.",
+      description:
+        "Read a bounded page of public room events and turn state. Defaults to 20 events. Returns message, dispatch, supervision, terminal-turn, and reset events with excerpted text. Does not return reasoning or tool-progress bodies. Page with afterSeq.",
       inputSchema: McpReadInputSchema,
       outputSchema: McpReadWireResultSchema
     },

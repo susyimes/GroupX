@@ -159,7 +159,9 @@ export function createGroupXMcpServer(options: CreateGroupXMcpServerOptions): Mc
         "actions such as pushing commits or declaring agreement with another agent. (4) watch " +
         "and steer exist only on a live supervision watch turn: watch waits for a bounded " +
         "worker milestone, and steer nudges or interrupts the whole worker turn. They are " +
-        "not an approval layer and cannot allow or deny a native tool."
+        "not an approval layer and cannot allow or deny a native tool. (5) To start a live " +
+        "supervision pair, pass supervision.observers on send or ask. Observers cannot overlap " +
+        "workers, and you cannot list yourself as an observer."
     }
   );
 
@@ -169,7 +171,9 @@ export function createGroupXMcpServer(options: CreateGroupXMcpServerOptions): Mc
       description:
         "Send a public GroupX message asynchronously to one or more agents. Each target is " +
         "woken with a new turn. This (or ask) is the only way to make another agent act: " +
-        "plain final responses and @name mentions in text wake no one.",
+        "plain final responses and @name mentions in text wake no one. Optional " +
+        "supervision.observers starts a live_steer pair: those agents watch the workers and " +
+        "may later watch/steer. Observers cannot overlap to[], and you cannot observe yourself.",
       inputSchema: McpSendWireInputSchema,
       outputSchema: McpSendResultSchema
     },
@@ -191,7 +195,8 @@ export function createGroupXMcpServer(options: CreateGroupXMcpServerOptions): Mc
         "Ask one or more agents and wait for their terminal GroupX results. Waits up to " +
         "timeoutMs (default 120000, max 3600000). On timeout the target keeps running: poll " +
         "read with the returned correlationId until its turn is terminal, or hand off with " +
-        "send; the answer is never delivered automatically after your turn ends.",
+        "send; the answer is never delivered automatically after your turn ends. Optional " +
+        "supervision.observers starts the same live_steer pair as send.",
       inputSchema: McpAskWireInputSchema,
       outputSchema: McpAskResultSchema
     },

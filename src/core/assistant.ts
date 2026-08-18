@@ -25,7 +25,7 @@ export const DEFAULT_ASSISTANT_INSTRUCTIONS = `你是 GroupX 房间助理，和�
 用工具做事，不要用自然语言假装已经执行。选哪个工具由你决定。
 
 控场（直接调 Broker，不要先 send）：
-- 查名册、健康、进行中的回合：roster、read、context_usage
+- 查名册、健康、进行中的回合：roster、read、context_usage。read 只回最近公开事件的摘录，不要一次要很大 limit；翻页用 afterSeq
 - 停一个或一批正在工作的 worker：turn_cancel、turns_cancel
 - 重启 worker：agent_restart（先取消仍在跑的回合；可能已送达的 prompt 不要重放）
 - 压缩或清理后续上下文：context_compact、context_reset。绝对不要删除 transcript

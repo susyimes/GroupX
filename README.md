@@ -8,7 +8,7 @@
 
 ![npm](https://img.shields.io/npm/v/@susyimes/groupx?color=3370ff&label=npm)
 ![Node](https://img.shields.io/badge/node-24.14.x-3c873a)
-![Tests](https://img.shields.io/badge/tests-506%20passing-0d9f6e)
+![Tests](https://img.shields.io/badge/tests-602%20passing-0d9f6e)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%C2%B7%20macOS%20%C2%B7%20Linux-0078d6)
 ![Transport](https://img.shields.io/badge/transport-structured-9440c9)
 
@@ -35,14 +35,28 @@ GroupX 是一个只监听本机 loopback 的多 Agent 群聊 Broker。用户从�
 ## 当前能力
 
 - **动态 Agent 名册**：可添加、禁用、改名 Agent，也可以为同一个 CLI driver 建立多个独立实例。
-- **显式群聊路由**：选择单个、多个 Agent 或 `@all`；模型正文中的自然语言 `@` 不会自动派发新回合。可选监督模式让 worker 与 observer 并行开跑：observer 用 `watch`/`steer` 观察或打断整轮，这不是审批层。
-- **共享时间线**：SSE 实时展示回复、推理和工具进度；工具记录折叠在所属 Agent 气泡中。
+- **显式群聊路由**：选择单个、多个 Agent 或 `@all`；模型正文中的自然语言 `@` 不会自动派发新回合。启动监督由房间 Agent 的 `send`/`ask`（可选 `supervision`）完成：observer 用 `watch`/`steer` 观察或打断整轮，这不是审批层。
+- **房间助理**：与用户平级的 `user:assistant` 操作员客户端，侧边对话不进群时间线；用独立 `/mcp/operator` 控场或派活，不是名册 worker，也不是审批层。
+- **共享时间线**：SSE 实时展示回复、推理和工具进度；工具记录折叠在所属 Agent 气泡中。新消息默认滚到底部，只在对话列表内操作时暂停 15 秒。
 - **刷新后仍可回放**：最终回复、聚合推理与工具记录持久化到 SQLite，不会因为刷新页面消失。
 - **Agent 主动互调**：Structured Agent 可通过 GroupX MCP 使用 `send`、`ask` 和 `read`；监督 Watch Turn 另有 `watch` 与 `steer`。
 - **单房间上下文引擎**：输入区右上角显示当前字符预算，支持自动和手动滚动压缩；完整 transcript 不会被删除。
 - **公共记忆**：用户显式固定给整个房间的事实、决定、偏好、指令、约束或备注。
 - **两层 Agent 记忆**：每个 Agent 拥有主动维护的核心记忆，以及把成功回合批量整理成每日一条的私有工作记忆。
 - **会话恢复与故障收敛**：原生 session 支持 resume/load；可能已送达的业务 Prompt 不会自动重放。
+
+## 0.1.15 更新
+
+- 房间助理作为 `local-operator` 客户端可用：侧边单独对话，默认不发到群里；派活用 `worker_dispatch` / `worker_ask` 写下可重放的 `operator.dispatch`。
+- Web composer 只选择 worker（`@all` 或目标芯片），不再提供监督开关或观察者芯片；监督由成员 `send`/`ask` 或助理工具带 `supervision.observers` 启动。
+- 操作员 `read` 只返回有界公开事件并摘录正文，避免把推理/工具全文回灌助理脑、撑爆原生 JSONL 行。
+- 群聊与助理时间线随消息更新自动滚到底部；仅在对话列表内滚动、点选或键盘翻看时暂停 15 秒。
+- 发布 `@susyimes/groupx@0.1.15`。
+
+## 0.1.14 更新
+
+- 用 MCP 工具说明、ask 超时 note 与 Context Packet 路由提醒教模型唤醒/超时/冻结上下文语义，而不是加 harness 回送。
+- 消息正文上限放到 `131,072` 字符；放宽 firstEvent/idle 超时，以及 hop、actor-call、root turn 限额。
 
 ## 0.1.13 更新
 
@@ -118,8 +132,9 @@ groupx update                  # 更新当前全局安装
 
 - **左侧 Agent 状态**：查看原生进程/session 状态、重启 Agent，并折叠管理公共记忆。
 - **中央共享时间线**：用户消息、Agent 回复、Turn 状态、推理记录与折叠工具进度按事件顺序展示。
-- **输入区**：选择 recipients、回复消息、查看上下文字符估算并手动触发压缩。
-- **Agent 设置**：维护 driver、稳定 ID、显示名、群内身份、工作目录、CLI 命令、核心记忆和日期记忆。
+- **顶栏房间助理**：打开侧边对话。未启用时引导去 `/setup#assistant`。助理不进目标芯片或 `@all`。
+- **输入区**：选择 recipients、回复消息、查看上下文字符估算并手动触发压缩。监督不在输入区选择。
+- **Agent 设置**：维护 driver、稳定 ID、显示名、群内身份、工作目录、CLI 命令、核心记忆和日期记忆；名册下方单独配置房间助理（顶层 `assistant`，不是 `agents.assistant`）。
 
 GroupX 当前保持单房间结构，房间 ID 为 `room:main`。
 
@@ -179,7 +194,7 @@ GroupX 当前保持单房间结构，房间 ID 为 `room:main`。
 }
 ```
 
-每个启用的 Agent 拥有独立原生 process/session。修改名册不会热替换正在运行的 session；主房间会把新增项显示为“等待重启”，重启 GroupX 后才转为可用。
+每个启用的 Agent 拥有独立原生 process/session。修改名册不会热替换正在运行的 session；主房间会把新增项显示为“等待重启”，重启 GroupX 后才转为可用。房间助理写在配置顶层 `assistant`，保存后同样需要重启才能接上私有脑会话。
 
 Hermes 使用固定的 `hermes --yolo acp` 启动形状，并在每次 `session/new` 或 `session/load` 后、首个 prompt 前设置 ACP mode 为 `dont_ask`。可先运行 `hermes acp --check` 检查本机 ACP 安装。GroupX 不修改 Hermes 的全局配置。
 

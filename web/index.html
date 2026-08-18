@@ -10,8 +10,8 @@
     <meta name="color-scheme" content="light dark">
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%233370ff'/%3E%3Ctext x='16' y='21.5' font-family='system-ui,sans-serif' font-size='12' font-weight='800' text-anchor='middle' fill='white' letter-spacing='1'%3EGX%3C/text%3E%3C/svg%3E">
     <title>GroupX</title>
-    <link rel="stylesheet" href="/styles.css?v=0.1.15-assistant1">
-    <script type="module" src="/app.js?v=0.1.15-assistant1"></script>
+    <link rel="stylesheet" href="/styles.css?v=0.1.15">
+    <script type="module" src="/app.js?v=0.1.15"></script>
   </head>
   <body>
     <div id="app" class="app-shell">
@@ -120,15 +120,6 @@
                 <span>@all</span>
               </label>
             </fieldset>
-            <div class="supervision-controls">
-              <label class="target-chip supervision-toggle">
-                <input id="supervision-enabled" type="checkbox">
-                <span>监督模式</span>
-              </label>
-              <fieldset id="observer-picker" class="target-picker observer-picker" hidden>
-                <legend>观察者</legend>
-              </fieldset>
-            </div>
             <div class="context-controls">
               <section id="runtime-progress" class="runtime-progress" role="status" aria-live="polite" hidden>
                 <span class="runtime-progress-spinner" aria-hidden="true"></span>
@@ -161,9 +152,6 @@
             </div>
           </div>
 
-          <p id="supervision-hint" class="supervision-hint" hidden>
-            观察者与 worker 同时开跑，可打断整轮并改道，不能审批单次原生工具。
-          </p>
           <div id="reply-context" class="reply-context" hidden>
             <div>
               <span class="reply-kicker">正在回复</span>
@@ -179,7 +167,7 @@
               maxlength="131072"
               rows="3"
               required
-              placeholder="给 Agent 们发一条消息…"
+              placeholder="给选中的 Agent 发一条消息…"
             ></textarea>
             <div class="composer-toolbar">
               <button id="send-button" class="send-button" type="submit" disabled>
@@ -212,14 +200,25 @@
         </div>
         <ol id="assistant-timeline" class="assistant-timeline" aria-live="polite"></ol>
         <form id="assistant-form" class="assistant-form">
-          <textarea id="assistant-input" rows="3" maxlength="131072" placeholder="单独对助理说话，不会发到群里"></textarea>
-          <div class="assistant-form-row">
-            <span id="assistant-form-status">Enter 发送 · Shift+Enter 换行</span>
-            <div class="assistant-form-actions">
+          <div class="composer-box">
+            <label class="sr-only" for="assistant-input">对助理说</label>
+            <textarea
+              id="assistant-input"
+              maxlength="131072"
+              rows="1"
+              placeholder="单独对助理说话，不会发到群里"
+            ></textarea>
+            <div class="composer-toolbar">
               <button id="assistant-cancel" class="text-button" type="button" hidden>取消</button>
-              <button id="assistant-send" class="primary-button" type="submit">发送</button>
+              <button id="assistant-send" class="send-button" type="submit" disabled>
+                <svg class="send-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M2.01 21 23 12 2.01 3 2 10l15 2-15 2Z" fill="currentColor"/>
+                </svg>
+                <span>发送</span>
+              </button>
             </div>
           </div>
+          <p id="assistant-form-status" class="assistant-form-status">Enter 发送 · Shift+Enter 换行</p>
         </form>
       </aside>
 

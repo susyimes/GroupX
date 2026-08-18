@@ -65,10 +65,6 @@ interface MessageDraft {
   to: string[];
   content: string;
   replyToEventId: string | null;
-  supervision?: {
-    observers: string[];
-    mode: "live_steer";
-  };
 }
 
 interface PendingSubmission {
@@ -256,14 +252,11 @@ const assistantGuide = byId<HTMLDivElement>("assistant-guide");
 const assistantTimeline = byId<HTMLOListElement>("assistant-timeline");
 const assistantForm = byId<HTMLFormElement>("assistant-form");
 const assistantInput = byId<HTMLTextAreaElement>("assistant-input");
-const assistantFormStatus = byId<HTMLSpanElement>("assistant-form-status");
+const assistantFormStatus = byId<HTMLElement>("assistant-form-status");
 const assistantSend = byId<HTMLButtonElement>("assistant-send");
 const assistantCancel = byId<HTMLButtonElement>("assistant-cancel");
 const ASSISTANT_DRAWER_KEY = "groupx-assistant-open";
 const targetPicker = byId<HTMLFieldSetElement>("target-picker");
-const observerPicker = byId<HTMLFieldSetElement>("observer-picker");
-const supervisionEnabled = byId<HTMLInputElement>("supervision-enabled");
-const supervisionHint = byId<HTMLParagraphElement>("supervision-hint");
 const runtimeProgress = byId<HTMLElement>("runtime-progress");
 const runtimeProgressTitle = byId<HTMLElement>("runtime-progress-title");
 const runtimeProgressDetail = byId<HTMLElement>("runtime-progress-detail");
@@ -277,9 +270,6 @@ function targetInputs(): HTMLInputElement[] {
   return Array.from(targetPicker.querySelectorAll<HTMLInputElement>('input[name="target"]'));
 }
 
-function observerInputs(): HTMLInputElement[] {
-  return Array.from(observerPicker.querySelectorAll<HTMLInputElement>('input[name="observer"]'));
-}
 const eventNodes = new Map<string, HTMLElement>();
 const turnNodes = new Map<string, HTMLElement>();
 const streamNodes = new Map<string, HTMLElement>();
@@ -929,8 +919,116 @@ function createActorMeta(envelope: GroupXEnvelope): HTMLDivElement {
   return wrapper;
 }
 
-function isTimelineNearBottom(): boolean {
-  return timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 120;
+const LATEST_FOLLOW_PAUSE_MS = 15_000;
+const LATEST_FOLLOW_NEAR_PX = 120;
+
+function createLatestFollower(
+  scroller: HTMLElement,
+  options: { onResume?: () => void } = {}
+) {
+  let pausedUntil = 0;
+  let ignoreScrollUntil = 0;
+  let resumeTimer: number | undefined;
+
+  function now(): number {
+    return Date.now();
+  }
+
+  function isNearBottom(): boolean {
+    return scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < LATEST_FOLLOW_NEAR_PX;
+  }
+
+  function isPaused(): boolean {
+    return now() < pausedUntil;
+  }
+
+  function markProgrammatic(): void {
+    ignoreScrollUntil = now() + 120;
+  }
+
+  function scrollToLatest(smooth = false): void {
+    markProgrammatic();
+    const top = scroller.scrollHeight;
+    if (smooth) {
+      scroller.scrollTo({ top, behavior: "smooth" });
+    } else {
+      scroller.scrollTop = top;
+    }
+  }
+
+  function clearResumeTimer(): void {
+    if (resumeTimer === undefined) return;
+    window.clearTimeout(resumeTimer);
+    resumeTimer = undefined;
+  }
+
+  function resume(scroll = true): void {
+    pausedUntil = 0;
+    clearResumeTimer();
+    options.onResume?.();
+    if (scroll) scrollToLatest(false);
+  }
+
+  function hold(): void {
+    pausedUntil = now() + LATEST_FOLLOW_PAUSE_MS;
+    clearResumeTimer();
+    resumeTimer = window.setTimeout(() => {
+      resumeTimer = undefined;
+      pausedUntil = 0;
+      options.onResume?.();
+      scrollToLatest(true);
+    }, LATEST_FOLLOW_PAUSE_MS);
+  }
+
+  function followIfAllowed(): boolean {
+    if (isPaused()) return false;
+    scrollToLatest(false);
+    return true;
+  }
+
+  function restorePinnedFromBottom(fromBottom: number): void {
+    markProgrammatic();
+    scroller.scrollTop = Math.max(0, scroller.scrollHeight - fromBottom);
+  }
+
+  function onUserOperation(): void {
+    hold();
+  }
+
+  scroller.addEventListener("wheel", onUserOperation, { passive: true });
+  scroller.addEventListener("touchstart", onUserOperation, { passive: true });
+  scroller.addEventListener("pointerdown", onUserOperation);
+  scroller.addEventListener("keydown", (event) => {
+    if (
+      event.key === "ArrowUp" ||
+      event.key === "ArrowDown" ||
+      event.key === "PageUp" ||
+      event.key === "PageDown" ||
+      event.key === "Home" ||
+      event.key === "End" ||
+      event.key === " "
+    ) {
+      onUserOperation();
+    }
+  });
+  scroller.addEventListener(
+    "scroll",
+    () => {
+      if (now() < ignoreScrollUntil) return;
+      if (isPaused() && isNearBottom()) resume(false);
+    },
+    { passive: true }
+  );
+
+  return {
+    isPaused,
+    markProgrammatic,
+    scrollToLatest,
+    followIfAllowed,
+    restorePinnedFromBottom,
+    hold,
+    resume
+  };
 }
 
 function resetJumpLatest(): void {
@@ -938,6 +1036,13 @@ function resetJumpLatest(): void {
   jumpLatest.textContent = "回到最新";
   jumpLatest.hidden = true;
 }
+
+const roomFollow = createLatestFollower(timeline, {
+  onResume() {
+    resetJumpLatest();
+  }
+});
+const assistantFollow = createLatestFollower(assistantTimeline);
 
 function cleanupRemovedItem(node: Element): void {
   const card = node.querySelector<HTMLElement>("[data-event-id], [data-turn-id], [data-stream-key]");
@@ -995,15 +1100,13 @@ function trimTimelineIfNeeded(): void {
 }
 
 function appendTimeline(node: HTMLLIElement, countsAsNew = true): void {
-  const shouldFollow = isTimelineNearBottom() || timeline.children.length <= 1;
+  const shouldFollow = !roomFollow.isPaused() || timeline.children.length <= 1;
   if (timelineEmpty.isConnected) {
     timelineEmpty.remove();
   }
   timeline.append(node);
   if (shouldFollow) {
-    // Instant snap: smooth scrolling lags behind rapid appends (bootstrap
-    // replay, streaming flushes) and loses the bottom anchor.
-    timeline.scrollTop = timeline.scrollHeight;
+    roomFollow.followIfAllowed();
     resetJumpLatest();
   } else {
     if (countsAsNew) {
@@ -1162,6 +1265,8 @@ function renderMessage(envelope: GroupXEnvelope): void {
       if (!target) {
         return;
       }
+      roomFollow.hold();
+      roomFollow.markProgrammatic();
       target.scrollIntoView({ behavior: "smooth", block: "center" });
       target.classList.add("is-highlighted");
       window.setTimeout(() => target.classList.remove("is-highlighted"), 1_200);
@@ -1892,15 +1997,11 @@ function orderedAgents(): AgentView[] {
   return Array.from(state.agents.values()).sort((left, right) => left.actorId.localeCompare(right.actorId));
 }
 
-function renderAgentChips(
-  picker: HTMLFieldSetElement,
-  name: "target" | "observer",
-  onChange: () => void
-): void {
-  const existing = Array.from(picker.querySelectorAll<HTMLInputElement>(`input[name="${name}"]`));
+function renderTargetChips(): void {
+  const existing = Array.from(targetPicker.querySelectorAll<HTMLInputElement>('input[name="target"]'));
   const initialized = existing.length > 0;
   const previouslyChecked = new Set(existing.filter((input) => input.checked).map((input) => input.value));
-  for (const chip of Array.from(picker.querySelectorAll(".target-chip[data-agent]"))) {
+  for (const chip of Array.from(targetPicker.querySelectorAll(".target-chip[data-agent]"))) {
     chip.remove();
   }
   for (const agent of orderedAgents()) {
@@ -1908,30 +2009,20 @@ function renderAgentChips(
     label.className = `target-chip ${cardToneClass(agent.actorId)}`;
     label.dataset.agent = agent.actorId;
     const input = document.createElement("input");
-    input.name = name;
+    input.name = "target";
     input.type = "checkbox";
     input.value = agent.actorId;
-    input.checked = initialized ? previouslyChecked.has(agent.actorId) : name === "target" && agent.enabled;
-    input.addEventListener("change", onChange);
+    input.checked = initialized ? previouslyChecked.has(agent.actorId) : agent.enabled;
+    input.addEventListener("change", () => {
+      syncTargetAll();
+      invalidatePendingSubmission();
+    });
     const text = document.createElement("span");
     text.textContent = `@${agent.displayName}`;
     label.append(input, text);
-    picker.append(label);
+    targetPicker.append(label);
   }
-}
-
-/** Rebuild the composer target chips from the configured agents, preserving the user's current selection. */
-function renderTargetPicker(): void {
-  renderAgentChips(targetPicker, "target", () => {
-    syncPairSelection();
-    invalidatePendingSubmission();
-  });
-  renderAgentChips(observerPicker, "observer", () => {
-    syncPairSelection();
-    invalidatePendingSubmission();
-  });
-  syncSupervisionControls();
-  syncPairSelection();
+  syncTargetAvailability();
 }
 
 function renderAgents(): void {
@@ -1999,12 +2090,11 @@ function renderAgents(): void {
     }
   }
   agentCount.textContent = `${available} / ${ordered.length}`;
-  renderTargetPicker();
-  syncTargetAvailability();
+  renderTargetChips();
 }
 
 function syncTargetAvailability(): void {
-  for (const input of [...targetInputs(), ...observerInputs()]) {
+  for (const input of targetInputs()) {
     const agent = state.agents.get(input.value);
     const unavailable = agent?.enabled === false || agent?.status === "pending_restart";
     input.disabled = state.submitting || unavailable;
@@ -2012,38 +2102,14 @@ function syncTargetAvailability(): void {
       input.checked = false;
     }
   }
-  syncPairSelection();
-}
-
-function syncSupervisionControls(): void {
-  const enabled = supervisionEnabled.checked;
-  observerPicker.hidden = !enabled;
-  supervisionHint.hidden = !enabled;
-  if (!enabled) {
-    for (const input of observerInputs()) {
-      input.checked = false;
-    }
-  }
-}
-
-function syncPairSelection(): void {
-  const workers = new Set(targetInputs().filter((input) => input.checked && !input.disabled).map((input) => input.value));
-  const observers = new Set(observerInputs().filter((input) => input.checked && !input.disabled).map((input) => input.value));
-  for (const input of observerInputs()) {
-    const agent = state.agents.get(input.value);
-    const unavailable = agent?.enabled === false || agent?.status === "pending_restart";
-    const blocked = workers.has(input.value);
-    input.disabled = state.submitting || unavailable || blocked;
-    if (blocked) input.checked = false;
-  }
-  for (const input of targetInputs()) {
-    const agent = state.agents.get(input.value);
-    const unavailable = agent?.enabled === false || agent?.status === "pending_restart";
-    const blocked = observers.has(input.value);
-    input.disabled = state.submitting || unavailable || blocked;
-    if (blocked) input.checked = false;
-  }
   syncTargetAll();
+}
+
+function syncTargetAll(): void {
+  const selectableTargets = targetInputs().filter((input) => state.agents.get(input.value)?.enabled !== false);
+  targetAll.checked = selectableTargets.length > 0 && selectableTargets.every((input) => input.checked);
+  targetAll.indeterminate = selectableTargets.some((input) => input.checked) && !targetAll.checked;
+  targetAll.disabled = state.submitting || selectableTargets.length === 0;
 }
 
 function syncSendButton(): void {
@@ -2270,17 +2336,8 @@ function selectedTargets(): string[] {
   return targetInputs().filter((input) => input.checked && !input.disabled).map((input) => input.value);
 }
 
-function selectedObservers(): string[] {
-  return observerInputs().filter((input) => input.checked && !input.disabled).map((input) => input.value);
-}
-
-function draftSignature(
-  content: string,
-  to: string[],
-  replyToEventId: string | null,
-  observers: string[]
-): string {
-  return JSON.stringify({ content, to: [...to].sort(), replyToEventId, observers: [...observers].sort() });
+function draftSignature(content: string, to: string[], replyToEventId: string | null): string {
+  return JSON.stringify({ content, to: [...to].sort(), replyToEventId });
 }
 
 function invalidatePendingSubmission(): void {
@@ -2305,25 +2362,17 @@ async function submitMessage(): Promise<void> {
     setComposerStatus("请至少选择一个目标 Agent", true);
     return;
   }
-  const observers = supervisionEnabled.checked ? selectedObservers() : [];
-  if (supervisionEnabled.checked && observers.length === 0) {
-    setComposerStatus("监督模式需要至少选择一个观察者，且不能与 worker 相同", true);
-    return;
-  }
   if (state.submitting) {
     return;
   }
 
-  const signature = draftSignature(content, to, state.replyToEventId, observers);
+  const signature = draftSignature(content, to, state.replyToEventId);
   const existing = state.pendingSubmission?.signature === signature ? state.pendingSubmission.draft : null;
   const draft: MessageDraft = existing ?? {
     clientCommandId: makeClientCommandId("web-message"),
     to,
     content,
     replyToEventId: state.replyToEventId,
-    ...(observers.length === 0
-      ? {}
-      : { supervision: { observers, mode: "live_steer" as const } }),
   };
   state.pendingSubmission = { signature, draft };
   state.submitting = true;
@@ -2341,6 +2390,7 @@ async function submitMessage(): Promise<void> {
     autoresizeComposer();
     clearReply();
     state.pendingSubmission = null;
+    roomFollow.resume();
     setComposerStatus("已接受，等待 Agent 事件");
   } catch (error) {
     setComposerStatus(`${errorMessage(error)}；再次发送会复用同一命令 ID`, true);
@@ -2402,13 +2452,6 @@ async function submitMemory(): Promise<void> {
   } finally {
     memorySubmit.disabled = false;
   }
-}
-
-function syncTargetAll(): void {
-  const selectableTargets = targetInputs().filter((input) => state.agents.get(input.value)?.enabled !== false);
-  targetAll.checked = selectableTargets.length > 0 && selectableTargets.every((input) => input.checked);
-  targetAll.indeterminate = selectableTargets.some((input) => input.checked) && !targetAll.checked;
-  targetAll.disabled = state.submitting || selectableTargets.length === 0;
 }
 
 function supportedEventTypesFromBootstrap(bootstrap: JsonRecord): string[] {
@@ -2481,7 +2524,7 @@ function refreshEmptyStateCopy(): void {
     heading.textContent = "房间已就绪";
   }
   if (paragraph) {
-    paragraph.textContent = "保持 @all 并行提问,或只勾选一个 Agent 单独对话。";
+    paragraph.textContent = "保持 @all 并行提问，或只勾选一个 Agent 单独对话。监督由房间 Agent 的 send/ask 启动。";
   }
 }
 
@@ -2686,13 +2729,6 @@ targetAll.addEventListener("change", () => {
     }
   }
   targetAll.indeterminate = false;
-  syncPairSelection();
-  invalidatePendingSubmission();
-});
-
-supervisionEnabled.addEventListener("change", () => {
-  syncSupervisionControls();
-  syncPairSelection();
   invalidatePendingSubmission();
 });
 
@@ -2703,14 +2739,7 @@ compactContextButton.addEventListener("click", () => {
 });
 
 jumpLatest.addEventListener("click", () => {
-  timeline.scrollTo({ top: timeline.scrollHeight, behavior: "smooth" });
-  resetJumpLatest();
-});
-
-timeline.addEventListener("scroll", () => {
-  if (isTimelineNearBottom()) {
-    resetJumpLatest();
-  }
+  roomFollow.resume();
 });
 
 memoryForm.addEventListener("submit", (event) => {
@@ -2741,6 +2770,7 @@ interface AssistantMessageView {
   role: "user" | "assistant";
   content: string;
   createdAt: string;
+  pending?: boolean;
 }
 
 let assistantSnapshot: AssistantSnapshotView | null = null;
@@ -2766,6 +2796,23 @@ function assistantStatusLabel(status: string): string {
   }
 }
 
+function setAssistantFormStatus(message: string, error = false): void {
+  assistantFormStatus.textContent = message;
+  assistantFormStatus.classList.toggle("is-error", error);
+}
+
+function autoresizeAssistant(): void {
+  assistantInput.style.height = "auto";
+  const next = Math.min(assistantInput.scrollHeight, 140);
+  assistantInput.style.height = `${next}px`;
+  assistantInput.style.overflowY = assistantInput.scrollHeight > 140 ? "auto" : "hidden";
+}
+
+function syncAssistantSendButton(): void {
+  const empty = assistantInput.value.trim().length === 0;
+  assistantSend.disabled = assistantSnapshot?.enabled !== true || assistantSubmitting || empty;
+}
+
 function applyAssistantSnapshot(snapshot: AssistantSnapshotView): void {
   assistantSnapshot = snapshot;
   assistantToggle.textContent = snapshot.enabled ? snapshot.name : "房间助理";
@@ -2777,21 +2824,26 @@ function applyAssistantSnapshot(snapshot: AssistantSnapshotView): void {
     : "未启用";
   assistantGuide.hidden = snapshot.enabled;
   assistantForm.hidden = !snapshot.enabled;
-  assistantInput.disabled = !snapshot.enabled || assistantSubmitting;
-  assistantSend.disabled = !snapshot.enabled || assistantSubmitting;
+  assistantInput.disabled = !snapshot.enabled;
+  syncAssistantSendButton();
   assistantCancel.hidden = !assistantSubmitting;
 }
 
 function renderAssistantMessages(): void {
+  const fromBottom = assistantTimeline.scrollHeight - assistantTimeline.scrollTop;
+  const paused = assistantFollow.isPaused();
   assistantTimeline.replaceChildren();
   for (const message of assistantMessages) {
     const item = document.createElement("li");
-    item.className = `assistant-bubble${message.role === "user" ? " is-user" : ""}`;
+    item.className = `assistant-bubble${message.role === "user" ? " is-user" : ""}${message.pending ? " is-pending" : ""}`;
     item.textContent = message.content;
     assistantTimeline.append(item);
   }
-  const last = assistantTimeline.lastElementChild;
-  if (last) last.scrollIntoView({ block: "end" });
+  if (paused) {
+    assistantFollow.restorePinnedFromBottom(fromBottom);
+  } else {
+    assistantFollow.followIfAllowed();
+  }
 }
 
 async function refreshAssistant(): Promise<void> {
@@ -2806,7 +2858,16 @@ async function refreshAssistant(): Promise<void> {
       status: snapshot.status || "disabled",
       ...(typeof snapshot.detail === "string" ? { detail: snapshot.detail } : {})
     });
-    assistantMessages = Array.isArray(page.messages) ? page.messages : [];
+    const serverMessages = Array.isArray(page.messages) ? page.messages : [];
+    const pending = assistantSubmitting
+      ? assistantMessages.filter((message) => message.pending === true)
+      : [];
+    assistantMessages = [
+      ...serverMessages,
+      ...pending.filter(
+        (local) => !serverMessages.some((server) => server.content === local.content && server.role === local.role)
+      )
+    ];
     renderAssistantMessages();
   } catch (error) {
     assistantStatus.textContent = errorMessage(error);
@@ -2822,6 +2883,7 @@ function setAssistantDrawerOpen(open: boolean): void {
     // sessionStorage is best-effort
   }
   if (open) {
+    assistantFollow.resume();
     void refreshAssistant();
     if (!assistantInput.disabled) assistantInput.focus();
   }
@@ -2831,8 +2893,22 @@ async function submitAssistantMessage(): Promise<void> {
   const content = assistantInput.value.trim();
   if (!content || assistantSubmitting || assistantSnapshot?.enabled !== true) return;
   assistantSubmitting = true;
-  applyAssistantSnapshot(assistantSnapshot);
-  assistantFormStatus.textContent = "助理处理中…";
+  assistantFollow.resume();
+  assistantInput.value = "";
+  autoresizeAssistant();
+  applyAssistantSnapshot({
+    ...assistantSnapshot,
+    status: "busy"
+  });
+  setAssistantFormStatus("助理正在回复…");
+  const now = new Date().toISOString();
+  assistantMessages = [
+    ...assistantMessages,
+    { messageId: `pending-user:${now}`, role: "user", content, createdAt: now, pending: true },
+    { messageId: "pending-assistant", role: "assistant", content: "正在回复…", createdAt: now, pending: true }
+  ];
+  renderAssistantMessages();
+  assistantInput.focus();
   const retryKey = `assistant:${content}`;
   try {
     const accepted = await requestJson<{
@@ -2848,7 +2924,7 @@ async function submitAssistantMessage(): Promise<void> {
       })
     });
     retryCommandIds.delete(retryKey);
-    assistantInput.value = "";
+    assistantMessages = assistantMessages.filter((message) => message.pending !== true);
     if (accepted.userMessage && !assistantMessages.some((message) => message.messageId === accepted.userMessage?.messageId)) {
       assistantMessages.push(accepted.userMessage);
     }
@@ -2864,12 +2940,15 @@ async function submitAssistantMessage(): Promise<void> {
         ...(typeof accepted.detail === "string" ? { detail: accepted.detail } : {})
       });
     }
-    assistantFormStatus.textContent = "Enter 发送 · Shift+Enter 换行";
+    setAssistantFormStatus("Enter 发送 · Shift+Enter 换行");
   } catch (error) {
-    assistantFormStatus.textContent = errorMessage(error);
+    assistantMessages = assistantMessages.filter((message) => message.pending !== true);
+    renderAssistantMessages();
+    setAssistantFormStatus(errorMessage(error), true);
   } finally {
     assistantSubmitting = false;
     if (assistantSnapshot) applyAssistantSnapshot(assistantSnapshot);
+    assistantInput.focus();
   }
 }
 
@@ -2879,10 +2958,10 @@ async function cancelAssistant(): Promise<void> {
       method: "POST",
       body: JSON.stringify({ clientCommandId: makeClientCommandId("web-assistant-cancel") })
     });
-    assistantFormStatus.textContent = "已请求取消";
+    setAssistantFormStatus("已请求取消");
     void refreshAssistant();
   } catch (error) {
-    assistantFormStatus.textContent = errorMessage(error);
+    setAssistantFormStatus(errorMessage(error), true);
   }
 }
 
@@ -2946,6 +3025,10 @@ assistantInput.addEventListener("keydown", (event) => {
   if (assistantInput.value.trim().length === 0) return;
   assistantForm.requestSubmit();
 });
+assistantInput.addEventListener("input", () => {
+  autoresizeAssistant();
+  syncAssistantSendButton();
+});
 
 initTheme();
 restoreDraft();
@@ -2953,6 +3036,8 @@ restoreAssistantDrawer();
 updateCharacterCount();
 autoresizeComposer();
 syncSendButton();
+autoresizeAssistant();
+syncAssistantSendButton();
 
 window.addEventListener("online", () => {
   if (!eventSource) {

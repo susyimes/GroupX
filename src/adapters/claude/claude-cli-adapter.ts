@@ -72,6 +72,7 @@ const DEFAULT_TIMEOUTS: ClaudeAdapterTimeouts = {
 };
 
 const KILL_GRACE_CEILING_MS = 2_000;
+const CLAUDE_MAX_STDOUT_LINE_BYTES = 8 * 1024 * 1024;
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -430,7 +431,8 @@ export class ClaudeCliAdapter implements CliAdapter {
       argv,
       cwd: input.cwd,
       closeGraceMs: this.#timeouts.closeMs,
-      killGraceMs: Math.min(this.#timeouts.closeMs, KILL_GRACE_CEILING_MS)
+      killGraceMs: Math.min(this.#timeouts.closeMs, KILL_GRACE_CEILING_MS),
+      maxStdoutLineBytes: CLAUDE_MAX_STDOUT_LINE_BYTES
     });
 
     const runtime: ClaudeRuntime = {

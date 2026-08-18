@@ -4,6 +4,7 @@ import type { GroupXToolBrokerApiOptions } from "../../src/app/tool-broker-api.j
 import { GroupXToolBrokerApi } from "../../src/app/tool-broker-api.js";
 import type { ActiveBrokerTurnContext } from "../../src/broker/types.js";
 import type { GroupXEnvelope } from "../../src/core/envelope.js";
+import { GroupXError } from "../../src/core/errors.js";
 import type { ToolCallerContext } from "../../src/mcp/server/broker-api.js";
 import type { IdentityRecord, MemoryRecord } from "../../src/storage/types.js";
 
@@ -215,6 +216,36 @@ describe("GroupXToolBrokerApi", () => {
         commandType: "mcp.send"
       })
     );
+  });
+
+  it("forwards supervision on send and rejects the caller as an observer", async () => {
+    const fixture = brokerFixture();
+    const supervision = { observers: ["agent:grok"], mode: "live_steer" as const };
+
+    await fixture.api.send(caller(), {
+      clientCommandId: "command:supervise",
+      to: ["agent:kimi"],
+      content: "review this",
+      supervision
+    });
+    expect(fixture.acceptMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        request: expect.objectContaining({
+          to: ["agent:kimi"],
+          supervision
+        })
+      })
+    );
+
+    await expect(
+      fixture.api.send(caller(), {
+        clientCommandId: "command:self-observe",
+        to: ["agent:kimi"],
+        content: "review this",
+        supervision: { observers: ["agent:codex"], mode: "live_steer" }
+      })
+    ).rejects.toMatchObject({ code: "SUPERVISION_PAIR_INVALID" } satisfies Partial<GroupXError>);
+    expect(fixture.acceptMessage).toHaveBeenCalledTimes(1);
   });
 
   it("defaults reads to the active root correlation and validates envelopes", async () => {

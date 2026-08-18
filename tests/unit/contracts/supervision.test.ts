@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   ContractValidationError,
   parseCreateMessageRequest,
+  parseMcpSendInput,
   parseMcpSteerInput,
   parseMcpWatchInput
 } from "../../../src/contracts/index.js";
@@ -80,5 +81,29 @@ describe("supervision request contracts", () => {
       "SENDER_FIELD_FORBIDDEN"
     );
     expect(parseMcpWatchInput({ until: "terminal" })).toEqual({ until: "terminal" });
+  });
+
+  it("accepts supervision on member send and rejects overlapping observers", () => {
+    expect(
+      parseMcpSendInput({
+        clientCommandId: "mcp-supervise-1",
+        to: ["agent:codex"],
+        content: "review this",
+        supervision: { observers: ["agent:grok"], mode: "live_steer" }
+      })
+    ).toMatchObject({
+      to: ["agent:codex"],
+      supervision: { observers: ["agent:grok"], mode: "live_steer" }
+    });
+    expectContractCode(
+      () =>
+        parseMcpSendInput({
+          clientCommandId: "mcp-supervise-overlap",
+          to: ["agent:codex"],
+          content: "review this",
+          supervision: { observers: ["agent:codex"], mode: "live_steer" }
+        }),
+      "INVALID_ENVELOPE"
+    );
   });
 });

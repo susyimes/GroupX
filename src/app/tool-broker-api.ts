@@ -96,6 +96,7 @@ export class GroupXToolBrokerApi implements ToolBrokerApi {
   async send(caller: ToolCallerContext, input: McpSendInput): Promise<McpSendResult> {
     throwIfAborted(caller.signal);
     const active = this.#turns.requireForCaller(caller);
+    this.#assertSupervision(caller.actorId, input.to, input.supervision?.observers);
     this.#broker.assertObserverRouting(active.turnId, input.to);
     const accepted = await this.#broker.acceptMessage({
       bindingId: caller.bindingId,
@@ -105,7 +106,8 @@ export class GroupXToolBrokerApi implements ToolBrokerApi {
         content: input.content,
         ...(input.replyToEventId === undefined
           ? {}
-          : { replyToEventId: input.replyToEventId })
+          : { replyToEventId: input.replyToEventId }),
+        ...(input.supervision === undefined ? {} : { supervision: input.supervision })
       },
       roomId: this.#roomId,
       commandType: "mcp.send",
@@ -128,6 +130,7 @@ export class GroupXToolBrokerApi implements ToolBrokerApi {
   async ask(caller: ToolCallerContext, input: McpAskInput): Promise<McpAskResult> {
     throwIfAborted(caller.signal);
     const active = this.#turns.requireForCaller(caller);
+    this.#assertSupervision(caller.actorId, input.to, input.supervision?.observers);
     this.#broker.assertObserverRouting(active.turnId, input.to);
     const accepted = await this.#broker.acceptMessage({
       bindingId: caller.bindingId,
@@ -137,7 +140,8 @@ export class GroupXToolBrokerApi implements ToolBrokerApi {
         content: input.content,
         ...(input.replyToEventId === undefined
           ? {}
-          : { replyToEventId: input.replyToEventId })
+          : { replyToEventId: input.replyToEventId }),
+        ...(input.supervision === undefined ? {} : { supervision: input.supervision })
       },
       roomId: this.#roomId,
       commandType: "mcp.ask",
@@ -369,6 +373,21 @@ export class GroupXToolBrokerApi implements ToolBrokerApi {
       correlationId: active.rootCorrelationId
     });
     return { identity: toIdentityRecordContract(identity) };
+  }
+
+  #assertSupervision(
+    callerActorId: string,
+    workers: readonly string[],
+    observers: readonly string[] | undefined
+  ): void {
+    if (observers === undefined) return;
+    if (observers.includes(callerActorId)) {
+      throw new GroupXError(
+        "SUPERVISION_PAIR_INVALID",
+        "The calling Agent cannot be a supervision observer on its own send or ask"
+      );
+    }
+    void workers;
   }
 }
 

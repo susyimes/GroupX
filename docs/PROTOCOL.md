@@ -214,10 +214,9 @@ GroupX 将两个概念分开：
 
 路由来源只有：
 
-1. Web UI 的结构化 recipients；
-2. Structured CLI 在已绑定的原生会话中显式调用 `groupx.send` 或 `groupx.ask`；
-3. Web UI 的可选监督配对：`to[]` 仍是 workers，`supervision.observers` 另建 Watch Turn。请求方不能自报「我是监督者」；`sourceKind: "supervision"` 由 Broker 写入。
-4. `local-operator` 的控场或派活：用户单独对助理说的话不经 Broker composer，也不先落房间 `message.created`。助理用 operator tool 取消/压缩/重启/记忆/setup 时不造群气泡；默认派活写 durable `operator.dispatch` 并创建目标 Turn。只有明确要让群看见时才 `send`，作者固定为 `user:assistant`。
+1. Web composer 的结构化 recipients（`@all` 或勾选的 `agent:*`）；页面不再提供监督开关或观察者芯片；
+2. Structured CLI 在已绑定的原生会话中显式调用 `groupx.send` 或 `groupx.ask`；可选 `supervision.observers` 另建 Watch Turn。请求方不能自报「我是监督者」；`sourceKind: "supervision"` 由 Broker 写入。调用方不能把自己放进 observers。
+3. `local-operator` 的控场或派活：用户单独对助理说的话不经 Broker composer，也不先落房间 `message.created`。助理用 operator tool 取消/压缩/重启/记忆/setup 时不造群气泡；默认派活写 durable `operator.dispatch` 并创建目标 Turn。只有明确要让群看见时才 `send`，作者固定为 `user:assistant`。`POST /api/messages` 仍接受显式 `to` / `supervision`，供测试与非 UI 客户端使用。
 
 普通 CLI 回复和自然语言 `@name` 不触发新 Turn。把 worker 与 observer 同时放进同一条 `to[]` 只是并行执行同一任务，不是观察。侧边对话里的自然语言 `@助理` 也不派发。
 
@@ -238,7 +237,7 @@ GroupX 将两个概念分开：
 
 ### 4.3 同步监督配对
 
-监督是房间协作模式，不是治理、审批或第二套权限。用户打开监督并指定本次 worker 与 observer 后，一条用户消息在同一 `rootCorrelationId` 下创建一对并行 Turn：
+监督是房间协作模式，不是治理、审批或第二套权限。房间 Agent 在 `send`/`ask` 上带 `supervision.observers`，或 operator 派活带同一字段后，一条命令在同一 `rootCorrelationId` 下创建一对并行 Turn：
 
 - **Worker Turn**：普通 Context Packet，执行用户任务；native CLI 仍是固定 `unrestricted`；
 - **Supervisor Watch Turn**：专用观察包 + `groupx.watch` / `groupx.steer`，不复用用户正文当执行提示。
@@ -252,7 +251,7 @@ type SupervisionPair = {
 };
 ```
 
-`POST /api/messages` 在现有 `to`（workers）之外带可选 `supervision`。`local-operator` 的 `send` / `worker_dispatch` / `worker_ask` / `dispatch_event` 也可带同一 `supervision` 字段。Observer 由 Broker 另建 `commandType` 可区分的 Watch Turn；公开 `actor` 仍是任务作者（`user:web` 或 `user:assistant`）或 observer binding（watch/steer 产出）。无群气泡时，配对的任务引用是 `operator.dispatch` event id。继续工作只来自：本次 steer 改道、supervisor 之后显式 `send`/`ask`、或用户再发。Broker 不在 steer 之后自动再开「监督循环第 N 轮」。助理自己不当 observer，也没有 `watch`/`steer`。
+成员 MCP 的 `send`/`ask`、`POST /api/messages` 与 `local-operator` 的 `send` / `worker_dispatch` / `worker_ask` / `dispatch_event` 都可带同一 `supervision` 字段。Web composer 仍选择 worker，但不再选择 observer。Observer 由 Broker 另建 `commandType` 可区分的 Watch Turn；公开 `actor` 仍是任务作者（`user:web`、`agent:*` 或 `user:assistant`）或 observer binding（watch/steer 产出）。无群气泡时，pair 的任务引用是 `operator.dispatch` event id。继续工作只来自：本次 steer 改道、supervisor 之后显式 `send`/`ask`、或用户再发。Broker 不在 steer 之后自动再开「监督循环第 N 轮」。助理自己不当 observer，也没有 `watch`/`steer`。调用 Agent 也不能把自己放进 observers。
 
 ## 5. Turn 状态机
 
@@ -625,7 +624,7 @@ groupx.identity.remember
 
 `core_memory_remember` 不接受 scope、subject、author 或 binding 参数；Broker 从当前 session binding 固定 `scope_id=subject=author=调用 Agent` 以及 `agentMemoryType=core`。`identity.remember` 的 subject 同样固定为调用方自身。其他 Agent 对该身份的描述可以进入普通公共 memory，记录 `author != subject`，不能冒充对方的自我记忆。
 
-操作员面是独立 MCP 入口 `/mcp/operator`，只挂在稳定 `local-operator` binding（`binding:operator` / `user:assistant`）上。它不要求当前 Agent Turn，也不提供 `watch`/`steer`。成员面 `/mcp` 保持原样。操作员工具作者由 binding 固定为 `user:assistant`；写请求出现 `from`/`actor`/`provenance` 仍返回 `SENDER_FIELD_FORBIDDEN`。默认派活工具是 `worker_dispatch` / `worker_ask`；`send` 只用于公开说话。
+操作员面是独立 MCP 入口 `/mcp/operator`，只挂在稳定 `local-operator` binding（`binding:operator` / `user:assistant`）上。它不要求当前 Agent Turn，也不提供 `watch`/`steer`。成员面 `/mcp` 保持原样。操作员工具作者由 binding 固定为 `user:assistant`；写请求出现 `from`/`actor`/`provenance` 仍返回 `SENDER_FIELD_FORBIDDEN`。默认派活工具是 `worker_dispatch` / `worker_ask`；`send` 只用于公开说话。操作员 `read` 与成员 `groupx.read` 共用输入合同，但投影更窄：默认 `limit=20`，只返回公开语义事件（`message.created`、`operator.dispatch`、监督与终态 turn、`context.reset` 等），并把正文摘到约 2000 字。`turn.reasoning.recorded` 与 `tool.progress.recorded` 不进操作员 read，避免把审计全文回灌助理脑。成员当前回合 `groupx.read` 仍按原合同返回 correlation 事件。
 
 ## 13. A2A 映射边界
 

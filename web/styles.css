@@ -1811,30 +1811,6 @@ input:disabled {
   box-shadow: none;
 }
 
-.supervision-controls {
-  display: flex;
-  flex: 1 1 auto;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.supervision-toggle span {
-  border-style: dashed;
-}
-
-.observer-picker {
-  flex: 1 1 12rem;
-}
-
-.supervision-hint {
-  margin: 0 0 8px;
-  color: var(--subtle);
-  font-size: 0.68rem;
-  line-height: 1.4;
-}
-
 .supervision-card {
   max-width: min(42rem, 100%);
   padding: 10px 12px;
@@ -2428,12 +2404,20 @@ input:disabled {
 
 .assistant-timeline {
   display: grid;
+  align-content: start;
   gap: 10px;
   flex: 1;
   margin: 0;
   padding: 14px 18px;
   overflow: auto;
   list-style: none;
+}
+
+.assistant-timeline:empty::before {
+  content: "单独问房间助理。不会发到群里。";
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.5;
 }
 
 .assistant-bubble {
@@ -2451,36 +2435,45 @@ input:disabled {
   background: var(--accent-wash);
 }
 
+.assistant-bubble.is-pending:not(.is-user) {
+  color: var(--muted);
+}
+
 .assistant-form {
   display: grid;
   gap: 8px;
-  padding: 12px 18px 16px;
+  padding: 12px 16px 14px;
   border-top: 1px solid var(--line);
 }
 
-.assistant-form textarea {
+.assistant-form .composer-box textarea {
   width: 100%;
-  resize: vertical;
-  border: 1px solid var(--line-strong);
-  border-radius: 10px;
-  padding: 10px;
-  background: var(--surface);
-  color: var(--text);
-  font: inherit;
+  min-height: 40px;
+  max-height: 140px;
+  padding: 10px 12px 4px;
+  border: 0;
+  background: transparent;
+  overflow-y: hidden;
+  line-height: 1.5;
+  resize: none;
 }
 
-.assistant-form-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+.assistant-form .composer-box textarea:focus-visible {
+  outline: none;
+}
+
+.assistant-form .composer-toolbar {
+  gap: 8px;
+}
+
+.assistant-form-status {
+  margin: 0;
   color: var(--muted);
   font-size: 0.72rem;
 }
 
-.assistant-form-actions {
-  display: flex;
-  gap: 8px;
+.assistant-form-status.is-error {
+  color: #b42318;
 }
 
 .event-card.operator-dispatch-card {

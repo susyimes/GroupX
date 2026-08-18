@@ -143,4 +143,91 @@ describe("GroupXOperatorBrokerApi", () => {
       })
     ).rejects.toMatchObject({ code: "INVALID_ENVELOPE" });
   });
+
+  it("projects a bounded public page for operator read", async () => {
+    const readCalls: unknown[] = [];
+    const longContent = "x".repeat(4_000);
+    const events = [
+      envelope({
+        eventId: "evt_reason",
+        seq: 1,
+        type: "turn.reasoning.recorded",
+        body: { content: longContent, turnId: "turn_1" }
+      }),
+      envelope({
+        eventId: "evt_tool",
+        seq: 2,
+        type: "tool.progress.recorded",
+        body: { name: "bash", status: "completed", content: longContent }
+      }),
+      envelope({
+        eventId: "evt_msg",
+        seq: 3,
+        type: "message.created",
+        body: { content: longContent }
+      }),
+      envelope({
+        eventId: "evt_dispatch",
+        seq: 4,
+        type: "operator.dispatch",
+        body: { content: "review the plan" }
+      })
+    ];
+    const api = new GroupXOperatorBrokerApi({
+      broker: {
+        acceptMessage: async () => {
+          throw new Error("unused");
+        },
+        rememberMemory: async () => {
+          throw new Error("unused");
+        },
+        bootstrap: () => ({ agents: [], activeTurns: [] }),
+        health: () => ({ store: { available: true, integrityOk: true } }),
+        readCorrelation: (input: unknown) => {
+          readCalls.push(input);
+          return { events, turns: [], nextAfterSeq: 40 };
+        }
+      } as never,
+      restartCommands: { restart: async () => ({ actorId: "agent:codex", accepted: true }) },
+      config: { transport: "structured", agents: { codex: { enabled: true } } } as never,
+      roomId: "room:main",
+      bindingId: "binding:operator",
+      store: {
+        getMemory: () => ({ memoryId: "mem_dated", agentMemoryType: "dated" }),
+        listSupervisionPairs: () => [],
+        listSupervisionPairTurns: () => [],
+        getSteerCount: () => 0
+      } as never
+    });
+
+    const result = await api.read(caller(), {});
+    expect(readCalls[0]).toMatchObject({ limit: 80 });
+    expect(result.events.map((event) => event.type)).toEqual(["message.created", "operator.dispatch"]);
+    expect((result.events[0]?.body as { content: string }).content).toContain("…[excerpted 2000 chars]");
+    expect((result.events[0]?.body as { content: string }).content.length).toBeLessThan(longContent.length);
+    expect((result.events[1]?.body as { content: string }).content).toBe("review the plan");
+    expect(result.nextAfterSeq).toBe(40);
+  });
 });
+
+function envelope(overrides: {
+  eventId: string;
+  seq: number;
+  type: string;
+  body: Record<string, unknown>;
+}) {
+  return {
+    schema: "groupx.event/0.1" as const,
+    eventId: overrides.eventId,
+    seq: overrides.seq,
+    roomId: "room:main",
+    type: overrides.type,
+    actor: { actorId: "agent:codex", kind: "agent" as const, displayName: "Codex" },
+    to: ["agent:grok"],
+    correlationId: "corr_1",
+    rootCorrelationId: "corr_1",
+    occurredAt: "2026-08-18T00:00:00.000Z",
+    durability: "durable" as const,
+    body: overrides.body
+  };
+}

@@ -213,7 +213,7 @@ binding 是 provenance/correlation handle，不是 secret、token 或本机抗�
 | --- | --- | --- |
 | W-001 | 默认监听 | `127.0.0.1`；非 loopback 不属于 v0.1 |
 | W-002 | bootstrap | 回显 selected transport、Agent process/session health、capability、cursor |
-| W-003 | composer | 只能选择 recipients 与可选 observer chips，不能设置 sender/transport/access；observer 不得与本次 worker 重叠；助理不进目标芯片 |
+| W-003 | composer | 可选择 recipients 与 `@all`，不能设置 sender/transport/access；不提供监督开关或 observer chips；助理不进目标芯片；监督只走成员 `send`/`ask` 或 operator 工具 |
 | W-004 | transcript | sender badge、final/partial/failed 状态正确；监督 pair/observed/steer 可见且无审批按钮 |
 | W-005 | approval surface | 没有批准/拒绝按钮、pending 卡片或 approval API 调用；steer 文案写明打断的是整轮 |
 | W-006 | 模型输出 | 作为普通文本节点，不执行 HTML/script |
@@ -269,6 +269,7 @@ Broker 指标不含模型网络/推理；只测 Structured session startup/reuse
 | O-008 | 派活后上下文 | `operator.dispatch` 计入 `context_usage` / compact，不抛 `INVALID_ENVELOPE` |
 | O-009 | 操作员记忆 | 助理写入的 memory/identity `sourceKind` 为 `operator`，REST/MCP 与 Web 列表可回读 |
 | O-010 | reset 下限 | reset 后 compact/usage 不读 `throughSeq <= resetThroughSeq` 的摘要或更早房间消息；仅有 `context.reset` 审计事件时再次 reset 为 no-op |
+| O-011 | 操作员 read | 默认有界公开投影；不含 reasoning/tool 全文；成员 `groupx.read` 合同不变 |
 
 ## 16. 里程碑 Gate
 

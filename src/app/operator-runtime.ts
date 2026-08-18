@@ -47,8 +47,10 @@ export class CliOperatorBrain implements OperatorBrain {
   readonly #config: GroupXConfig;
   #adapter: CliAdapter | undefined;
   #session: NativeSession | undefined;
+  #origin: string | undefined;
   #state: AssistantStatus = "starting";
   #detail: string | undefined;
+  #fatal = false;
   #cancelNativeTurnId: string | undefined;
 
   constructor(config: GroupXConfig) {
@@ -64,6 +66,64 @@ export class CliOperatorBrain implements OperatorBrain {
   }
 
   async start(origin: string): Promise<void> {
+    this.#origin = origin;
+    const assistant = this.#config.assistant;
+    if (assistant === undefined || !assistant.enabled) {
+      this.#state = "disabled";
+      return;
+    }
+    await this.#startHarness(origin);
+  }
+
+  async prompt(text: string, signal: AbortSignal): Promise<string> {
+    if (this.#state === "disabled") {
+      throw new GroupXError("SESSION_NOT_AVAILABLE", "The room assistant is not enabled");
+    }
+    if (this.#needsReopen()) {
+      await this.#reopen();
+    }
+    if (!this.#adapter || !this.#session || this.#state === "failed") {
+      throw new GroupXError(
+        "SESSION_NOT_AVAILABLE",
+        this.#detail ?? "The room assistant harness is not ready"
+      );
+    }
+    try {
+      return await this.#promptOnce(text, signal);
+    } catch (error) {
+      const normalized = toGroupXError(error, "SESSION_NOT_AVAILABLE");
+      if (normalized.code === "UNEXPECTED_NATIVE_INTERACTION") {
+        this.#fatal = true;
+        this.#state = "failed";
+        this.#detail = "The assistant brain requested a native interaction and was stopped.";
+        throw new GroupXError("SESSION_NOT_AVAILABLE", this.#detail);
+      }
+      if (normalized.code === "TURN_INTERRUPTED" || signal.aborted) {
+        throw error;
+      }
+      if (this.#canReopen(normalized)) {
+        await this.#reopen();
+        return await this.#promptOnce(text, signal);
+      }
+      throw error;
+    }
+  }
+
+  async cancel(): Promise<void> {
+    if (!this.#adapter || !this.#session || this.#cancelNativeTurnId === undefined) return;
+    await this.#adapter.cancel(this.#session, this.#cancelNativeTurnId).catch(() => undefined);
+  }
+
+  async close(): Promise<void> {
+    if (this.#adapter && this.#session) {
+      await this.#adapter.close(this.#session).catch(() => undefined);
+    }
+    this.#adapter = undefined;
+    this.#session = undefined;
+    if (this.#state !== "disabled") this.#state = "failed";
+  }
+
+  async #startHarness(origin: string): Promise<void> {
     const assistant = this.#config.assistant;
     if (assistant === undefined || !assistant.enabled) {
       this.#state = "disabled";
@@ -95,8 +155,46 @@ export class CliOperatorBrain implements OperatorBrain {
     }
   }
 
-  async prompt(text: string, signal: AbortSignal): Promise<string> {
-    if (!this.#adapter || !this.#session || this.#state === "failed" || this.#state === "disabled") {
+  async #reopen(): Promise<void> {
+    if (this.#adapter && this.#session) {
+      await this.#adapter.close(this.#session).catch(() => undefined);
+    }
+    this.#adapter = undefined;
+    this.#session = undefined;
+    if (this.#origin === undefined) {
+      this.#state = "failed";
+      this.#detail = "The room assistant harness is not ready";
+      throw new GroupXError("SESSION_NOT_AVAILABLE", this.#detail);
+    }
+    await this.#startHarness(this.#origin);
+    if (this.#state === "failed" || !this.#adapter || !this.#session) {
+      throw new GroupXError(
+        "SESSION_NOT_AVAILABLE",
+        this.#detail ?? "The room assistant harness is not ready"
+      );
+    }
+  }
+
+  #needsReopen(): boolean {
+    if (this.#fatal || this.#state === "disabled") return false;
+    if (!this.#adapter || !this.#session) return this.#origin !== undefined;
+    const health = this.#adapter.health();
+    return health.status === "failed" || health.status === "stopped";
+  }
+
+  #canReopen(error: GroupXError): boolean {
+    if (this.#fatal || this.#origin === undefined) return false;
+    if (error.message.includes("returned no text")) return false;
+    return (
+      error.code === "SESSION_NOT_AVAILABLE" ||
+      error.code === "PROTOCOL_INVALID_MESSAGE" ||
+      error.code === "ADAPTER_START_FAILED" ||
+      /stdout line exceeded|line_too_large|requires restart/i.test(error.message)
+    );
+  }
+
+  async #promptOnce(text: string, signal: AbortSignal): Promise<string> {
+    if (!this.#adapter || !this.#session) {
       throw new GroupXError(
         "SESSION_NOT_AVAILABLE",
         this.#detail ?? "The room assistant harness is not ready"
@@ -140,29 +238,10 @@ export class CliOperatorBrain implements OperatorBrain {
       return trimmed;
     } catch (error) {
       if (this.#state === "busy") this.#state = "ready";
-      if (error instanceof GroupXError && error.code === "UNEXPECTED_NATIVE_INTERACTION") {
-        this.#state = "failed";
-        this.#detail = "The assistant brain requested a native interaction and was stopped.";
-        throw new GroupXError("SESSION_NOT_AVAILABLE", this.#detail);
-      }
       throw error;
     } finally {
       this.#cancelNativeTurnId = undefined;
     }
-  }
-
-  async cancel(): Promise<void> {
-    if (!this.#adapter || !this.#session || this.#cancelNativeTurnId === undefined) return;
-    await this.#adapter.cancel(this.#session, this.#cancelNativeTurnId).catch(() => undefined);
-  }
-
-  async close(): Promise<void> {
-    if (this.#adapter && this.#session) {
-      await this.#adapter.close(this.#session).catch(() => undefined);
-    }
-    this.#adapter = undefined;
-    this.#session = undefined;
-    if (this.#state !== "disabled") this.#state = "failed";
   }
 }
 
@@ -284,10 +363,10 @@ export class GroupXAssistantHost implements AssistantHost {
     if (!snapshot.enabled) {
       throw new GroupXError("SESSION_NOT_AVAILABLE", "尚未添加房间助理");
     }
-    if (snapshot.status === "failed" || snapshot.status === "starting") {
+    if (snapshot.status === "starting") {
       throw new GroupXError(
         "SESSION_NOT_AVAILABLE",
-        snapshot.detail ?? "房间助理尚未就绪，请重启 GroupX"
+        snapshot.detail ?? "房间助理正在启动，请稍后再试"
       );
     }
 
@@ -330,7 +409,7 @@ export class GroupXAssistantHost implements AssistantHost {
       const normalized = toGroupXError(error, "SESSION_NOT_AVAILABLE");
       const assistantMessage = this.#store.appendAssistantMessage({
         role: "assistant",
-        content: `工具或模型失败：${normalized.message}`
+        content: publicAssistantFailure(normalized)
       });
       return {
         userMessage: toContractMessage(userMessage),
@@ -355,6 +434,22 @@ export class GroupXAssistantHost implements AssistantHost {
     this.#inflight?.abort();
     await this.#brain.close();
   }
+}
+
+function publicAssistantFailure(error: GroupXError): string {
+  if (error.code === "TURN_INTERRUPTED") {
+    return "这一轮已取消。";
+  }
+  if (/stdout line exceeded|line_too_large|Protocol stdout/i.test(error.message)) {
+    return "这一轮房间记录太大，助理脑进程被协议行上限打断了。请再发一次；现在只会看最近的公开事件。";
+  }
+  if (
+    error.code === "SESSION_NOT_AVAILABLE" &&
+    /requires restart|harness is not ready|not ready/i.test(error.message)
+  ) {
+    return "助理脑会话已中断。请再发一次，我会重新接上。";
+  }
+  return `工具或模型失败：${error.message}`;
 }
 
 function toContractMessage(

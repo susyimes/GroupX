@@ -34,6 +34,7 @@ import type {
 } from "../contracts/operator.js";
 import type { SetupSaveResponse, SetupSnapshot } from "../contracts/setup.js";
 import { ASSISTANT_ACTOR_ID } from "../core/assistant.js";
+import type { GroupXEnvelope } from "../core/envelope.js";
 import { GroupXError } from "../core/errors.js";
 import type { ToolCallerContext } from "../mcp/server/broker-api.js";
 import type { GroupXBroker } from "../broker/broker.js";
@@ -46,6 +47,27 @@ import {
 import type { RestartAgentCommandCoordinator } from "./restart-commands.js";
 
 const DEFAULT_PAGE_LIMIT = 100;
+const OPERATOR_READ_DEFAULT_LIMIT = 20;
+const OPERATOR_READ_FETCH_CAP = 100;
+const OPERATOR_READ_CONTENT_CHARS = 2_000;
+const OPERATOR_READ_EVENT_TYPES = new Set([
+  "message.created",
+  "operator.dispatch",
+  "supervision.paired",
+  "supervision.observed",
+  "supervision.steered",
+  "turn.completed",
+  "turn.failed",
+  "turn.cancelled",
+  "turn.interrupted",
+  "context.reset",
+  "context.compaction.completed",
+  "session.ready",
+  "session.failed",
+  "session.stopped",
+  "routing.loop_stopped",
+  "system.error"
+]);
 const TERMINAL = new Set(["completed", "failed", "cancelled", "interrupted"]);
 
 function throwIfAborted(signal: AbortSignal): void {
@@ -250,14 +272,33 @@ export class GroupXOperatorBrokerApi implements OperatorBrokerApi {
 
   async read(caller: ToolCallerContext, input: McpReadInput): Promise<McpReadResult> {
     this.#requireOperator(caller);
-    return parseMcpReadResult(
-      this.#broker.readCorrelation({
-        ...(input.correlationId === undefined ? {} : { correlationId: input.correlationId }),
-        roomId: this.#roomId,
-        ...(input.afterSeq === undefined ? {} : { afterSeq: input.afterSeq }),
-        ...(input.limit === undefined ? {} : { limit: input.limit })
-      })
-    );
+    const requested = input.limit ?? OPERATOR_READ_DEFAULT_LIMIT;
+    const fetchLimit = Math.min(Math.max(requested * 4, requested), OPERATOR_READ_FETCH_CAP);
+    const raw = this.#broker.readCorrelation({
+      ...(input.correlationId === undefined ? {} : { correlationId: input.correlationId }),
+      roomId: this.#roomId,
+      ...(input.afterSeq === undefined ? {} : { afterSeq: input.afterSeq }),
+      limit: fetchLimit
+    });
+    const events: GroupXEnvelope[] = [];
+    let scannedSeq = input.afterSeq ?? 0;
+    for (const event of raw.events) {
+      if (typeof event.seq === "number") scannedSeq = event.seq;
+      if (!OPERATOR_READ_EVENT_TYPES.has(event.type)) continue;
+      events.push(boundOperatorReadEvent(event));
+      if (events.length >= requested) break;
+    }
+    const afterSeq = input.afterSeq ?? 0;
+    const nextAfterSeq =
+      events.length >= requested
+        ? scannedSeq
+        : (raw.nextAfterSeq ?? (scannedSeq > afterSeq ? scannedSeq : undefined));
+    return parseMcpReadResult({
+      ...(raw.correlationId === undefined ? {} : { correlationId: raw.correlationId }),
+      events,
+      turns: raw.turns,
+      ...(nextAfterSeq === undefined ? {} : { nextAfterSeq })
+    });
   }
 
   async roster(caller: ToolCallerContext) {
@@ -747,4 +788,36 @@ export class GroupXOperatorBrokerApi implements OperatorBrokerApi {
     }
     void workers;
   }
+}
+
+function boundOperatorReadEvent(event: GroupXEnvelope): GroupXEnvelope {
+  return {
+    ...event,
+    body: boundOperatorReadBody(event.type, event.body)
+  };
+}
+
+function boundOperatorReadBody(type: string, body: unknown): unknown {
+  if (typeof body === "string") return excerptOperatorText(body);
+  if (body === null || typeof body !== "object" || Array.isArray(body)) return body;
+  const record = { ...(body as Record<string, unknown>) };
+  if (type === "tool.progress.recorded" || type === "turn.reasoning.recorded") {
+    return {
+      ...(typeof record.name === "string" ? { name: record.name } : {}),
+      ...(typeof record.status === "string" ? { status: record.status } : {}),
+      ...(typeof record.turnId === "string" ? { turnId: record.turnId } : {}),
+      excerpted: true
+    };
+  }
+  for (const key of ["content", "text", "message", "detail", "error", "prompt"]) {
+    if (typeof record[key] === "string") {
+      record[key] = excerptOperatorText(record[key]);
+    }
+  }
+  return record;
+}
+
+function excerptOperatorText(value: string): string {
+  if (value.length <= OPERATOR_READ_CONTENT_CHARS) return value;
+  return `${value.slice(0, OPERATOR_READ_CONTENT_CHARS)}…[excerpted ${String(value.length - OPERATOR_READ_CONTENT_CHARS)} chars]`;
 }

@@ -213,6 +213,7 @@ describe("GroupX MCP tools", () => {
     const listed = await fixture.client.listTools();
     const byName = new Map(listed.tools.map((tool) => [tool.name, tool] as const));
     expect(byName.get("send")?.description).toContain("wake no one");
+    expect(byName.get("send")?.description).toContain("supervision.observers");
     expect(byName.get("ask")?.description).toContain("the target keeps running");
     expect(byName.get("read")?.description).toContain("frozen at dispatch");
     expect(byName.get("watch")?.description).toContain("not approval");
@@ -285,6 +286,28 @@ describe("GroupX MCP tools", () => {
     });
     expect(broker.calls[0]?.input).not.toHaveProperty("from");
     expect(broker.calls[0]?.caller.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("forwards supervision on send to the Broker", async () => {
+    const broker = new FakeBroker();
+    const fixture = await connectFixture(broker);
+    closeables.push(fixture.client, fixture.server);
+
+    const result = await fixture.client.callTool({
+      name: "send",
+      arguments: {
+        to: ["agent:kimi"],
+        content: "review this",
+        clientCommandId: "command-supervise",
+        supervision: { observers: ["agent:grok"], mode: "live_steer" }
+      }
+    });
+
+    expect(result.isError).not.toBe(true);
+    expect(broker.calls[0]?.input).toMatchObject({
+      to: ["agent:kimi"],
+      supervision: { observers: ["agent:grok"], mode: "live_steer" }
+    });
   });
 
   it("rejects caller-supplied provenance before invoking the Broker", async () => {
