@@ -767,6 +767,7 @@ export interface GroupXStore {
     status?: TurnStatus;
     targetActorId?: string;
     rootCorrelationId?: string;
+    sourceEventId?: string;
   }): TurnRecord[];
   countTurns(): number;
   claimNextQueuedTurn(input: {

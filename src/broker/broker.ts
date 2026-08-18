@@ -67,6 +67,7 @@ import type {
   RetractRecordFromBindingInput,
   SupersedeIdentityFromBindingInput,
   SupersedeMemoryFromBindingInput,
+  TurnQueueSnapshot,
   WaitForCorrelationInput
 } from "./types.js";
 
@@ -732,6 +733,25 @@ export class GroupXBroker {
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
       throw new RangeError("timeoutMs must be a positive integer");
     }
+    if (input.childTurnIds !== undefined && input.sourceEventId !== undefined) {
+      throw new GroupXError(
+        "INVALID_ENVELOPE",
+        "Specify either childTurnIds or sourceEventId, not both"
+      );
+    }
+    if (input.sourceEventId !== undefined) {
+      const source = this.#store.getEvent(input.sourceEventId);
+      if (
+        source === undefined ||
+        source.roomId !== (input.roomId ?? this.#defaultRoomId) ||
+        source.correlationId !== input.correlationId
+      ) {
+        throw new GroupXError(
+          "UNKNOWN_TARGET",
+          "The requested source message does not belong to this room and correlation"
+        );
+      }
+    }
     const initialTurns = input.childTurnIds
       ? input.childTurnIds.map((turnId) => {
           const turn = this.#store.getTurn(turnId);
@@ -743,7 +763,9 @@ export class GroupXBroker {
           }
           return turn;
         })
-      : this.#store.listTurns({ rootCorrelationId: input.correlationId });
+      : input.sourceEventId !== undefined
+        ? this.#store.listTurns({ sourceEventId: input.sourceEventId })
+        : this.#store.listTurns({ rootCorrelationId: input.correlationId });
     const turnIds = [...new Set(initialTurns.map((turn) => turn.turnId))];
     if (turnIds.length === 0) {
       throw new GroupXError("UNKNOWN_TARGET", "The correlation has no child Turns to wait for");
@@ -832,6 +854,31 @@ export class GroupXBroker {
         ...(input.roomId === undefined ? {} : { roomId: input.roomId })
       }, false),
       responseEvents
+    };
+  }
+
+  inspectTurnQueue(turnId: string): TurnQueueSnapshot {
+    this.#assertOpen();
+    const turn = this.#store.getTurn(turnId);
+    if (turn === undefined) {
+      throw new GroupXError("UNKNOWN_TARGET", "The requested Turn does not exist");
+    }
+    const actorTurns = this.#store.listTurns({ targetActorId: turn.targetActorId });
+    const ahead = actorTurns.filter(
+      (candidate) =>
+        candidate.enqueueSeq < turn.enqueueSeq && !TERMINAL_TURN_STATUSES.has(candidate.status)
+    );
+    const active = actorTurns.find(
+      (candidate) =>
+        candidate.enqueueSeq <= turn.enqueueSeq &&
+        (candidate.status === "dispatching" ||
+          candidate.status === "running" ||
+          candidate.status === "cancelling")
+    );
+    return {
+      turnId,
+      queuePosition: ahead.length,
+      ...(active === undefined ? {} : { activeTurnId: active.turnId })
     };
   }
 
@@ -1396,6 +1443,7 @@ export class GroupXBroker {
     const lifecycleContext: ActiveBrokerTurnContext = {
       bindingId: claim.attempt.bindingId,
       turnId: claim.turn.turnId,
+      sourceEventId: claim.turn.sourceEventId,
       rootCorrelationId: claim.turn.rootCorrelationId,
       hopCount: claim.turn.hopCount
     };

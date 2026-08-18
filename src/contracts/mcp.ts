@@ -66,13 +66,24 @@ export const McpSendResultSchema = z.object({
   turns: QueuedTurnResultsSchema
 }).passthrough();
 
+export const McpPublishInputSchema = z.strictObject({
+  content: MessageContentSchema,
+  replyToEventId: ReferenceIdSchema.optional(),
+  clientCommandId: ClientCommandIdSchema
+});
+
+export const McpPublishResultSchema = z.object({
+  messageEventId: ReferenceIdSchema,
+  correlationId: CorrelationIdSchema
+}).passthrough();
+
 export const McpAskInputSchema = z
   .strictObject({
     to: MessageTargetsSchema,
     content: MessageContentSchema,
     replyToEventId: ReferenceIdSchema.optional(),
     clientCommandId: ClientCommandIdSchema,
-    timeoutMs: z.number().int().positive().max(3_600_000).optional(),
+    timeoutMs: z.number().int().positive().max(60_000).optional(),
     cancelOnTimeout: z.boolean().optional(),
     supervision: SupervisionPairSchema.optional()
   })
@@ -83,7 +94,10 @@ export const McpAskInputSchema = z
 export const McpAskTargetResultSchema = z
   .object({
     target: AgentActorIdSchema,
-    status: z.enum(["completed", "failed", "cancelled", "timeout"]),
+    turnId: ReferenceIdSchema,
+    status: z.enum(["completed", "failed", "cancelled", "pending"]),
+    queuePosition: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    activeTurnId: ReferenceIdSchema.optional(),
     responseEventId: ReferenceIdSchema.optional(),
     content: z.string().max(MAX_MESSAGE_CONTENT_LENGTH).optional(),
     errorCode: z.string().min(1).max(128).optional(),
@@ -103,6 +117,7 @@ export const McpAskTargetResultSchema = z
 export const McpAskResultSchema = z.object({
   messageEventId: ReferenceIdSchema,
   correlationId: CorrelationIdSchema,
+  state: z.enum(["terminal", "pending"]),
   results: z.array(McpAskTargetResultSchema).min(1).max(32)
 }).passthrough().superRefine((result, context) => {
   const targets = result.results.map((targetResult) => targetResult.target);
@@ -113,7 +128,22 @@ export const McpAskResultSchema = z.object({
       path: ["results"]
     });
   }
+  const hasPending = result.results.some((targetResult) => targetResult.status === "pending");
+  if ((result.state === "pending") !== hasPending) {
+    context.addIssue({
+      code: "custom",
+      message: "ask state must match whether any target result is pending",
+      path: ["state"]
+    });
+  }
 });
+
+export const McpCollectInputSchema = z.strictObject({
+  messageEventId: ReferenceIdSchema,
+  timeoutMs: z.number().int().positive().max(60_000).optional()
+});
+
+export const McpCollectResultSchema = McpAskResultSchema;
 
 export const McpWatchInputSchema = z.strictObject({
   subjectTurnId: ReferenceIdSchema.optional(),
@@ -266,8 +296,12 @@ export type McpSteerInput = z.infer<typeof McpSteerInputSchema>;
 export type McpSteerResult = z.infer<typeof McpSteerResultSchema>;
 export type McpSendInput = z.infer<typeof McpSendInputSchema>;
 export type McpSendResult = z.infer<typeof McpSendResultSchema>;
+export type McpPublishInput = z.infer<typeof McpPublishInputSchema>;
+export type McpPublishResult = z.infer<typeof McpPublishResultSchema>;
 export type McpAskInput = z.infer<typeof McpAskInputSchema>;
 export type McpAskResult = z.infer<typeof McpAskResultSchema>;
+export type McpCollectInput = z.infer<typeof McpCollectInputSchema>;
+export type McpCollectResult = z.infer<typeof McpCollectResultSchema>;
 export type McpReadInput = z.infer<typeof McpReadInputSchema>;
 export type McpReadResult = z.infer<typeof McpReadResultSchema>;
 export type McpMemorySearchInput = z.infer<typeof McpMemorySearchInputSchema>;
@@ -291,6 +325,14 @@ export function parseMcpAskInput(input: unknown, options?: KnownTargetOptions): 
   const parsed = parseWriteRequest(McpAskInputSchema, input);
   assertKnownTargets([...parsed.to, ...(parsed.supervision?.observers ?? [])], options);
   return parsed;
+}
+
+export function parseMcpPublishInput(input: unknown): McpPublishInput {
+  return parseWriteRequest(McpPublishInputSchema, input);
+}
+
+export function parseMcpCollectInput(input: unknown): McpCollectInput {
+  return parseWriteRequest(McpCollectInputSchema, input);
 }
 
 export function parseMcpWatchInput(input: unknown): McpWatchInput {
@@ -346,6 +388,14 @@ export function parseMcpSendResult(input: unknown): McpSendResult {
 
 export function parseMcpAskResult(input: unknown): McpAskResult {
   return parseContractOutput(McpAskResultSchema, input);
+}
+
+export function parseMcpPublishResult(input: unknown): McpPublishResult {
+  return parseContractOutput(McpPublishResultSchema, input);
+}
+
+export function parseMcpCollectResult(input: unknown): McpCollectResult {
+  return parseContractOutput(McpCollectResultSchema, input);
 }
 
 export function parseMcpReadResult(input: unknown): McpReadResult {

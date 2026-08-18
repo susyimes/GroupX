@@ -5,11 +5,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type {
   McpAskInput,
+  McpCollectInput,
   McpCoreMemoryRememberInput,
   McpIdentityReadInput,
   McpIdentityRememberInput,
   McpMemoryRememberInput,
   McpMemorySearchInput,
+  McpPublishInput,
   McpReadInput,
   McpSendInput,
   McpSteerInput,
@@ -43,17 +45,47 @@ class FakeBroker implements ToolBrokerApi {
     };
   }
 
+  async publish(caller: ToolCallerContext, input: McpPublishInput) {
+    this.calls.push({ method: "publish", caller, input });
+    return {
+      messageEventId: "event-publish",
+      correlationId: "correlation-publish"
+    };
+  }
+
   async ask(caller: ToolCallerContext, input: McpAskInput) {
     this.calls.push({ method: "ask", caller, input });
     return {
       messageEventId: "event-ask",
       correlationId: "correlation-ask",
+      state: "terminal" as const,
       results: input.to.map((target) => ({
         target,
+        turnId: `turn-${target}`,
         status: "completed" as const,
+        queuePosition: 0,
         responseEventId: `response-${target}`,
         content: `answer from ${target}`
       }))
+    };
+  }
+
+  async collect(caller: ToolCallerContext, input: McpCollectInput) {
+    this.calls.push({ method: "collect", caller, input });
+    return {
+      messageEventId: input.messageEventId,
+      correlationId: "correlation-ask",
+      state: "terminal" as const,
+      results: [
+        {
+          target: "agent:kimi",
+          turnId: "turn-agent:kimi",
+          status: "completed" as const,
+          queuePosition: 0,
+          responseEventId: "response-agent:kimi",
+          content: "answer from agent:kimi"
+        }
+      ]
     };
   }
 
@@ -205,20 +237,23 @@ describe("GroupX MCP tools", () => {
     }
   });
 
-  it("teaches wake, timeout, and frozen-context semantics in the tool surface", async () => {
+  it("teaches no-wakeup publication, exact collection, and frozen-context semantics", async () => {
     const fixture = await connectFixture();
     closeables.push(fixture.client, fixture.server);
 
-    expect(fixture.client.getInstructions()).toContain("wakes no agent");
+    expect(fixture.client.getInstructions()).toContain("wake no agent");
     const listed = await fixture.client.listTools();
     const byName = new Map(listed.tools.map((tool) => [tool.name, tool] as const));
     expect(byName.get("send")?.description).toContain("wake no one");
     expect(byName.get("send")?.description).toContain("supervision.observers");
-    expect(byName.get("ask")?.description).toContain("the target keeps running");
+    expect(byName.get("publish")?.description).toContain("without waking any agent");
+    expect(byName.get("ask")?.description).toContain("state=pending");
+    expect(byName.get("collect")?.description).toContain("never creates or replays");
     expect(byName.get("read")?.description).toContain("frozen at dispatch");
     expect(byName.get("watch")?.description).toContain("not approval");
     expect(byName.get("steer")?.description).toContain("cannot approve");
     expect(fixture.client.getInstructions()).toContain("not an approval layer");
+    expect(fixture.client.getInstructions()).toContain("must not send the same answer back");
   });
 
   it("routes watch and steer without accepting a caller-supplied from field", async () => {
@@ -397,6 +432,14 @@ describe("GroupX MCP tools", () => {
         clientCommandId: "command-ask"
       }
     });
+    const publish = await fixture.client.callTool({
+      name: "publish",
+      arguments: { content: "round one complete", clientCommandId: "command-publish" }
+    });
+    const collect = await fixture.client.callTool({
+      name: "collect",
+      arguments: { messageEventId: "event-ask", timeoutMs: 10 }
+    });
     const read = await fixture.client.callTool({
       name: "read",
       arguments: { correlationId: "correlation-ask", afterSeq: 0, limit: 20 }
@@ -411,11 +454,15 @@ describe("GroupX MCP tools", () => {
     });
 
     expect(ask.isError).not.toBe(true);
+    expect(publish.isError).not.toBe(true);
+    expect(collect.isError).not.toBe(true);
     expect(read.isError).not.toBe(true);
     expect(memorySearch.isError).not.toBe(true);
     expect(identityRead.isError).not.toBe(true);
     expect(broker.calls.map((call) => call.method)).toEqual([
       "ask",
+      "publish",
+      "collect",
       "read",
       "memorySearch",
       "identityRead"

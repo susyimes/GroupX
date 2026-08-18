@@ -21,7 +21,7 @@
 | Direct fixture | JSON/JSONL、exit、stderr、取消、interaction detection | 否 |
 | Structured fixture | App Server/ACP wire、session、cancel、resume、interaction detection | 否 |
 | native live | 核心 3 Agent Structured Gate；新增 driver 使用独立 matching evidence | 是 |
-| MCP integration | `send/ask/read`、binding、因果循环、native actual call；仅 Structured | fixture 必跑；Structured live 必跑 |
+| MCP integration | `send/publish/ask/collect/read`、binding、因果循环、native actual call；仅 Structured | fixture 必跑；Structured live 必跑 |
 | Supervision pairing | 并行 watch、里程碑有界、steer 改道/上限、观察隔离、无 approval | fixture 必跑；不作为 Structured Gate |
 | browser e2e | 发送、并行回复、sender、memory/identity、无审批 UI | fake 必跑；live 显式运行 |
 | performance | 测量 Structured Broker/session/stream 延迟 | native 模型耗时不计入 Broker 指标 |
@@ -103,15 +103,15 @@ binding 是 provenance/correlation handle，不是 secret、token 或本机抗�
 | R-008 | observer 与 worker 重叠 | `SUPERVISION_PAIR_INVALID` 或合同校验失败，不创建 Turn |
 | R-009 | 请求自报监督者/`from` | `SENDER_FIELD_FORBIDDEN`；actor/`sourceKind` 仍由 Broker 写入 |
 
-## 7. Structured MCP `send/ask/read`
+## 7. Structured MCP `send/publish/ask/collect/read`
 
 | ID | 用例 | 通过标准 |
 | --- | --- | --- |
-| C-001 | Structured `groupx.send` | commit 后异步返回 correlation/turn IDs |
-| C-002 | Structured `groupx.ask` | 目标结果进入 transcript，并作为当前 tool result 返回 |
+| C-001 | Structured `groupx.send` | commit 后异步返回 correlation/turn IDs 与 queuePosition；省略 replyTo 时引用当前 source event |
+| C-002 | Structured `groupx.ask` | lane 可运行时目标结果进入 transcript，并作为当前 tool result 返回 |
 | C-003 | Structured `groupx.read` | 按 correlation/cursor 查询异步结果 |
 | C-004 | A ask B，B ask A | 后者返回 `CAUSAL_CYCLE`，不死锁 |
-| C-005 | ask timeout 默认 | 停止等待但不强制取消目标，之后可 read |
+| C-005 | ask bounded wait 默认 | 最多 60 秒；停止等待但不强制取消目标，返回 pending 与原 messageEventId |
 | C-006 | ask timeout + cancelOnTimeout | best-effort native cancel，最终状态来自 terminal event |
 | C-007 | 三 Structured Adapter native call | 都观察到真实 `tools/call`，actor 来自各自 binding |
 | C-008 | descriptor/tools/list 无 actual call | 保持 PARTIAL/NOT_RUN，不升级 PASS |
@@ -126,6 +126,11 @@ binding 是 provenance/correlation handle，不是 secret、token 或本机抗�
 | C-017 | Watch Turn 对正在观察的 worker `ask`/`send` | `SUPERVISION_STEER_REQUIRED` |
 | C-018 | 同一 subject 超过 `steersPerSubjectTurn` | `STEER_LIMIT_REACHED`，不静默丢弃 |
 | C-019 | 监督失败 | 不改 unrestricted argv，不产生 `approval.*`，不重放已可能交付的 prompt |
+| C-020 | Structured `groupx.publish` | source message 与 command result 原子提交，`to=[]`，不创建 Turn、不唤醒 Agent |
+| C-021 | busy lane 上 ask | 立即返回 `state=pending`、queuePosition/activeTurnId，不进入长等待 |
+| C-022 | `groupx.collect` | 只按原 ask `messageEventId` 收集 exact child Turns；不新增 command/message/Turn，不重放 prompt |
+| C-023 | 默认 reply chain | send/ask/publish 未给 replyTo 时固定为当前 Turn source event；显式值仍保留 |
+| C-024 | 评审提示合同 | instructions 与 Context Packet 要求单协调者、reviewer final 直接作答、pending 只 collect、进度只 publish |
 
 ## 8. Turn、队列、取消与恢复
 
@@ -182,6 +187,7 @@ binding 是 provenance/correlation handle，不是 secret、token 或本机抗�
 | I-010 | bootstrap 期间并发 durable event / 多房间 active Turn | 投影与 cursor 来自同一 DB snapshot；只返回当前房间的有界最近事件与最小公开 Turn 字段；随后 SSE 从 `seq > cursor` 无缺口追上 |
 | I-011 | native reasoning delta 后刷新/重连 | delta 不逐条落库；terminal transaction 生成最多一条 `turn.reasoning.recorded`，按 seq 在 response/terminal 前回放 |
 | I-012 | native tool started/completed 后刷新/重连 | live `tool.progress` 保持 transient；terminal transaction 生成 `tool.progress.recorded`，同一 `turnId + toolCallId` 仍合并为气泡内折叠记录 |
+| I-013 | publish acceptance | `client_commands + message.created + result` 同事务；幂等 replay 不重复 event，零 Turn |
 
 ## 11. 公共、核心、日期与身份记忆
 
@@ -291,7 +297,7 @@ Broker 指标不含模型网络/推理；只测 Structured session startup/reuse
 
 ### M2
 
-- 仅 Structured：GroupX MCP `send/ask/read`、binding、因果循环、超时、取消、幂等通过；
+- 仅 Structured：GroupX MCP `send/publish/ask/collect/read`、binding、因果循环、pending/队列、bounded wait、取消、幂等通过；
 - 三 Agent native `tools/call` 与 provenance 全部 verified；
 - 不新增审批、权限或 user-input 系统。
 

@@ -370,6 +370,45 @@ describe.sequential("SqliteGroupXStore transactions and idempotency", () => {
     expect(fixture.store.countTurns()).toBe(turnCount);
   });
 
+  it("persists mcp.publish atomically without creating target Turns", () => {
+    const fixture = createFixture();
+    const input: AcceptMessageInput = {
+      sourceBindingId: "binding:codex",
+      clientCommandId: "publish-round-one",
+      commandType: "mcp.publish",
+      roomId: "room:main",
+      targets: [],
+      content: "round one complete",
+      correlationId: "corr:review"
+    };
+
+    const first = fixture.store.acceptMessageWithDisposition(input);
+    expect(first).toMatchObject({
+      disposition: "accepted",
+      result: { correlationId: "corr:review", turns: [] }
+    });
+    expect(fixture.store.getEvent(first.result.messageEventId)).toMatchObject({
+      actorId: "agent:codex",
+      targets: [],
+      body: { content: "round one complete" }
+    });
+    expect(fixture.store.countTurns()).toBe(0);
+    expect(fixture.store.acceptMessageWithDisposition(input)).toEqual({
+      disposition: "replayed",
+      result: first.result
+    });
+    expect(fixture.store.countEvents()).toBe(1);
+
+    expectGroupXCode(
+      () => fixture.store.acceptMessage({ ...input, clientCommandId: "publish-with-turn", targets: [target("agent:grok")] }),
+      "INVALID_ENVELOPE"
+    );
+    expectGroupXCode(
+      () => fixture.store.acceptMessage({ ...input, clientCommandId: "send-without-turn", commandType: "mcp.send" }),
+      "INVALID_ENVELOPE"
+    );
+  });
+
   it("claims external client commands once and distinguishes pending from completed replay", () => {
     const fixture = createFixture();
     const input = {

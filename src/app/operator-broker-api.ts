@@ -641,23 +641,37 @@ export class GroupXOperatorBrokerApi implements OperatorBrokerApi {
     return parseMcpAskResult({
       messageEventId: accepted.messageEventId,
       correlationId: accepted.correlationId,
+      state: accepted.turns.every((acceptedTurn) => {
+        const turn = byTurnId.get(acceptedTurn.turnId);
+        return turn !== undefined && TERMINAL.has(turn.status);
+      }) ? "terminal" : "pending",
       results: accepted.turns.map((acceptedTurn) => {
         const turn = byTurnId.get(acceptedTurn.turnId);
         if (!turn || (waited.state === "timeout" && !TERMINAL.has(turn.status))) {
           return {
             target: acceptedTurn.target,
-            status: "timeout" as const,
+            turnId: acceptedTurn.turnId,
+            status: "pending" as const,
+            queuePosition: 0,
             note: `${acceptedTurn.target} is still running; poll read with correlationId "${accepted.correlationId}".`
           };
         }
         if (turn.status === "completed") {
           const responseEventId = turn.responseEventId;
           if (responseEventId === undefined) {
-            return { target: acceptedTurn.target, status: "failed" as const, errorCode: "PROTOCOL_INVALID_MESSAGE" };
+            return {
+              target: acceptedTurn.target,
+              turnId: acceptedTurn.turnId,
+              status: "failed" as const,
+              queuePosition: 0,
+              errorCode: "PROTOCOL_INVALID_MESSAGE"
+            };
           }
           return {
             target: acceptedTurn.target,
+            turnId: acceptedTurn.turnId,
             status: "completed" as const,
+            queuePosition: 0,
             responseEventId,
             ...(contentFromEventBody(byEventId.get(responseEventId)?.body) === undefined
               ? {}
@@ -665,11 +679,18 @@ export class GroupXOperatorBrokerApi implements OperatorBrokerApi {
           };
         }
         if (turn.status === "cancelled") {
-          return { target: acceptedTurn.target, status: "cancelled" as const };
+          return {
+            target: acceptedTurn.target,
+            turnId: acceptedTurn.turnId,
+            status: "cancelled" as const,
+            queuePosition: 0
+          };
         }
         return {
           target: acceptedTurn.target,
+          turnId: acceptedTurn.turnId,
           status: "failed" as const,
+          queuePosition: 0,
           ...(turn.errorCode === undefined ? {} : { errorCode: turn.errorCode })
         };
       })

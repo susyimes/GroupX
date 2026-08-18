@@ -376,6 +376,8 @@ schema v9 新增：
 
 只有 commit 成功后才能向 Adapter 派发。这样不会出现“CLI 已收到但消息账本不存在”。
 
+`command_type='mcp.publish'` 是同一接受事务的无 Turn 子集：必须 `targets=[]` 且不能带 supervision；事务只写 `client_commands`、source `message.created` 和 command result，然后 commit。它不写 `turn.queued`/`turns`，也不触发 Adapter。其他 command type 仍至少需要一个 target。publish、ask pending、collect 和队列可见性全部复用现有表：collect 以 `turns.source_event_id`（已有唯一索引前缀）精确找 child Turns，queue metadata 从 `target_actor_id + enqueue_seq + status` 计算，因此本阶段没有 schema/migration 变化。
+
 ### 4.2 结束 Turn
 
 Turn terminal transaction 先对 `terminal_event_id IS NULL` 和当前 non-terminal status 执行 CAS，只有唯一胜者可以提交：

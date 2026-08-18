@@ -33,7 +33,7 @@ GroupX 按定义字段记录诊断数据，不主动采集完整环境、CLI 配
 | ID | 用户需求 | 实现合同 | 主要验收 |
 | --- | --- | --- | --- |
 | R1 | 本地 Web UI 与多套 CLI 群聊 | REST 命令、SSE 事件、Structured Agent Adapter | Structured UI 可定向发送并看到已启用 Agent 回复 |
-| R2 | CLI 可以互相沟通 | Structured 使用 GroupX MCP `send/ask/read` 做当前回合主动互调 | 声称支持的 Structured driver 分别完成 native MCP actual call |
+| R2 | CLI 可以互相沟通 | Structured 使用 GroupX MCP `send/publish/ask/collect/read` 做当前回合主动互调 | 声称支持的 Structured driver 分别完成 native MCP actual call |
 | R3 | GroupX 不负责安全，首版完全放开 | access 固定 unrestricted；按 CLI 使用原生最大放开 argv/mode；没有 GroupX 审批子系统 | 精确 argv/session config；任何 native interaction request 失败 Turn；外部阻断正确归类 |
 | R4 | 公共群组记忆、身份记忆 | 版本化 MemoryRecord、IdentityRecord、来源引用 | 重启后可检索且来源可追溯 |
 | R5 | 简单、方便扩展 | 单 Broker、统一 Adapter、统一 Envelope、单数据库 | 新增 Adapter 不修改核心路由和存储合同 |
@@ -98,7 +98,7 @@ flowchart LR
     KimiAdapter --> KimiNative["kimi acp"]
     HermesAdapter --> HermesNative["hermes --yolo acp"]
     ClaudeAdapter --> ClaudeNative["claude --print<br/>stream-json stdio"]
-    CodexNative -.-> GroupXMCP["GroupX MCP<br/>send / ask / read"]
+    CodexNative -.-> GroupXMCP["GroupX MCP<br/>send / publish / ask / collect / read"]
     GrokNative -. "Structured only" .-> GroupXMCP
     KimiNative -. "Structured only" .-> GroupXMCP
     HermesNative -. "Structured only" .-> GroupXMCP
@@ -259,7 +259,9 @@ GroupX MCP 是 Structured Agent 在当前生成回合主动调用另一个 Agent
 
 ```text
 groupx.send
+groupx.publish
 groupx.ask
+groupx.collect
 groupx.watch
 groupx.steer
 groupx.read
@@ -272,9 +274,11 @@ groupx.identity.remember
 
 工具调用方来自 session binding。`core_memory_remember` 没有 scope/subject/author 输入，只能写调用 Agent 自己的 core；Agent 也只能以自己的 actor 身份写 identity record。Web UI 可以为任意 Agent 写用户来源的 identity/core record。
 
-`groupx.send` 持久化后异步返回；`groupx.ask` 等待目标 terminal response 并将结果带回当前 CLI 回合；`groupx.read` 查询异步 correlation。同步 ask 遇到 active causal stack 中的祖先 Agent 时返回 `CAUSAL_CYCLE`，避免相互等待死锁。`watch`/`steer` 只在本次监督 Watch Turn 上成功：前者等待有界里程碑，后者 nudge 或 interrupt 整段被观察 Turn。它们不是审批层。
+`groupx.send` 持久化并创建目标 Turn 后异步返回，结果含每个目标的 `queuePosition/activeTurnId`；`groupx.publish` 只写公开进度消息，不创建 Turn、不唤醒 Agent。`groupx.ask` 最多等待 60 秒；目标 lane 已有工作时立即返回 `state=pending`，不得重发同一问题。调用方用该 ask 的 `messageEventId` 调用 `groupx.collect`，只收集这条消息创建的 child Turns；collect 本身不创建或重放 Turn。`groupx.read` 仍用于按 correlation/cursor 补读公共状态。`send/ask/publish` 未显式传 `replyToEventId` 时默认引用当前 Turn 的 source event。同步 ask 遇到 active causal stack 中的祖先 Agent 时返回 `CAUSAL_CYCLE`，避免相互等待死锁。`watch`/`steer` 只在本次监督 Watch Turn 上成功：前者等待有界里程碑，后者 nudge 或 interrupt 整段被观察 Turn。它们不是审批层。
 
-GroupX 必须实现并测试 `send/ask/read` 工具服务，但只向 Structured capability probe 已验证可以挂载并调用 MCP 的原生会话声明工具。selected transport 非 Structured、未验证或明确不支持时，attachment/HTTP 入口返回稳定 `MCP_UNAVAILABLE`（HTTP 503）；Agent 只有已由独立外部策略 evidence 投影为 `native_policy_blocked` 时，才能把该状态作为 MCP 不可用的上游原因。普通 attach/call 失败不能生成 `native_policy_blocked`。不能改用 `SESSION_NOT_AVAILABLE`，也不得改用正文 `@某人`、Direct 或另一 transport。此时用户仍可从 Web/REST 明确选择 recipients；所有最终回复仍进入公共 transcript。
+多方评审采用单协调者 fan-out：协调者负责 ask/collect 和最终汇总；reviewer 直接用当前 Turn 的 final response 回答，不再 `send` 一份重复答案，也不做 all-to-all 互审。公开阶段进度使用 `publish`。这是工具合同和提示规则，不是 Broker 内置任务编排器。
+
+GroupX 必须实现并测试 `send/publish/ask/collect/read` 工具服务，但只向 Structured capability probe 已验证可以挂载并调用 MCP 的原生会话声明工具。selected transport 非 Structured、未验证或明确不支持时，attachment/HTTP 入口返回稳定 `MCP_UNAVAILABLE`（HTTP 503）；Agent 只有已由独立外部策略 evidence 投影为 `native_policy_blocked` 时，才能把该状态作为 MCP 不可用的上游原因。普通 attach/call 失败不能生成 `native_policy_blocked`。不能改用 `SESSION_NOT_AVAILABLE`，也不得改用正文 `@某人`、Direct 或另一 transport。此时用户仍可从 Web/REST 明确选择 recipients；所有最终回复仍进入公共 transcript。
 
 ### 5.8 Web/API
 
@@ -344,10 +348,10 @@ sequenceDiagram
 
 ### 6.2 CLI 之间继续对话
 
-1. Structured 模式下，任一已配置且支持 MCP 的 Agent 在自己的长驻会话中调用 `groupx.send` 或 `groupx.ask`。
+1. Structured 模式下，任一已配置且支持 MCP 的 Agent 在自己的长驻会话中调用 `groupx.send`、`groupx.publish` 或 `groupx.ask`。
 2. GroupX MCP 根据该会话 binding 固定调用方，先持久化公共 message 和目标 Turn，再由 Broker 派发。
-3. `send` 立即返回持久化标识；`ask` 等待目标 terminal response，并把结果带回调用者当前原生回合。
-4. 问题、回复和失败状态同时进入公共 transcript；整个过程不建立物理 P2P。
+3. `send` 立即返回持久化标识与队列位置；`publish` 只落公开消息；`ask` 在 lane 空闲时有界等待，在 lane 已忙时立即返回 pending。
+4. pending ask 只能用原 `messageEventId` 调用 `collect` 续收，不重复派发；问题、回复和失败状态同时进入公共 transcript，整个过程不建立物理 P2P。
 
 用户可从 Web/REST 明确选择 Grok（或 `@all`）创建后续 Turn。普通文本中的 `@codex` 不自动创建新 Turn，不能作为 MCP 不可用时的隐式替代。
 
@@ -620,7 +624,7 @@ D:\GroupX
 
 ### M2：Structured Agent 主动互调
 
-- 会话绑定 GroupX MCP 与 `groupx.send/ask/read`；
+- 会话绑定 GroupX MCP 与 `groupx.send/publish/ask/collect/read`；
 - 对三个 Structured Adapter 的 MCP 注入、发现和实际调用分别做能力分级验收；
 - native interaction request fail-turn fixture；不存在 approval API/UI/event；
 - 同步因果循环检测；
@@ -659,7 +663,7 @@ GroupX v0.1 完成必须同时满足：
 6. Broker 重启后恢复消息、公共记忆、身份记忆和 Structured capability；仅 Structured 且 `prepared + not_delivered` 的 Turn 可自动重新排队，历史 Direct、已派发或不确定 Turn 不自动重放。
 7. GroupX 对每个已支持 driver 精确应用本文固定的 native unrestricted argv/session mode，不提供 access 配置、不写全局 CLI 配置；外部强制阻断显示 `native_policy_blocked`。
 8. 日志、数据库和测试证据只包含合同定义的有界字段，不主动收集完整环境、CLI 配置或原始 stderr。
-9. GroupX MCP `send/ask/read` 工具服务通过测试；只有完成本机真实 native `tools/call` 与 binding provenance 的 driver 才可宣称当前回合主动互调已 verified。
+9. GroupX MCP `send/publish/ask/collect/read` 工具服务通过测试；只有完成本机真实 native `tools/call` 与 binding provenance 的 driver 才可宣称当前回合主动互调已 verified。
 10. 代码、schema、REST、SSE 与 UI 均无 ApprovalService/table/API/UI/event；任何 native approval、permission、`requestUserInput`、question 或 elicitation 都进行有界 teardown，并且一律使当前 Turn 以 `UNEXPECTED_NATIVE_INTERACTION` 失败。`NATIVE_POLICY_BLOCKED/native_policy_blocked` 只由独立的外部策略 preflight 或 native 启动/session 拒绝 evidence 产生。不 relay、代选、fallback 或重放。
 11. Broker 本地延迟、10,000 事件投影和三路 fan-out 达到记录的性能门槛。
 

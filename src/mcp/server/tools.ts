@@ -8,6 +8,8 @@ import {
   MAX_TARGETS_PER_MESSAGE,
   McpAskInputSchema,
   McpAskResultSchema,
+  McpCollectInputSchema,
+  McpCollectResultSchema,
   McpCoreMemoryRememberInputSchema,
   McpCoreMemoryRememberResultSchema,
   McpIdentityReadInputSchema,
@@ -18,6 +20,8 @@ import {
   McpMemoryRememberResultSchema,
   McpMemorySearchInputSchema,
   McpMemorySearchResultSchema,
+  McpPublishInputSchema,
+  McpPublishResultSchema,
   McpReadInputSchema,
   McpReadResultSchema,
   McpSendInputSchema,
@@ -28,6 +32,8 @@ import {
   McpWatchResultSchema,
   parseMcpAskInput,
   parseMcpAskResult,
+  parseMcpCollectInput,
+  parseMcpCollectResult,
   parseMcpCoreMemoryRememberInput,
   parseMcpCoreMemoryRememberResult,
   parseMcpIdentityReadInput,
@@ -38,6 +44,8 @@ import {
   parseMcpMemoryRememberResult,
   parseMcpMemorySearchInput,
   parseMcpMemorySearchResult,
+  parseMcpPublishInput,
+  parseMcpPublishResult,
   parseMcpReadInput,
   parseMcpReadResult,
   parseMcpSendInput,
@@ -61,7 +69,9 @@ export const GROUPX_MCP_SERVER_VERSION = "0.1.0" as const;
 
 export const GROUPX_MCP_TOOL_NAMES = [
   "send",
+  "publish",
   "ask",
+  "collect",
   "watch",
   "steer",
   "read",
@@ -149,20 +159,40 @@ export function createGroupXMcpServer(options: CreateGroupXMcpServerOptions): Mc
     {
       instructions:
         "GroupX tools route explicit local group messages and memory operations. Caller identity " +
-        "comes from the current Adapter/session binding. Routing rules: (1) Your final turn " +
-        "response is visible to the room but wakes no agent, and @name mentions in plain text " +
-        "never route; to make another agent act or answer, call send or ask. (2) After an ask " +
-        "timeout the target keeps running and its answer is never delivered to you " +
-        "automatically; keep polling read until the target turn is terminal, or hand off " +
-        "explicitly with send before ending your turn. (3) Your prompt context is frozen at " +
+        "comes from the current Adapter/session binding. Routing rules: (1) Your final turn and " +
+        "publish are visible to the room but wake no agent, and @name mentions in plain text " +
+        "never route; only send or ask creates target Turns. (2) In a review, appoint one " +
+        "coordinator to fan out. A reviewer answers the current ask in its final response and " +
+        "must not send the same answer back as another Turn or start all-to-all review traffic. " +
+        "(3) ask waits at most 60000 ms and returns state=pending immediately when a target is " +
+        "already queued. Continue only with collect using that ask's exact messageEventId; never " +
+        "resend the same question. publish is the no-wakeup progress/checkpoint path. (4) replyTo " +
+        "defaults to the current source message, preserving the handoff chain. Your prompt context is frozen at " +
         "dispatch time; call read to catch up on newer room messages before irreversible " +
-        "actions such as pushing commits or declaring agreement with another agent. (4) watch " +
+        "actions such as pushing commits or declaring agreement with another agent. (5) watch " +
         "and steer exist only on a live supervision watch turn: watch waits for a bounded " +
         "worker milestone, and steer nudges or interrupts the whole worker turn. They are " +
-        "not an approval layer and cannot allow or deny a native tool. (5) To start a live " +
+        "not an approval layer and cannot allow or deny a native tool. (6) To start a live " +
         "supervision pair, pass supervision.observers on send or ask. Observers cannot overlap " +
         "workers, and you cannot list yourself as an observer."
     }
+  );
+
+  server.registerTool(
+    "publish",
+    {
+      description:
+        "Publish a durable public progress update or synthesis without waking any agent or " +
+        "creating a Turn. replyToEventId defaults to the current source message.",
+      inputSchema: McpPublishInputSchema,
+      outputSchema: McpPublishResultSchema
+    },
+    async (input, extra) =>
+      invoke(options.binding, extra, async (caller) =>
+        parseMcpPublishResult(
+          await options.broker.publish(caller, parseMcpPublishInput(input))
+        )
+      )
   );
 
   server.registerTool(
@@ -192,10 +222,9 @@ export function createGroupXMcpServer(options: CreateGroupXMcpServerOptions): Mc
     "ask",
     {
       description:
-        "Ask one or more agents and wait for their terminal GroupX results. Waits up to " +
-        "timeoutMs (default 120000, max 3600000). On timeout the target keeps running: poll " +
-        "read with the returned correlationId until its turn is terminal, or hand off with " +
-        "send; the answer is never delivered automatically after your turn ends. Optional " +
+        "Ask one or more agents and wait up to 60000 ms for their terminal results. If a target " +
+        "is already busy or the bounded wait ends, returns state=pending with queuePosition. " +
+        "Resume only with collect(messageEventId); do not send the same question again. Optional " +
         "supervision.observers starts the same live_steer pair as send.",
       inputSchema: McpAskWireInputSchema,
       outputSchema: McpAskResultSchema
@@ -207,6 +236,24 @@ export function createGroupXMcpServer(options: CreateGroupXMcpServerOptions): Mc
             caller,
             parseMcpAskInput(input, knownTargetOptions)
           )
+        )
+      )
+  );
+
+  server.registerTool(
+    "collect",
+    {
+      description:
+        "Collect only the child Turns created by one earlier ask messageEventId. Waits at most " +
+        "60000 ms, returns pending with queue metadata when unfinished, and never creates or " +
+        "replays a Turn.",
+      inputSchema: McpCollectInputSchema,
+      outputSchema: McpCollectResultSchema
+    },
+    async (input, extra) =>
+      invoke(options.binding, extra, async (caller) =>
+        parseMcpCollectResult(
+          await options.broker.collect(caller, parseMcpCollectInput(input))
         )
       )
   );

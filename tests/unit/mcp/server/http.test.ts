@@ -29,8 +29,14 @@ function createBroker(callers: ToolCallerContext[]): ToolBrokerApi {
         }))
       };
     },
+    async publish() {
+      throw new Error("unexpected publish");
+    },
     async ask() {
       throw new Error("unexpected ask");
+    },
+    async collect() {
+      throw new Error("unexpected collect");
     },
     async watch() {
       throw new Error("unexpected watch");

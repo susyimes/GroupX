@@ -71,7 +71,9 @@ export const CreateMessageRequestSchema = z
 export const QueuedTurnResultSchema = z.object({
   target: AgentActorIdSchema,
   turnId: ReferenceIdSchema,
-  status: z.literal("queued")
+  status: z.literal("queued"),
+  queuePosition: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+  activeTurnId: ReferenceIdSchema.optional()
 }).passthrough();
 
 export const QueuedTurnResultsSchema = z

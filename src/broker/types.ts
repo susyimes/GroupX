@@ -100,6 +100,7 @@ export interface BrokerAgentController {
 export interface ActiveBrokerTurnContext {
   bindingId: string;
   turnId: string;
+  sourceEventId: string;
   rootCorrelationId: string;
   hopCount: number;
 }
@@ -247,9 +248,17 @@ export interface WaitForCorrelationInput {
    * If omitted, the Broker snapshots the correlation's current Turns.
    */
   childTurnIds?: readonly string[];
+  /** Exact child Turn set created from this durable public message. */
+  sourceEventId?: string;
   roomId?: string;
   timeoutMs?: number;
   signal?: AbortSignal;
+}
+
+export interface TurnQueueSnapshot {
+  turnId: string;
+  queuePosition: number;
+  activeTurnId?: string;
 }
 
 export interface CorrelationWaitResult {
@@ -349,6 +358,7 @@ export interface BrokerFacade {
   ): Promise<import("../memory/types.js").RoomContextCompactionResult>;
   readCorrelation(input?: ReadCorrelationInput): CorrelationReadResult;
   waitForCorrelation(input: WaitForCorrelationInput): Promise<CorrelationWaitResult>;
+  inspectTurnQueue(turnId: string): TurnQueueSnapshot;
   health(): BrokerHealth;
   bootstrap(input?: { roomId?: string; recentLimit?: number }): BrokerBootstrap;
   queryMemory(input?: MemoryQuery): MemoryRecord[];

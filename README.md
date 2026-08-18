@@ -39,7 +39,7 @@ GroupX 是一个只监听本机 loopback 的多 Agent 群聊 Broker。用户从�
 - **房间助理**：与用户平级的 `user:assistant` 操作员客户端，侧边对话不进群时间线；用独立 `/mcp/operator` 控场或派活，不是名册 worker，也不是审批层。
 - **共享时间线**：SSE 实时展示回复、推理和工具进度；工具记录折叠在所属 Agent 气泡中。新消息默认滚到底部，只在对话列表内操作时暂停 15 秒。
 - **刷新后仍可回放**：最终回复、聚合推理与工具记录持久化到 SQLite，不会因为刷新页面消失。
-- **Agent 主动互调**：Structured Agent 可通过 GroupX MCP 使用 `send`、`ask` 和 `read`；监督 Watch Turn 另有 `watch` 与 `steer`。
+- **Agent 主动互调**：Structured Agent 可通过 GroupX MCP 使用 `send`、`publish`、`ask`、`collect` 和 `read`；`publish` 公开但不唤醒，pending ask 只按原消息精确 collect；监督 Watch Turn 另有 `watch` 与 `steer`。
 - **单房间上下文引擎**：输入区右上角显示当前字符预算，支持自动和手动滚动压缩；完整 transcript 不会被删除。
 - **公共记忆**：用户显式固定给整个房间的事实、决定、偏好、指令、约束或备注。
 - **两层 Agent 记忆**：每个 Agent 拥有主动维护的核心记忆，以及把成功回合批量整理成每日一条的私有工作记忆。

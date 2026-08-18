@@ -1191,6 +1191,52 @@ describe.sequential("GroupXBroker wait, cancel and recovery", () => {
     ).rejects.toMatchObject({ code: "UNKNOWN_TARGET" });
   });
 
+  it("reports actor queue position and waits by the exact source message", async () => {
+    const fixture = createFixture();
+    const release = deferred();
+    fixture.adapters.codex.handler = async function* (_session, input) {
+      yield nativeEvent("codex", "turn.started", {}, `${input.turnId}:start`);
+      if (input.content === "first") await release.promise;
+      yield nativeEvent("codex", "turn.completed", { content: input.content });
+    };
+    const first = await fixture.broker.acceptMessage({
+      bindingId: "binding:web",
+      request: { clientCommandId: "queue-first", to: ["agent:codex"], content: "first" }
+    });
+    await waitUntil(() => fixture.store.getTurn(first.turns[0]!.turnId)?.status === "running");
+    const second = await fixture.broker.acceptMessage({
+      bindingId: "binding:web",
+      request: { clientCommandId: "queue-second", to: ["agent:codex"], content: "second" }
+    });
+
+    expect(fixture.broker.inspectTurnQueue(second.turns[0]!.turnId)).toEqual({
+      turnId: second.turns[0]!.turnId,
+      queuePosition: 1,
+      activeTurnId: first.turns[0]!.turnId
+    });
+    await expect(
+      fixture.broker.waitForCorrelation({
+        correlationId: second.correlationId,
+        sourceEventId: second.messageEventId,
+        timeoutMs: 5
+      })
+    ).resolves.toMatchObject({
+      state: "timeout",
+      turns: [{ turnId: second.turns[0]!.turnId }]
+    });
+    await expect(
+      fixture.broker.waitForCorrelation({
+        correlationId: first.correlationId,
+        sourceEventId: second.messageEventId,
+        timeoutMs: 5
+      })
+    ).rejects.toMatchObject({ code: "UNKNOWN_TARGET" });
+
+    release.resolve();
+    await fixture.broker.waitForIdle();
+    expect(fixture.broker.inspectTurnQueue(second.turns[0]!.turnId).queuePosition).toBe(0);
+  });
+
   it("times out an ask wait without inventing a terminal Turn", async () => {
     const fixture = createFixture();
     const release = deferred();

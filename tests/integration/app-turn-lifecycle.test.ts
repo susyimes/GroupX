@@ -7,6 +7,7 @@ import type { ToolCallerContext } from "../../src/mcp/server/broker-api.js";
 const context: ActiveBrokerTurnContext = {
   bindingId: "binding:codex",
   turnId: "turn:1",
+  sourceEventId: "event:source",
   rootCorrelationId: "corr:root",
   hopCount: 4
 };

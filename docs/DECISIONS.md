@@ -38,6 +38,7 @@
 | D-026 | 放宽消息 wire 上限（131,072）、运行超时与互调链路默认值 | Accepted |
 | D-027 | 同步监督是房间协作配对，不是治理或审批层 | Accepted |
 | D-028 | 房间助理是 user:assistant 操作员客户端，不是名册 worker | Accepted |
+| D-029 | 无 schema 的协作闭环：publish、pending/collect、队列可见性与默认 reply chain | Accepted |
 
 ## D-001：透明 Broker
 
@@ -412,6 +413,29 @@ Hermes 0.20.1 的 initialize 当前未声明 `mcpCapabilities.http`，但官方�
 复杂度与回滚：未启用助理时房间行为与 v0.1.14 相同。回滚可停 `/api/assistant` 与 `/mcp/operator`，历史 `operator.dispatch` 和侧边对话行保留审计。
 
 完成标准：schema `documented`；无模型 fixture `probed`；用户→助理不经 `POST /api/messages`；派活可无群气泡但有可重放 `operator.dispatch`；作者是 `user:assistant`；`from`/`actor`/`provenance` 与 dated 写入失败；真实 operator `tools/call` 才 `verified`。
+
+## D-029：无 schema 的协作闭环
+
+触发证据：2026-08-19 对 Clue Codec 三方评审真实 correlation 的审计显示，最终结论正确，但协作机制产生 28 个 Turns。14 条定向 Agent 消息中有 8 条没有 `replyToEventId`；一次 ask 和随后一次 read 各等待约 300 秒后失败，而同一语义已被 active root Turns 从房间读取并回答；最后又出现 12 条滞后的 Codex response。审计同时确认每 Agent FIFO、parent/root/hop 和 sender provenance 正常，问题集中在「公开进度也会唤醒」「busy lane 上同步等待」「ask 后重复派发」与「回复链默认缺失」，无需重做队列或数据模型。
+
+本决定以该新证据取代 D-025 对成员 ask 超时返回、跟进方式和 3,600,000 ms 上限的选择；D-025 仍保留为当时的历史决策与证据记录。
+
+决定：
+
+1. **公开与唤醒拆开**。新增成员 MCP `publish`：经 Broker 幂等写 durable `message.created`，固定 `targets=[]`，不创建 Turn、不触发 Adapter。公开进度、阶段结论和协调者 checkpoint 使用 publish；send/ask 只用于确实需要目标 Agent 新行动的场景。
+2. **ask 先暴露队列，再有界等待**。send 返回 `queuePosition/activeTurnId`。ask 新 child Turn 前方已有非 terminal 工作时立即返回 `state=pending`；否则最多等待 60 秒。未完成结果是 pending，不再把“停止等待”冒充目标 timeout 终态。
+3. **pending 只续收，不重放**。新增 `collect(messageEventId)`，只按已有 `turns.source_event_id` 收集原 ask 的 exact child Turns；collect 不写命令、消息或 Turn。pending note 和工具说明要求调用方 collect，不得 resend/re-ask 同一问题。仍不增加自动回送或 Broker 自发 Turn，保持不变量 7。
+4. **默认形成回复链**。成员 send/ask/publish 未显式给 `replyToEventId` 时，Broker API 使用当前 active Turn 的 `sourceEventId`。actor、causation、root/hop 仍由 binding/lifecycle 决定，模型不能自报来源。
+5. **评审只设一个协调者**。MCP instructions、工具描述和 Context Packet 约定：协调者 fan-out/collect/汇总；reviewer 在被 ask 的当前 Turn final response 直接作答，不再 send 重复答案，不做 all-to-all 互审；公开进度用 publish。这是提示合同，不是任务编排状态机。
+6. **不兼容旧 Agent 工具合同**。ask result 改为显式 `state`，每目标带 `turnId/queuePosition`，未完成状态改为 `pending`，MCP wait 上限改为 60 秒。运行中的旧 native session 需要随 runtime 重启重新发现工具；不为旧 descriptor/result 维持双协议。
+
+对原始需求的影响：R1 的公共 transcript 保持完整但进度不再制造 Turn；R2 获得明确的发起、公开、续收三种语义；R3 的 unrestricted/无审批边界不变；R4 不新增记忆数据类；R5 复用 Broker、Envelope 和现有表；R6 sender 仍由 binding 决定；R7 减少长等待和重复 lane 工作。
+
+协议/存储迁移：无 schema migration。`mcp.publish` 使用现有 `client_commands/events`；collect 使用现有 `turns.source_event_id`；queue metadata 从既有 `target_actor_id/enqueue_seq/status` 计算。历史事件和 Turn 原样可读。只有 MCP wire/tool instructions 是有意的破坏性升级。
+
+复杂度与回滚：新增两个成员工具、一个 exact-source wait filter、一个 queue snapshot 和 active lifecycle 的 `sourceEventId`。不增加表、后台 scheduler、回送队列、`subsumed` 状态或 exactly-once 协调器。回滚可移除 publish/collect 和新结果字段；已写 publish event 仍是合法 `message.created`，无需数据清理。
+
+完成标准：聚焦合同/Store/Broker/MCP/Context tests 通过，类型检查与构建通过；重放同类三方评审时能用单协调者完成两轮，不修改评审对象，且不再出现原场景的重复 ask/send 滞后级联。按当前阶段采用“主要问题解决且不引入已知回归”的 80% 标准，不把模型是否每次完美遵循协调提示写成发布 Gate。
 
 ## 决策变更规则
 

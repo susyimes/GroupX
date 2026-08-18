@@ -1,6 +1,8 @@
 import type {
   McpAskInput,
   McpAskResult,
+  McpCollectInput,
+  McpCollectResult,
   McpCoreMemoryRememberInput,
   McpCoreMemoryRememberResult,
   McpIdentityReadInput,
@@ -11,6 +13,8 @@ import type {
   McpMemoryRememberResult,
   McpMemorySearchInput,
   McpMemorySearchResult,
+  McpPublishInput,
+  McpPublishResult,
   McpReadInput,
   McpReadResult,
   McpSendInput,
@@ -70,7 +74,9 @@ export function toToolCallerContext(
  */
 export interface ToolBrokerApi {
   send(caller: ToolCallerContext, input: McpSendInput): Promise<McpSendResult>;
+  publish(caller: ToolCallerContext, input: McpPublishInput): Promise<McpPublishResult>;
   ask(caller: ToolCallerContext, input: McpAskInput): Promise<McpAskResult>;
+  collect(caller: ToolCallerContext, input: McpCollectInput): Promise<McpCollectResult>;
   watch(caller: ToolCallerContext, input: McpWatchInput): Promise<McpWatchResult>;
   steer(caller: ToolCallerContext, input: McpSteerInput): Promise<McpSteerResult>;
   read(caller: ToolCallerContext, input: McpReadInput): Promise<McpReadResult>;

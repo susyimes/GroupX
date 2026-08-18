@@ -11,7 +11,7 @@
 - 浏览器、Broker、全部已配置 CLI 使用同一语义事件；
 - 正常 Adapter invocation/会话流程中的 actor 由 binding 决定，正文和工具参数不能指定 sender；
 - 所有消息在群内可见，但只有明确目标被唤醒；
-- Web/REST 在 active Structured 模式表达用户或本地客户端路由；GroupX MCP `send/ask/read` 提供 Agent 当前回合主动异步发送与同步问答；deprecated Direct 只保留兼容语义；
+- Web/REST 在 active Structured 模式表达用户或本地客户端路由；GroupX MCP `send/publish/ask/collect/read` 提供 Agent 当前回合的派发、公开、续收与补读；deprecated Direct 只保留兼容语义；
 - 可重放的 durable event 与高频 transient delta 分离；
 - 原生 CLI 事件可以扩展，而不把核心绑定到某个 CLI schema；
 - 将来可以映射到 A2A Message/Task/Artifact，但首版不承担完整 A2A 生命周期。
@@ -275,7 +275,7 @@ Terminal 状态不可回到 running。若用户显式重试，创建新的 Turn�
 
 ## 6. Agent 互发工具（仅 Structured）
 
-GroupX 必须实现 `send/ask/read`，并向 Structured Agent 提供绑定到自身的 `core_memory_remember`。某个 Adapter 只有在现场 probe 已验证 MCP 注入、发现和实际调用后，才向该 session 暴露工具；普通 attach/call 失败只能分级为 `unsupported` 或 `not_observed`。只有 Agent 已通过独立外部策略 evidence 投影为 `native_policy_blocked` 时，MCP 不可用原因才可引用该状态。三种情况都返回 `MCP_UNAVAILABLE`；不能启用 deprecated Direct 作为替代。Web/REST 也可创建相同路由命令，公共 transcript、公共记忆和身份记忆不依赖 MCP。
+GroupX 必须实现 `send/publish/ask/collect/read`，并向 Structured Agent 提供绑定到自身的 `core_memory_remember`。某个 Adapter 只有在现场 probe 已验证 MCP 注入、发现和实际调用后，才向该 session 暴露工具；普通 attach/call 失败只能分级为 `unsupported` 或 `not_observed`。只有 Agent 已通过独立外部策略 evidence 投影为 `native_policy_blocked` 时，MCP 不可用原因才可引用该状态。三种情况都返回 `MCP_UNAVAILABLE`；不能启用 deprecated Direct 作为替代。Web/REST 也可创建相同路由命令，公共 transcript、公共记忆和身份记忆不依赖 MCP。
 
 ### 6.1 `groupx.send`
 
@@ -296,14 +296,34 @@ type SendResult = {
     target: string;
     turnId: string;
     status: "queued";
-    transport: "structured";
+    queuePosition?: number;
+    activeTurnId?: string;
   }>;
 };
 ```
 
-适合通知、异步委托和不需要在当前模型回合读取结果的消息。
+适合异步委托和确实需要唤醒目标 Agent 的消息。`queuePosition` 是该目标前方尚未 terminal 的 Turn 数；`activeTurnId` 在目标正运行/取消时给出。`replyToEventId` 省略时，Broker 使用调用方当前 Turn 的 `sourceEventId`，让普通交接自动形成 reply chain。
 
-### 6.2 `groupx.ask`
+### 6.2 `groupx.publish`
+
+写入公开、durable 的进度或阶段结论，但不创建目标 Turn、不唤醒任何 Agent：
+
+```ts
+type PublishInput = {
+  content: string;
+  replyToEventId?: string;
+  clientCommandId: string;
+};
+
+type PublishResult = {
+  messageEventId: string;
+  correlationId: string;
+};
+```
+
+`replyToEventId` 同样默认取当前 source event。publish 仍经 Broker 和 `client_commands` 幂等提交；它不是自然语言路由，也不是 `send(to=[])` 的隐式模式。
+
+### 6.3 `groupx.ask`
 
 发起目标 Turn，并等待目标的 terminal response 作为当前 MCP 工具结果返回；同时，问题与回复仍进入公共群聊。
 
@@ -320,10 +340,13 @@ type AskInput = {
 type AskResult = {
   messageEventId: string;
   correlationId: string;
+  state: "terminal" | "pending";
   results: Array<{
     target: string;
-    transport: "structured";
-    status: "completed" | "failed" | "cancelled" | "interrupted" | "timeout";
+    turnId: string;
+    status: "completed" | "failed" | "cancelled" | "pending";
+    queuePosition: number;
+    activeTurnId?: string;
     responseEventId?: string;
     content?: string;
     errorCode?: string;
@@ -334,13 +357,30 @@ type AskResult = {
 
 多目标 ask 并行等待，逐目标返回状态。一个目标失败不能丢弃其他目标已完成的结果。
 
-`timeoutMs` 默认取配置 `timeouts.askMs`（默认 120,000 ms），单次调用上限 3,600,000 ms。
+若任一新 child Turn 前方已有未完成工作，ask 不占用当前模型回合空等，立即返回 `state=pending`。否则最多等待 `min(timeouts.askMs, 60,000)`；调用方显式 `timeoutMs` 的上限也是 60,000 ms。等待结束但 child 尚未 terminal 时同样返回 pending，而不是把 Turn 伪造为 timeout terminal。
 
-默认 `cancelOnTimeout=false`：ask 超时只停止当前工具等待，目标 Turn 可以继续，调用方之后用 `groupx.read` 获取结果。若显式为 true，Broker 对仍运行的 ask child Turn 发起 best-effort 原生 cancel。取消发起 ask 的父 Turn 时，Broker 默认也 best-effort 取消尚未 terminal 的同步 ask child；异步 `send` 创建的 Turn 不随父 Turn 取消。
+默认 `cancelOnTimeout=false`：bounded wait 结束只停止当前工具等待，目标 Turn 继续。若显式为 true，Broker 对仍运行的 ask child Turn 发起 best-effort 原生 cancel；结果在 durable terminal 前仍可为 pending。取消发起 ask 的父 Turn 时，Broker 默认也 best-effort 取消尚未 terminal 的同步 ask child；异步 `send` 创建的 Turn 不随父 Turn 取消。
 
-超时的目标结果附带有界 `note` 提示文本，说明目标仍在运行、结果不会在调用方回合结束后自动回送，以及如何在本回合内用 `groupx.read` 轮询或用 `groupx.send` 显式交接。`note` 只是给调用模型的指导文字，不是新的路由、回送或审批机制；超时后不自动唤醒调用方的语义保持不变。
+pending 结果的有界 `note` 明确要求使用同一 `messageEventId` 调用 collect，不得重新 ask/send 同一问题。`note` 只是工具指导，不增加回送、审批或自动派发。
 
-### 6.3 `groupx.read`
+### 6.4 `groupx.collect`
+
+按一条既有 ask 的 source message 精确收集它创建的 child Turns：
+
+```ts
+type CollectInput = {
+  messageEventId: string;
+  timeoutMs?: number; // max 60,000
+};
+
+type CollectResult = AskResult;
+```
+
+Broker 校验该 message 属于当前 room/root correlation，并通过既有 `turns.source_event_id` 查询准确集合。collect 不写命令、不创建 Turn、不重放 prompt；目标仍排队时返回最新 queue metadata，lane 可运行时才做有界等待。
+
+评审类工作固定使用单协调者 fan-out：协调者调用 ask/collect 并汇总；reviewer 用被 ask 的当前 Turn final response 直接作答，不再 send 重复答案，也不发起 all-to-all 互审。阶段进度使用 publish。该规则由 MCP instructions、工具描述和 Context Packet 提示模型，不引入 Broker 编排状态机。
+
+### 6.5 `groupx.read`
 
 查询异步消息、Turn 或 correlation 状态：
 
@@ -352,7 +392,7 @@ type ReadInput = {
 };
 ```
 
-### 6.4 同步 ask 因果循环
+### 6.6 同步 ask 因果循环
 
 典型死锁：A 正在同步 `ask(B)`，B 又同步 `ask(A)`。
 
@@ -364,7 +404,7 @@ errorCode = CAUSAL_CYCLE
 
 B 仍可使用异步 `groupx.send(A)`；它可以回发祖先 actor，该消息进入公共房间并排队，但不阻塞 B 当前工具调用。异步 send 仍必须通过 parent/root/hop 完整性、root-turn、actor-call、hop 和 queue 限额；不得对它误报 `CAUSAL_CYCLE`。
 
-### 6.5 `groupx.watch` / `groupx.steer`（仅 Watch Turn）
+### 6.7 `groupx.watch` / `groupx.steer`（仅 Watch Turn）
 
 现有 `send`/`ask`/`read` 不够：`ask(worker)` 只会在 worker 当前 lane FIFO 之后再排一条 Turn，打断不了正在跑的 Turn。只给本次 `supervision.watch` 的调用方成功执行：
 

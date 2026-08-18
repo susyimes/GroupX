@@ -1179,8 +1179,16 @@ export class SqliteGroupXStore implements GroupXStore {
 
   acceptMessageWithDisposition(input: AcceptMessageInput): AcceptMessageOutcome {
     this.#assertOpen();
-    if (input.targets.length === 0) {
+    const commandType = input.commandType ?? "message.send";
+    const isPublication = commandType === "mcp.publish";
+    if (input.targets.length === 0 && !isPublication) {
       throw new GroupXError("INVALID_ENVELOPE", "At least one target is required");
+    }
+    if (isPublication && input.targets.length !== 0) {
+      throw new GroupXError("INVALID_ENVELOPE", "mcp.publish cannot create target Turns");
+    }
+    if (isPublication && input.supervision !== undefined) {
+      throw new GroupXError("SUPERVISION_PAIR_INVALID", "mcp.publish cannot create supervision Turns");
     }
 
     const normalizedTargets = this.#normalizeTurnTargets(input.targets);
@@ -1206,7 +1214,6 @@ export class SqliteGroupXStore implements GroupXStore {
       }
     }
 
-    const commandType = input.commandType ?? "message.send";
     const canonicalPayload = {
       commandType,
       roomId: input.roomId,
@@ -1298,22 +1305,24 @@ export class SqliteGroupXStore implements GroupXStore {
             acceptedAt
           );
 
-        const limitTargets = [...normalizedTargets, ...normalizedObservers];
-        this.#enforceAcceptMessageLimitsUnsafe(
-          limitTargets,
-          correlationId,
-          limits
-        );
-        this.#enforceCausalGraphUnsafe({
-          targets: limitTargets,
-          rootCorrelationId: correlationId,
-          ...(input.correlationId === undefined
-            ? {}
-            : { requestedCorrelationId: input.correlationId }),
-          roomId: input.roomId,
-          sourceActorId: binding.actorId,
-          commandType
-        });
+        if (!isPublication) {
+          const limitTargets = [...normalizedTargets, ...normalizedObservers];
+          this.#enforceAcceptMessageLimitsUnsafe(
+            limitTargets,
+            correlationId,
+            limits
+          );
+          this.#enforceCausalGraphUnsafe({
+            targets: limitTargets,
+            rootCorrelationId: correlationId,
+            ...(input.correlationId === undefined
+              ? {}
+              : { requestedCorrelationId: input.correlationId }),
+            roomId: input.roomId,
+            sourceActorId: binding.actorId,
+            commandType
+          });
+        }
 
         const sourceEventType = input.sourceEventType ?? "message.created";
         if (sourceEventType !== "message.created" && sourceEventType !== "operator.dispatch") {
@@ -2016,6 +2025,7 @@ export class SqliteGroupXStore implements GroupXStore {
     status?: TurnStatus;
     targetActorId?: string;
     rootCorrelationId?: string;
+    sourceEventId?: string;
   } = {}): TurnRecord[] {
     this.#assertOpen();
     const predicates: string[] = [];
@@ -2031,6 +2041,10 @@ export class SqliteGroupXStore implements GroupXStore {
     if (input.rootCorrelationId !== undefined) {
       predicates.push("root_correlation_id = ?");
       parameters.push(input.rootCorrelationId);
+    }
+    if (input.sourceEventId !== undefined) {
+      predicates.push("source_event_id = ?");
+      parameters.push(input.sourceEventId);
     }
     const where = predicates.length === 0 ? "" : `WHERE ${predicates.join(" AND ")}`;
     return (

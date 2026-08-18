@@ -1,6 +1,8 @@
 import type {
   McpAskInput,
   McpAskResult,
+  McpCollectInput,
+  McpCollectResult,
   McpCoreMemoryRememberInput,
   McpCoreMemoryRememberResult,
   McpIdentityReadInput,
@@ -11,6 +13,8 @@ import type {
   McpMemoryRememberResult,
   McpMemorySearchInput,
   McpMemorySearchResult,
+  McpPublishInput,
+  McpPublishResult,
   McpReadInput,
   McpReadResult,
   McpSendInput,
@@ -21,18 +25,22 @@ import type {
   McpWatchResult
 } from "../contracts/mcp.js";
 import {
+  parseMcpAskResult,
+  parseMcpCollectResult,
+  parseMcpPublishResult,
   parseMcpReadResult,
   parseMcpSendResult,
   parseMcpSteerResult,
   parseMcpWatchResult
 } from "../contracts/mcp.js";
 import { GroupXBroker } from "../broker/broker.js";
+import type { CorrelationWaitResult, TurnQueueSnapshot } from "../broker/types.js";
 import { GroupXError } from "../core/errors.js";
 import type {
   ToolBrokerApi,
   ToolCallerContext
 } from "../mcp/server/broker-api.js";
-import type { TurnRecord } from "../storage/types.js";
+import type { AcceptedTurnResult, TurnRecord } from "../storage/types.js";
 import {
   toIdentityRecordContract,
   toMemoryRecordContract
@@ -40,6 +48,7 @@ import {
 import { ActiveTurnCoordinator } from "./turn-lifecycle.js";
 
 const DEFAULT_PAGE_LIMIT = 100;
+const MAX_MCP_WAIT_MS = 60_000;
 
 function throwIfAborted(signal: AbortSignal): void {
   if (!signal.aborted) return;
@@ -64,6 +73,7 @@ export interface GroupXToolBrokerApiOptions {
     | "watchSubject"
     | "steerSubject"
     | "waitForCorrelation"
+    | "inspectTurnQueue"
     | "cancelTurn"
     | "readCorrelation"
     | "queryMemory"
@@ -87,10 +97,11 @@ export class GroupXToolBrokerApi implements ToolBrokerApi {
     this.#broker = options.broker;
     this.#turns = options.turns;
     this.#roomId = options.roomId;
-    this.#askTimeoutMs = options.askTimeoutMs ?? 120_000;
-    if (!Number.isSafeInteger(this.#askTimeoutMs) || this.#askTimeoutMs < 1) {
+    const configuredAskTimeoutMs = options.askTimeoutMs ?? MAX_MCP_WAIT_MS;
+    if (!Number.isSafeInteger(configuredAskTimeoutMs) || configuredAskTimeoutMs < 1) {
       throw new RangeError("askTimeoutMs must be a positive integer");
     }
+    this.#askTimeoutMs = Math.min(configuredAskTimeoutMs, MAX_MCP_WAIT_MS);
   }
 
   async send(caller: ToolCallerContext, input: McpSendInput): Promise<McpSendResult> {
@@ -104,9 +115,7 @@ export class GroupXToolBrokerApi implements ToolBrokerApi {
         clientCommandId: input.clientCommandId,
         to: input.to,
         content: input.content,
-        ...(input.replyToEventId === undefined
-          ? {}
-          : { replyToEventId: input.replyToEventId }),
+        replyToEventId: input.replyToEventId ?? active.sourceEventId,
         ...(input.supervision === undefined ? {} : { supervision: input.supervision })
       },
       roomId: this.#roomId,
@@ -122,8 +131,31 @@ export class GroupXToolBrokerApi implements ToolBrokerApi {
       turns: accepted.turns.map((turn) => ({
         target: turn.target,
         turnId: turn.turnId,
-        status: turn.status
+        status: turn.status,
+        ...this.#queueFields(this.#broker.inspectTurnQueue(turn.turnId))
       }))
+    });
+  }
+
+  async publish(caller: ToolCallerContext, input: McpPublishInput): Promise<McpPublishResult> {
+    throwIfAborted(caller.signal);
+    const active = this.#turns.requireForCaller(caller);
+    const accepted = await this.#broker.acceptMessage({
+      bindingId: caller.bindingId,
+      request: {
+        clientCommandId: input.clientCommandId,
+        to: [],
+        content: input.content,
+        replyToEventId: input.replyToEventId ?? active.sourceEventId
+      },
+      roomId: this.#roomId,
+      commandType: "mcp.publish",
+      causationId: active.turnId,
+      correlationId: active.rootCorrelationId
+    });
+    return parseMcpPublishResult({
+      messageEventId: accepted.messageEventId,
+      correlationId: accepted.correlationId
     });
   }
 
@@ -138,9 +170,7 @@ export class GroupXToolBrokerApi implements ToolBrokerApi {
         clientCommandId: input.clientCommandId,
         to: input.to,
         content: input.content,
-        ...(input.replyToEventId === undefined
-          ? {}
-          : { replyToEventId: input.replyToEventId }),
+        replyToEventId: input.replyToEventId ?? active.sourceEventId,
         ...(input.supervision === undefined ? {} : { supervision: input.supervision })
       },
       roomId: this.#roomId,
@@ -150,12 +180,18 @@ export class GroupXToolBrokerApi implements ToolBrokerApi {
       parentTurnId: active.turnId,
       hopCount: active.hopCount + 1
     });
+    const initialQueues = new Map(
+      accepted.turns.map((turn) => [turn.turnId, this.#broker.inspectTurnQueue(turn.turnId)] as const)
+    );
+    if ([...initialQueues.values()].some((queue) => queue.queuePosition > 0)) {
+      return this.#pendingResult(accepted.messageEventId, accepted.correlationId, accepted.turns, initialQueues);
+    }
     const childTurnIds = accepted.turns.map((turn) => turn.turnId);
     const waited = await this.#broker.waitForCorrelation({
       correlationId: accepted.correlationId,
       childTurnIds,
       roomId: this.#roomId,
-      timeoutMs: input.timeoutMs ?? this.#askTimeoutMs,
+      timeoutMs: Math.min(input.timeoutMs ?? this.#askTimeoutMs, MAX_MCP_WAIT_MS),
       signal: caller.signal
     });
     if (waited.state === "aborted") {
@@ -170,53 +206,65 @@ export class GroupXToolBrokerApi implements ToolBrokerApi {
       );
     }
 
-    const byTurnId = new Map(waited.turns.map((turn) => [turn.turnId, turn] as const));
-    const byEventId = new Map(
-      waited.responseEvents.map((event) => [event.eventId, event] as const)
+    return this.#resultFromWait(
+      accepted.messageEventId,
+      accepted.correlationId,
+      accepted.turns,
+      waited
     );
-    return {
-      messageEventId: accepted.messageEventId,
-      correlationId: accepted.correlationId,
-      results: accepted.turns.map((acceptedTurn) => {
-        const turn = byTurnId.get(acceptedTurn.turnId);
-        if (!turn || (waited.state === "timeout" && !isTerminal(turn))) {
-          return {
-            target: acceptedTurn.target,
-            status: "timeout" as const,
-            note:
-              `${acceptedTurn.target} is still running; the timeout only stopped this wait. ` +
-              `Nothing delivers the answer to you automatically after your turn ends. ` +
-              `Poll groupx read with correlationId "${accepted.correlationId}" until this ` +
-              `target's turn is terminal, or hand off explicitly with groupx send before finishing.`
-          };
-        }
-        if (turn.status === "completed") {
-          const responseEventId = turn.responseEventId;
-          if (responseEventId === undefined) {
-            return {
-              target: acceptedTurn.target,
-              status: "failed" as const,
-              errorCode: "PROTOCOL_INVALID_MESSAGE"
-            };
-          }
-          const content = contentFromEventBody(byEventId.get(responseEventId)?.body);
-          return {
-            target: acceptedTurn.target,
-            status: "completed" as const,
-            responseEventId,
-            ...(content === undefined ? {} : { content })
-          };
-        }
-        if (turn.status === "cancelled") {
-          return { target: acceptedTurn.target, status: "cancelled" as const };
-        }
-        return {
-          target: acceptedTurn.target,
-          status: "failed" as const,
-          ...(turn.errorCode === undefined ? {} : { errorCode: turn.errorCode })
-        };
-      })
-    };
+  }
+
+  async collect(caller: ToolCallerContext, input: McpCollectInput): Promise<McpCollectResult> {
+    throwIfAborted(caller.signal);
+    const active = this.#turns.requireForCaller(caller);
+    const exact = {
+      correlationId: active.rootCorrelationId,
+      sourceEventId: input.messageEventId,
+      roomId: this.#roomId,
+      signal: caller.signal
+    } as const;
+    const snapshot = await this.#broker.waitForCorrelation({ ...exact, timeoutMs: 1 });
+    if (snapshot.state === "aborted") {
+      throwIfAborted(caller.signal);
+      throw new GroupXError("TURN_INTERRUPTED", "GroupX collect was aborted");
+    }
+    const accepted = snapshot.turns.map((turn) => ({
+      target: turn.targetActorId,
+      turnId: turn.turnId,
+      status: "queued" as const
+    }));
+    const queues = new Map(
+      accepted.map((turn) => [turn.turnId, this.#broker.inspectTurnQueue(turn.turnId)] as const)
+    );
+    if (
+      snapshot.state === "terminal" ||
+      [...queues.values()].some((queue) => queue.queuePosition > 0)
+    ) {
+      return parseMcpCollectResult(
+        this.#resultFromWait(
+          input.messageEventId,
+          active.rootCorrelationId,
+          accepted,
+          snapshot
+        )
+      );
+    }
+    const waited = await this.#broker.waitForCorrelation({
+      ...exact,
+      timeoutMs: Math.min(input.timeoutMs ?? this.#askTimeoutMs, MAX_MCP_WAIT_MS)
+    });
+    if (waited.state === "aborted") {
+      throwIfAborted(caller.signal);
+      throw new GroupXError("TURN_INTERRUPTED", "GroupX collect was aborted");
+    }
+    return parseMcpCollectResult(
+      this.#resultFromWait(
+        input.messageEventId,
+        active.rootCorrelationId,
+        accepted,
+        waited
+      )
+    );
   }
 
   async watch(caller: ToolCallerContext, input: McpWatchInput): Promise<McpWatchResult> {
@@ -373,6 +421,111 @@ export class GroupXToolBrokerApi implements ToolBrokerApi {
       correlationId: active.rootCorrelationId
     });
     return { identity: toIdentityRecordContract(identity) };
+  }
+
+  #queueFields(queue: TurnQueueSnapshot): {
+    queuePosition: number;
+    activeTurnId?: string;
+  } {
+    return {
+      queuePosition: queue.queuePosition,
+      ...(queue.activeTurnId === undefined ? {} : { activeTurnId: queue.activeTurnId })
+    };
+  }
+
+  #pendingResult(
+    messageEventId: string,
+    correlationId: string,
+    turns: readonly AcceptedTurnResult[],
+    queues = new Map<string, TurnQueueSnapshot>()
+  ): McpAskResult {
+    return parseMcpAskResult({
+      messageEventId,
+      correlationId,
+      state: "pending",
+      results: turns.map((turn) => {
+        const queue = queues.get(turn.turnId) ?? this.#broker.inspectTurnQueue(turn.turnId);
+        return {
+          target: turn.target,
+          turnId: turn.turnId,
+          status: "pending" as const,
+          ...this.#queueFields(queue),
+          note:
+            `${turn.target} is queued or still running. Collect this exact request with ` +
+            `messageEventId "${messageEventId}"; do not send the same question again.`
+        };
+      })
+    });
+  }
+
+  #resultFromWait(
+    messageEventId: string,
+    correlationId: string,
+    acceptedTurns: readonly AcceptedTurnResult[],
+    waited: CorrelationWaitResult
+  ): McpAskResult {
+    const byTurnId = new Map(waited.turns.map((turn) => [turn.turnId, turn] as const));
+    const byEventId = new Map(
+      waited.responseEvents.map((event) => [event.eventId, event] as const)
+    );
+    const results = acceptedTurns.map((acceptedTurn) => {
+      const queue = this.#broker.inspectTurnQueue(acceptedTurn.turnId);
+      const queueFields = this.#queueFields(queue);
+      const turn = byTurnId.get(acceptedTurn.turnId);
+      if (!turn || !isTerminal(turn)) {
+        return {
+          target: acceptedTurn.target,
+          turnId: acceptedTurn.turnId,
+          status: "pending" as const,
+          ...queueFields,
+          note:
+            `${acceptedTurn.target} is queued or still running. Collect this exact request with ` +
+            `messageEventId "${messageEventId}"; do not send the same question again.`
+        };
+      }
+      if (turn.status === "completed") {
+        const responseEventId = turn.responseEventId;
+        if (responseEventId === undefined) {
+          return {
+            target: acceptedTurn.target,
+            turnId: acceptedTurn.turnId,
+            status: "failed" as const,
+            ...queueFields,
+            errorCode: "PROTOCOL_INVALID_MESSAGE"
+          };
+        }
+        const content = contentFromEventBody(byEventId.get(responseEventId)?.body);
+        return {
+          target: acceptedTurn.target,
+          turnId: acceptedTurn.turnId,
+          status: "completed" as const,
+          ...queueFields,
+          responseEventId,
+          ...(content === undefined ? {} : { content })
+        };
+      }
+      if (turn.status === "cancelled") {
+        return {
+          target: acceptedTurn.target,
+          turnId: acceptedTurn.turnId,
+          status: "cancelled" as const,
+          ...queueFields
+        };
+      }
+      return {
+        target: acceptedTurn.target,
+        turnId: acceptedTurn.turnId,
+        status: "failed" as const,
+        ...queueFields,
+        ...(turn.errorCode === undefined ? {} : { errorCode: turn.errorCode })
+      };
+    });
+    return parseMcpAskResult({
+      messageEventId,
+      correlationId,
+      state: results.some((result) => result.status === "pending") ? "pending" : "terminal",
+      results
+    });
   }
 
   #assertSupervision(

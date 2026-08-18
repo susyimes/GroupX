@@ -29,9 +29,9 @@ const MAX_REPLY_DEPTH = 64;
  * GroupX tools to close a loop; harness behavior is otherwise unchanged.
  */
 const PROTOCOL_NOTE =
-  "Replies are visible to the room but wake no agent; @name mentions in text do not route. " +
-  "Only explicit groupx send/ask tool calls or user routing dispatch new turns. This context " +
-  "is frozen at through_seq; use groupx read to catch up before irreversible actions.";
+  "Final/publish wake no agent; @name never routes. send/ask or user routes create turns. " +
+  "Reviews: coordinator asks/collects; reviewers answer in final, never resend. Pending: collect " +
+  "its messageEventId. Context frozen at through_seq; read before risky actions.";
 
 type OptionalSectionName = Exclude<keyof ContextPacketOmissions, "generatedSummary">;
 
