@@ -167,7 +167,8 @@ export class GroupXWebBrokerApi implements BrokerApi {
         content: request.content,
         ...(request.replyToEventId === undefined
           ? {}
-          : { replyToEventId: request.replyToEventId })
+          : { replyToEventId: request.replyToEventId }),
+        ...(request.supervision === undefined ? {} : { supervision: request.supervision })
       },
       roomId: this.roomId,
       commandType: "message.send"
@@ -179,7 +180,18 @@ export class GroupXWebBrokerApi implements BrokerApi {
         target: turn.target,
         turnId: turn.turnId,
         status: turn.status
-      }))
+      })),
+      ...(accepted.watchTurns === undefined
+        ? {}
+        : {
+            watchTurns: accepted.watchTurns.map((turn) => ({
+              target: turn.target,
+              turnId: turn.turnId,
+              status: turn.status
+            }))
+          }),
+      ...(accepted.watchEventId === undefined ? {} : { watchEventId: accepted.watchEventId }),
+      ...(accepted.pairEventId === undefined ? {} : { pairEventId: accepted.pairEventId })
     });
   }
 

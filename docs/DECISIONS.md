@@ -36,6 +36,7 @@
 | D-024 | Claude Code 作为独立 stream-json driver 接入 Structured transport | Accepted |
 | D-025 | ask 超时不加回送机制，harness 只以有界文本指导模型闭环 | Accepted |
 | D-026 | 放宽消息 wire 上限（131,072）、运行超时与互调链路默认值 | Accepted |
+| D-027 | 同步监督是房间协作配对，不是治理或审批层 | Accepted |
 
 ## D-001：透明 Broker
 
@@ -367,6 +368,27 @@ Hermes 0.20.1 的 initialize 当前未声明 `mcpCapabilities.http`，但官方�
 复杂度与回滚：常量/默认值与一个共享迁移函数；回滚即恢复旧常量，已升级的配置文件可手动改回。
 
 完成标准：wire 边界测试随常量收敛（接受 131,072、拒绝 131,073）；旧 literal 32,768 配置可解析并升级；全部迁移字段的精确值升级与自定义保留测试通过；超时/链路新默认断言更新。
+
+## D-027：同步监督是房间协作配对
+
+触发：产品需要 worker 执行、supervisor 同步观察、并可打断整轮后写入公开指导。参考评测循环里的观察词汇可以借用；治理流水线、claim firewall、双否决门和 native 工具审批不能移植。
+
+决定：
+
+1. **第三条路由是配对，不是自然语言**。`POST /api/messages` 的可选 `supervision: { observers, mode: "live_steer" }` 在同一 `rootCorrelationId` 下并行创建 worker Turn 与 `supervision.watch` Turn。Observer 不复用用户正文当执行提示。角色只写在本次配对行，不进入 Agent 名册枚举。`sourceKind: "supervision"` 由 Broker 写入；请求方不能自报监督者。
+2. **同步 = 并行 running + 有界里程碑**。`groupx.watch` 只在 Watch Turn 成功；等待 `next_milestone | terminal`，快照只含 status、deliveryCertainty、任务引用、公开消息摘要、工具名+status+toolCallId、steer 计数。不转发 token，不带推理正文或完整工具参数。
+3. **打断 = 整段 Turn cancel + 新 Worker Turn**。`steer(interrupt)` 复用现有 cancel 对账，再以 supervisor 公开指导为 `current_message` 入队；`nudge` 不打断，只在当前 worker 自然结束后 FIFO 入队。不能取消 Turn 内部某一次 native 工具。已 `delivered`/`unknown` 的原 prompt 不重放（D-016）。
+4. **steer ≠ approval**。不产生 `approval.*`，不出现允许/拒绝按钮，不改变 unrestricted argv/mode，不代答 `requestUserInput`。Watch Turn 对正在被观察的 worker 再 `ask`/`send` 返回 `SUPERVISION_STEER_REQUIRED`。
+5. **观察是第四类可见数据**。`supervision.paired|observed|steered` 可回放，但不进入公共记忆、core/dated memory 或房间压缩输入。Watch brief 不进 Context Packet 的 unread transcript。Observer Turn 不登记 dated-memory source。Worker 的业务包不自动塞进监督评语。
+6. **可靠性沿用 D-011**。Watch/steer 仍走 parent/root/hop/queue；另计 `steersPerSubjectTurn`（默认 3）。触顶可见失败。Broker 不在 steer 后自动再开监督循环第 N 轮。
+
+对原始需求的影响：R2 增加一条显式协作路由，不改变「自然语言不派发」。R3 不变——监督不是安全或审批层。R4 增加独立观察数据类，不与记忆层合并。R5 不把 memsuOS 治理内核搬进 Broker。
+
+协议/存储迁移：schema v8 增加 `supervision_pairs` / `supervision_pair_turns` / `supervision_steer_counts`；Envelope `sourceKind` 增加 `supervision`。
+
+复杂度与回滚：配对只在用户显式带 `supervision` 时创建；关闭开关即回到原两条路由。回滚可停用 watch/steer 工具面并停止写配对表，历史事件保留审计。
+
+完成标准：fixture 证明并行观察、里程碑有界、interrupt 改道、steer 上限、自报角色无效、观察包不进记忆/压缩、不产生 `approval.*`、不改 unrestricted argv。不把「真实模型抓到了漂移」写成发布 Gate。
 
 ## 决策变更规则
 

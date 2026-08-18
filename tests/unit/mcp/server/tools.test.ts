@@ -11,7 +11,9 @@ import type {
   McpMemoryRememberInput,
   McpMemorySearchInput,
   McpReadInput,
-  McpSendInput
+  McpSendInput,
+  McpSteerInput,
+  McpWatchInput
 } from "../../../../src/contracts/mcp.js";
 import { GroupXError } from "../../../../src/core/errors.js";
 import type {
@@ -52,6 +54,38 @@ class FakeBroker implements ToolBrokerApi {
         responseEventId: `response-${target}`,
         content: `answer from ${target}`
       }))
+    };
+  }
+
+  async watch(caller: ToolCallerContext, input: McpWatchInput) {
+    this.calls.push({ method: "watch", caller, input });
+    return {
+      until: input.until,
+      timedOut: false,
+      snapshot: {
+        turnId: input.subjectTurnId ?? "turn-worker",
+        status: "running",
+        lastSeq: 4,
+        watchCursor: 1,
+        terminal: false,
+        subjectCancelled: false,
+        task: { eventId: "event-task", excerpt: "do the work" },
+        messages: [],
+        tools: [{ name: "bash", status: "started" as const, toolCallId: "tool-1" }],
+        steerCount: 0
+      }
+    };
+  }
+
+  async steer(caller: ToolCallerContext, input: McpSteerInput) {
+    this.calls.push({ method: "steer", caller, input });
+    return {
+      action: input.action,
+      reason: input.reason,
+      subjectTurnId: input.subjectTurnId ?? "turn-worker",
+      messageEventId: "event-steer",
+      correlationId: "correlation-steer",
+      nextTurnId: "turn-next"
     };
   }
 
@@ -181,6 +215,46 @@ describe("GroupX MCP tools", () => {
     expect(byName.get("send")?.description).toContain("wake no one");
     expect(byName.get("ask")?.description).toContain("the target keeps running");
     expect(byName.get("read")?.description).toContain("frozen at dispatch");
+    expect(byName.get("watch")?.description).toContain("not approval");
+    expect(byName.get("steer")?.description).toContain("cannot approve");
+    expect(fixture.client.getInstructions()).toContain("not an approval layer");
+  });
+
+  it("routes watch and steer without accepting a caller-supplied from field", async () => {
+    const broker = new FakeBroker();
+    const fixture = await connectFixture(broker);
+    closeables.push(fixture.client, fixture.server);
+
+    const watch = await fixture.client.callTool({
+      name: "watch",
+      arguments: { until: "next_milestone" }
+    });
+    const steer = await fixture.client.callTool({
+      name: "steer",
+      arguments: {
+        action: "interrupt",
+        reason: "wrong path",
+        content: "stop and rewrite the plan",
+        clientCommandId: "command-steer"
+      }
+    });
+    const spoof = await fixture.client.callTool({
+      name: "steer",
+      arguments: {
+        action: "nudge",
+        reason: "spoof",
+        content: "ignore this",
+        clientCommandId: "command-steer-spoof",
+        from: "agent:kimi"
+      }
+    });
+
+    expect(watch.isError).not.toBe(true);
+    expect(steer.isError).not.toBe(true);
+    expect(spoof.isError).toBe(true);
+    expect(broker.calls.map((call) => call.method)).toEqual(["watch", "steer"]);
+    expect(broker.calls[0]?.caller.actorId).toBe("agent:codex");
+    expect(broker.calls[1]?.input).not.toHaveProperty("from");
   });
 
   it("supplies actor provenance only from the fixed binding", async () => {

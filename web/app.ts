@@ -65,6 +65,10 @@ interface MessageDraft {
   to: string[];
   content: string;
   replyToEventId: string | null;
+  supervision?: {
+    observers: string[];
+    mode: "live_steer";
+  };
 }
 
 interface PendingSubmission {
@@ -184,6 +188,9 @@ const DOCUMENTED_EVENT_TYPES = [
   "identity.superseded",
   "identity.retracted",
   "routing.loop_stopped",
+  "supervision.paired",
+  "supervision.observed",
+  "supervision.steered",
   "system.error",
   "adapter.heartbeat",
 ] as const;
@@ -240,6 +247,9 @@ const publicMemoryCount = byId<HTMLSpanElement>("public-memory-count");
 const publicMemorySection = byId<HTMLDetailsElement>("public-memory-section");
 const themeToggle = byId<HTMLButtonElement>("theme-toggle");
 const targetPicker = byId<HTMLFieldSetElement>("target-picker");
+const observerPicker = byId<HTMLFieldSetElement>("observer-picker");
+const supervisionEnabled = byId<HTMLInputElement>("supervision-enabled");
+const supervisionHint = byId<HTMLParagraphElement>("supervision-hint");
 const runtimeProgress = byId<HTMLElement>("runtime-progress");
 const runtimeProgressTitle = byId<HTMLElement>("runtime-progress-title");
 const runtimeProgressDetail = byId<HTMLElement>("runtime-progress-detail");
@@ -251,6 +261,10 @@ const compactContextButton = byId<HTMLButtonElement>("compact-context");
 
 function targetInputs(): HTMLInputElement[] {
   return Array.from(targetPicker.querySelectorAll<HTMLInputElement>('input[name="target"]'));
+}
+
+function observerInputs(): HTMLInputElement[] {
+  return Array.from(observerPicker.querySelectorAll<HTMLInputElement>('input[name="observer"]'));
 }
 const eventNodes = new Map<string, HTMLElement>();
 const turnNodes = new Map<string, HTMLElement>();
@@ -1067,8 +1081,15 @@ function cardToneClass(actorId: string): string {
   return actorToneClass(actorId).replace("actor-", "tone-");
 }
 
+function isSupervisionWatchBody(body: unknown): boolean {
+  return isRecord(body) && body.kind === "supervision.watch";
+}
+
 function renderMessage(envelope: GroupXEnvelope): void {
   if (eventNodes.has(envelope.eventId)) {
+    return;
+  }
+  if (isSupervisionWatchBody(envelope.body)) {
     return;
   }
   const key = streamKey(envelope);
@@ -1496,6 +1517,73 @@ async function cancelTurn(turnId: string): Promise<void> {
   }
 }
 
+function renderSupervisionEvent(envelope: GroupXEnvelope): void {
+  if (eventNodes.has(envelope.eventId)) {
+    return;
+  }
+  const item = document.createElement("li");
+  item.className = "timeline-item";
+  const article = document.createElement("article");
+  article.className = "supervision-card";
+  article.dataset.eventId = envelope.eventId;
+  article.append(createActorMeta(envelope));
+  const title = document.createElement("div");
+  title.className = "supervision-title";
+  const body = isRecord(envelope.body) ? envelope.body : {};
+  if (envelope.type === "supervision.paired") {
+    title.textContent = "监督配对已建立：worker 执行，观察者同步看整轮";
+    const workers = Array.isArray(body.workers)
+      ? body.workers
+          .map((item) => (isRecord(item) ? String(item.actorId ?? "") : ""))
+          .filter(Boolean)
+          .join("、")
+      : "";
+    const observers = Array.isArray(body.observers)
+      ? body.observers
+          .map((item) => (isRecord(item) ? String(item.actorId ?? "") : ""))
+          .filter(Boolean)
+          .join("、")
+      : "";
+    if (workers || observers) {
+      const detail = document.createElement("p");
+      detail.className = "supervision-reason";
+      detail.textContent = `Worker ${workers || "—"} · 观察者 ${observers || "—"}`;
+      article.append(title, detail);
+    } else {
+      article.append(title);
+    }
+  } else if (envelope.type === "supervision.steered") {
+    const action = readStringField(body, "action") ?? "steer";
+    title.textContent =
+      action === "interrupt"
+        ? "观察者打断了当前整轮并改道，不是单次工具审批"
+        : "观察者排队了一条改道指导，等当前整轮结束后再生效";
+    article.append(title);
+  } else {
+    title.textContent = "观察里程碑（有界快照，不是逐字转发）";
+    const snapshot = isRecord(body.snapshot) ? body.snapshot : undefined;
+    const status = snapshot ? readStringField(snapshot, "status") : undefined;
+    if (status) {
+      const detail = document.createElement("p");
+      detail.className = "supervision-reason";
+      detail.textContent = `被观察回合 ${status}`;
+      article.append(title, detail);
+    } else {
+      article.append(title);
+    }
+  }
+  const reason = readStringField(body, "reason");
+  if (reason) {
+    const reasonEl = document.createElement("p");
+    reasonEl.className = "supervision-reason";
+    reasonEl.textContent = reason;
+    article.append(reasonEl);
+  }
+  item.append(article);
+  eventNodes.set(envelope.eventId, article);
+  appendTimeline(item);
+}
+
 function renderGeneric(envelope: GroupXEnvelope): void {
   if (eventNodes.has(envelope.eventId)) {
     return;
@@ -1724,6 +1812,11 @@ function dispatchEnvelope(envelope: GroupXEnvelope): void {
       return;
     case "adapter.heartbeat":
       return;
+    case "supervision.paired":
+    case "supervision.observed":
+    case "supervision.steered":
+      renderSupervisionEvent(envelope);
+      return;
     default:
       renderGeneric(envelope);
   }
@@ -1756,12 +1849,15 @@ function orderedAgents(): AgentView[] {
   return Array.from(state.agents.values()).sort((left, right) => left.actorId.localeCompare(right.actorId));
 }
 
-/** Rebuild the composer target chips from the configured agents, preserving the user's current selection. */
-function renderTargetPicker(): void {
-  const existing = targetInputs();
+function renderAgentChips(
+  picker: HTMLFieldSetElement,
+  name: "target" | "observer",
+  onChange: () => void
+): void {
+  const existing = Array.from(picker.querySelectorAll<HTMLInputElement>(`input[name="${name}"]`));
   const initialized = existing.length > 0;
   const previouslyChecked = new Set(existing.filter((input) => input.checked).map((input) => input.value));
-  for (const chip of Array.from(targetPicker.querySelectorAll(".target-chip[data-agent]"))) {
+  for (const chip of Array.from(picker.querySelectorAll(".target-chip[data-agent]"))) {
     chip.remove();
   }
   for (const agent of orderedAgents()) {
@@ -1769,19 +1865,30 @@ function renderTargetPicker(): void {
     label.className = `target-chip ${cardToneClass(agent.actorId)}`;
     label.dataset.agent = agent.actorId;
     const input = document.createElement("input");
-    input.name = "target";
+    input.name = name;
     input.type = "checkbox";
     input.value = agent.actorId;
-    input.checked = initialized ? previouslyChecked.has(agent.actorId) : agent.enabled;
-    input.addEventListener("change", () => {
-      syncTargetAll();
-      invalidatePendingSubmission();
-    });
+    input.checked = initialized ? previouslyChecked.has(agent.actorId) : name === "target" && agent.enabled;
+    input.addEventListener("change", onChange);
     const text = document.createElement("span");
     text.textContent = `@${agent.displayName}`;
     label.append(input, text);
-    targetPicker.append(label);
+    picker.append(label);
   }
+}
+
+/** Rebuild the composer target chips from the configured agents, preserving the user's current selection. */
+function renderTargetPicker(): void {
+  renderAgentChips(targetPicker, "target", () => {
+    syncPairSelection();
+    invalidatePendingSubmission();
+  });
+  renderAgentChips(observerPicker, "observer", () => {
+    syncPairSelection();
+    invalidatePendingSubmission();
+  });
+  syncSupervisionControls();
+  syncPairSelection();
 }
 
 function renderAgents(): void {
@@ -1854,13 +1961,44 @@ function renderAgents(): void {
 }
 
 function syncTargetAvailability(): void {
-  for (const input of targetInputs()) {
+  for (const input of [...targetInputs(), ...observerInputs()]) {
     const agent = state.agents.get(input.value);
     const unavailable = agent?.enabled === false || agent?.status === "pending_restart";
     input.disabled = state.submitting || unavailable;
     if (unavailable) {
       input.checked = false;
     }
+  }
+  syncPairSelection();
+}
+
+function syncSupervisionControls(): void {
+  const enabled = supervisionEnabled.checked;
+  observerPicker.hidden = !enabled;
+  supervisionHint.hidden = !enabled;
+  if (!enabled) {
+    for (const input of observerInputs()) {
+      input.checked = false;
+    }
+  }
+}
+
+function syncPairSelection(): void {
+  const workers = new Set(targetInputs().filter((input) => input.checked && !input.disabled).map((input) => input.value));
+  const observers = new Set(observerInputs().filter((input) => input.checked && !input.disabled).map((input) => input.value));
+  for (const input of observerInputs()) {
+    const agent = state.agents.get(input.value);
+    const unavailable = agent?.enabled === false || agent?.status === "pending_restart";
+    const blocked = workers.has(input.value);
+    input.disabled = state.submitting || unavailable || blocked;
+    if (blocked) input.checked = false;
+  }
+  for (const input of targetInputs()) {
+    const agent = state.agents.get(input.value);
+    const unavailable = agent?.enabled === false || agent?.status === "pending_restart";
+    const blocked = observers.has(input.value);
+    input.disabled = state.submitting || unavailable || blocked;
+    if (blocked) input.checked = false;
   }
   syncTargetAll();
 }
@@ -2089,8 +2227,17 @@ function selectedTargets(): string[] {
   return targetInputs().filter((input) => input.checked && !input.disabled).map((input) => input.value);
 }
 
-function draftSignature(content: string, to: string[], replyToEventId: string | null): string {
-  return JSON.stringify({ content, to: [...to].sort(), replyToEventId });
+function selectedObservers(): string[] {
+  return observerInputs().filter((input) => input.checked && !input.disabled).map((input) => input.value);
+}
+
+function draftSignature(
+  content: string,
+  to: string[],
+  replyToEventId: string | null,
+  observers: string[]
+): string {
+  return JSON.stringify({ content, to: [...to].sort(), replyToEventId, observers: [...observers].sort() });
 }
 
 function invalidatePendingSubmission(): void {
@@ -2115,17 +2262,25 @@ async function submitMessage(): Promise<void> {
     setComposerStatus("请至少选择一个目标 Agent", true);
     return;
   }
+  const observers = supervisionEnabled.checked ? selectedObservers() : [];
+  if (supervisionEnabled.checked && observers.length === 0) {
+    setComposerStatus("监督模式需要至少选择一个观察者，且不能与 worker 相同", true);
+    return;
+  }
   if (state.submitting) {
     return;
   }
 
-  const signature = draftSignature(content, to, state.replyToEventId);
+  const signature = draftSignature(content, to, state.replyToEventId, observers);
   const existing = state.pendingSubmission?.signature === signature ? state.pendingSubmission.draft : null;
   const draft: MessageDraft = existing ?? {
     clientCommandId: makeClientCommandId("web-message"),
     to,
     content,
     replyToEventId: state.replyToEventId,
+    ...(observers.length === 0
+      ? {}
+      : { supervision: { observers, mode: "live_steer" as const } }),
   };
   state.pendingSubmission = { signature, draft };
   state.submitting = true;
@@ -2487,6 +2642,13 @@ targetAll.addEventListener("change", () => {
     }
   }
   targetAll.indeterminate = false;
+  syncPairSelection();
+  invalidatePendingSubmission();
+});
+
+supervisionEnabled.addEventListener("change", () => {
+  syncSupervisionControls();
+  syncPairSelection();
   invalidatePendingSubmission();
 });
 

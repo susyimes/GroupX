@@ -11,7 +11,8 @@ const timeouts = {
   idleMs: 1_000,
   cancelMs: 1_000,
   closeMs: 1_000,
-  askMs: 1_000
+  askMs: 1_000,
+  watchMs: 1_000
 };
 
 describe("structured adapter factory", () => {

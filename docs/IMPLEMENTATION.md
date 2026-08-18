@@ -10,6 +10,7 @@ GroupX 是一个本地、单用户、单房间优先的多 CLI 群聊系统。�
 
 - 将 Web UI、Codex CLI、Grok CLI、Kimi CLI 接入同一房间；
 - 让用户定向或并行唤醒一个或多个 CLI；
+- 可选地为一条用户消息配对 worker 与 observer：双方并行开跑，observer 用 watch/steer 观察、打断整轮并公开改道，而不是审批原生工具；
 - 让三个 Structured CLI session 的回复进入同一公共 transcript，并允许 Agent 在当前回合通过 GroupX MCP 主动互调；
 - 持久化消息、会话、公共记忆和身份记忆；
 - 在 Structured Adapter 边界归一化会话、输出、错误、取消和退出状态；deprecated Direct 代码只保留兼容；
@@ -66,6 +67,8 @@ M0-M2 不实现：
 - ApprovalService、审批表、审批 REST/UI/event，以及任何 native interaction request 的用户代答流程；
 - Agent Host、工作树分配、任务板、共识、投票、自治循环；
 - 自动从自然语言正文解析 `@某人` 并触发下一轮；
+- memsuOS 式治理内核、AuthorizationDecision、claim firewall、Fusion 双否决门，或把 steer 做成 native 工具 allow/deny；
+- 监督结论自动写入公共记忆或身份记忆，或因监督失败而改 native policy / 重放已可能交付的 prompt；
 - 自动将模型总结提升为稳定事实或身份；
 - 远程 A2A Agent Card、Task/Artifact 生命周期；
 - 多房间、多用户、移动端或互联网暴露；
@@ -251,6 +254,8 @@ GroupX MCP 是 Structured Agent 在当前生成回合主动调用另一个 Agent
 ```text
 groupx.send
 groupx.ask
+groupx.watch
+groupx.steer
 groupx.read
 groupx.memory.search
 groupx.memory.remember
@@ -261,7 +266,7 @@ groupx.identity.remember
 
 工具调用方来自 session binding。`core_memory_remember` 没有 scope/subject/author 输入，只能写调用 Agent 自己的 core；Agent 也只能以自己的 actor 身份写 identity record。Web UI 可以为任意 Agent 写用户来源的 identity/core record。
 
-`groupx.send` 持久化后异步返回；`groupx.ask` 等待目标 terminal response 并将结果带回当前 CLI 回合；`groupx.read` 查询异步 correlation。同步 ask 遇到 active causal stack 中的祖先 Agent 时返回 `CAUSAL_CYCLE`，避免相互等待死锁。
+`groupx.send` 持久化后异步返回；`groupx.ask` 等待目标 terminal response 并将结果带回当前 CLI 回合；`groupx.read` 查询异步 correlation。同步 ask 遇到 active causal stack 中的祖先 Agent 时返回 `CAUSAL_CYCLE`，避免相互等待死锁。`watch`/`steer` 只在本次监督 Watch Turn 上成功：前者等待有界里程碑，后者 nudge 或 interrupt 整段被观察 Turn。它们不是审批层。
 
 GroupX 必须实现并测试 `send/ask/read` 工具服务，但只向 Structured capability probe 已验证可以挂载并调用 MCP 的原生会话声明工具。selected transport 非 Structured、未验证或明确不支持时，attachment/HTTP 入口返回稳定 `MCP_UNAVAILABLE`（HTTP 503）；Agent 只有已由独立外部策略 evidence 投影为 `native_policy_blocked` 时，才能把该状态作为 MCP 不可用的上游原因。普通 attach/call 失败不能生成 `native_policy_blocked`。不能改用 `SESSION_NOT_AVAILABLE`，也不得改用正文 `@某人`、Direct 或另一 transport。此时用户仍可从 Web/REST 明确选择 recipients；所有最终回复仍进入公共 transcript。
 
@@ -278,7 +283,7 @@ REST 负责有副作用的用户命令；SSE 负责服务端事件流。
 | GET | `/api/context` | 当前单房间的 Context Packet 字符预算估算 |
 | POST | `/api/context/compact` | 显式滚动压缩较早消息，保留近期原文和完整 transcript |
 | GET | `/api/events?afterSeq=` | SSE 增量事件；支持 `Last-Event-ID` |
-| POST | `/api/messages` | 用户定向消息或 `@all` |
+| POST | `/api/messages` | 用户定向消息、`@all`，或可选监督配对 |
 | POST | `/api/turns/:id/cancel` | 请求原生取消 |
 | GET | `/api/memory` | 查询公共记忆 |
 | POST | `/api/memory` | 用户显式固定记忆 |
@@ -301,7 +306,7 @@ M1 UI 使用原生 HTML/CSS/TypeScript，避免在首版引入大型框架。
 - 左侧：Agent 状态、cwd、会话状态、能力、重启按钮和可折叠的公共记忆；
 - 中间：群聊、发送者徽标、reply/forward、目标选择和取消；
 - Agent 设置：每个 Agent 的稳定身份、可维护的核心记忆与按日期分组的自动记忆；不保留右侧记忆栏；
-- 底部：composer，左侧明确选择 `@codex/@grok/@kimi/@all`，输入区域右上角显示字符用量并提供“压缩会话”。
+- 底部：composer，左侧明确选择 `@codex/@grok/@kimi/@all`，可选监督开关与独立 observer chips（不得与本次 worker 重叠）；输入区域右上角显示字符用量并提供“压缩会话”。时间线把 pair、观察里程碑和 steer 收成可见协作事件；不出现批准/拒绝原生工具的按钮。打断文案必须写明「取消的是整轮，不是某一次工具」。
 
 UI 只根据 Envelope actor 渲染发送者，不解析正文决定头像或身份。
 用量控件显示的是 active checkpoint 加其后 `message.created` 的保守字符估算，不是模型 token window；目标 Agent 身份、记忆与原生 instructions 仍会另占空间。手动压缩同样经过 Broker 和 `clientCommandId` receipt，保留最近 12 条消息原文，不删除 transcript。
@@ -351,7 +356,41 @@ unrestricted 合同下没有正常 approval/permission/user-input 流程：
 
 `NATIVE_POLICY_BLOCKED` 不属于上述 interaction 分支；它只能由独立外部策略 preflight 或 native 启动/session 拒绝的明确强制策略 evidence 产生。
 
-### 6.4 Broker 重启
+### 6.4 同步监督配对
+
+这是 M2 之后的协作增量，不进入当前 Structured Gate，也不冒充 M3（A2A/多房间）。
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Broker
+    participant Worker
+    participant Supervisor
+
+    User->>Broker: POST message plus supervision pair
+    Broker->>Worker: worker turn
+    Broker->>Supervisor: watch turn
+    loop live watch
+        Worker-->>Broker: milestone snapshot
+        Broker-->>Supervisor: groupx.watch result
+        Supervisor-->>Broker: optional groupx.steer
+    end
+    alt steer interrupt
+        Broker->>Worker: cancel current turn
+        Broker->>Worker: new turn with guidance
+    else watch to terminal
+        Worker-->>Broker: turn.completed
+        Broker-->>Supervisor: final snapshot
+    end
+```
+
+1. 用户消息与配对在同一事务中提交：用户 `message.created`、worker Turns、系统 watch brief（`kind=supervision.watch`）、observer Turns、`supervision.paired`。
+2. Worker 使用普通 `groupx.context/0.4` 业务包；observer 使用带 `supervision_watch` 分段的观察包，且 watch brief 不进入房间 unread/压缩输入。
+3. Supervisor 用同步 `watch` 等待有界里程碑；需要介入时只能 `steer`。`interrupt` 取消整段当前 Worker Turn，再以公开指导排队新 Turn；`nudge` 等当前 Turn 自然结束。
+4. 指导进入公共 transcript，actor 来自 observer binding。不自动再开下一轮监督循环。
+5. 不产生 `approval.*`，不改 unrestricted argv/mode。
+
+### 6.5 Broker 重启
 
 1. 打开数据库并恢复非终态 Session/Turn。
 2. 没有 attempt 的 `queued` Turn，或状态不是 `cancelling` 且 attempt 明确为 `prepared + not_delivered` 的 Turn，只有其 transport snapshot 与当前启动选择一致时才可用 CAS 重新加入相应 lane；不一致时以 `TRANSPORT_MODE_MISMATCH` 失败，不能跨 transport 派发。`cancelling + prepared + not_delivered` 直接 CAS 到 terminal `cancelled`，绝不复活为 queued。
@@ -579,6 +618,17 @@ D:\GroupX
 - native interaction request fail-turn fixture；不存在 approval API/UI/event；
 - 同步因果循环检测；
 - 不确定派发的 reconciliation、delivery certainty 与禁止自动重放语义。
+
+### M2+：同步监督配对（协作增量）
+
+- 合同：配对路由、`sourceKind: "supervision"`、观察数据类、steer ≠ approval（D-027）；
+- Store/Broker：同一 `rootCorrelationId` 并行 worker + Watch Turn；里程碑总线；`steersPerSubjectTurn`；
+- MCP：仅 Watch Turn 成功执行 `watch`/`steer`；普通业务 Turn 不可见其成功路径；
+- Context：`supervision_watch` 观察包与业务包隔离；监督事件不进记忆/压缩；
+- UI：监督开关、observer chips、配对时间线；无审批按钮；
+- 测试：fixture 锁定并行观察、打断改道、上限、隔离与「不产生 approval / 不改 unrestricted」。
+
+不把真实模型是否抓到漂移写成发布 Gate。该增量不是 M3 的 A2A/多房间条目。
 
 ### M3：扩展边界
 

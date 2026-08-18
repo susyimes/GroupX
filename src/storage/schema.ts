@@ -1,4 +1,4 @@
-export const CURRENT_SCHEMA_VERSION = 7;
+export const CURRENT_SCHEMA_VERSION = 8;
 
 export interface Migration {
   version: number;
@@ -426,6 +426,41 @@ export const MIGRATIONS: readonly Migration[] = [
         ON agent_dated_memory_rollups(room_id, pending_turns, next_attempt_at, local_date);
       CREATE INDEX agent_dated_memory_sources_pending_idx
         ON agent_dated_memory_sources(room_id, actor_id, local_date, processed_at, response_seq);
+    `
+  },
+  {
+    version: 8,
+    name: "live_supervision_pairs",
+    sql: `
+      CREATE TABLE supervision_pairs (
+        pair_id TEXT PRIMARY KEY,
+        room_id TEXT NOT NULL,
+        correlation_id TEXT NOT NULL,
+        source_event_id TEXT NOT NULL REFERENCES events(event_id),
+        watch_event_id TEXT NOT NULL REFERENCES events(event_id),
+        pair_event_id TEXT NOT NULL REFERENCES events(event_id),
+        mode TEXT NOT NULL CHECK (mode = 'live_steer'),
+        created_at TEXT NOT NULL
+      );
+
+      CREATE INDEX supervision_pairs_correlation_idx
+        ON supervision_pairs(correlation_id);
+
+      CREATE TABLE supervision_pair_turns (
+        turn_id TEXT PRIMARY KEY REFERENCES turns(turn_id),
+        pair_id TEXT NOT NULL REFERENCES supervision_pairs(pair_id),
+        role TEXT NOT NULL CHECK (role IN ('worker', 'observer')),
+        actor_id TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE INDEX supervision_pair_turns_pair_role_idx
+        ON supervision_pair_turns(pair_id, role);
+
+      CREATE TABLE supervision_steer_counts (
+        subject_turn_id TEXT PRIMARY KEY REFERENCES turns(turn_id),
+        steer_count INTEGER NOT NULL CHECK (steer_count >= 0)
+      );
     `
   }
 ];

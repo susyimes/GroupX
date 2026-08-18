@@ -38,6 +38,9 @@ export type GroupXEventType =
   | "identity.superseded"
   | "identity.retracted"
   | "routing.loop_stopped"
+  | "supervision.paired"
+  | "supervision.observed"
+  | "supervision.steered"
   | "system.error";
 
 export interface ActorRef {
@@ -48,7 +51,7 @@ export interface ActorRef {
 }
 
 export interface PublicProvenance {
-  sourceKind: "web" | "adapter" | "mcp" | "system" | "generated_summary";
+  sourceKind: "web" | "adapter" | "mcp" | "system" | "generated_summary" | "supervision";
   authorActorId?: string;
   subjectActorId?: string;
   sourceEventId?: string;

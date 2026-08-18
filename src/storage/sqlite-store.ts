@@ -11,9 +11,14 @@ import {
   createId
 } from "../core/envelope.js";
 import { GroupXError, toGroupXError } from "../core/errors.js";
+import {
+  SUPERVISION_WATCH_KIND,
+  buildSupervisionWatchBrief
+} from "../core/supervision.js";
 import { CURRENT_SCHEMA_VERSION, MIGRATIONS } from "./schema.js";
 import { DEFAULT_ACCEPT_MESSAGE_LIMITS } from "./types.js";
 import type {
+  AcceptedTurnResult,
   AcceptMessageInput,
   AcceptMessageLimits,
   AcceptMessageOutcome,
@@ -57,6 +62,9 @@ import type {
   RuntimeRecoveryResult,
   SessionBindingRecord,
   StoredEventRecord,
+  SupervisionPairRecord,
+  SupervisionPairTurnRecord,
+  SupervisionTurnRole,
   SummaryRecord,
   TerminalTurnInput,
   TerminalTurnResult,
@@ -294,6 +302,29 @@ function mapEvent(row: Row): StoredEventRecord {
     );
   }
   return record;
+}
+
+function mapSupervisionPair(row: Row): SupervisionPairRecord {
+  return {
+    pairId: requiredString(row.pair_id, "pair_id"),
+    roomId: requiredString(row.room_id, "room_id"),
+    correlationId: requiredString(row.correlation_id, "correlation_id"),
+    sourceEventId: requiredString(row.source_event_id, "source_event_id"),
+    watchEventId: requiredString(row.watch_event_id, "watch_event_id"),
+    pairEventId: requiredString(row.pair_event_id, "pair_event_id"),
+    mode: requiredString(row.mode, "mode") as SupervisionPairRecord["mode"],
+    createdAt: requiredString(row.created_at, "created_at")
+  };
+}
+
+function mapSupervisionPairTurn(row: Row): SupervisionPairTurnRecord {
+  return {
+    pairId: requiredString(row.pair_id, "pair_id"),
+    turnId: requiredString(row.turn_id, "turn_id"),
+    role: requiredString(row.role, "role") as SupervisionTurnRole,
+    actorId: requiredString(row.actor_id, "actor_id"),
+    createdAt: requiredString(row.created_at, "created_at")
+  };
 }
 
 function mapTurn(row: Row): TurnRecord {
@@ -1136,27 +1167,28 @@ export class SqliteGroupXStore implements GroupXStore {
       throw new GroupXError("INVALID_ENVELOPE", "At least one target is required");
     }
 
-    const byActor = new Map<string, (typeof input.targets)[number]>();
-    for (const target of input.targets) {
-      const existingTarget = byActor.get(target.actorId);
-      if (
-        existingTarget &&
-        (existingTarget.adapterId !== target.adapterId ||
-          existingTarget.transport !== target.transport ||
-          existingTarget.bindingId !== target.bindingId ||
-          existingTarget.parentTurnId !== target.parentTurnId ||
-          (existingTarget.hopCount ?? 0) !== (target.hopCount ?? 0))
-      ) {
+    const normalizedTargets = this.#normalizeTurnTargets(input.targets);
+    const normalizedObservers =
+      input.supervision === undefined
+        ? []
+        : this.#normalizeTurnTargets(input.supervision.observers);
+    if (input.supervision !== undefined) {
+      if (normalizedObservers.length === 0) {
         throw new GroupXError(
-          "INVALID_ENVELOPE",
-          "One target actor cannot carry conflicting Turn metadata"
+          "SUPERVISION_PAIR_INVALID",
+          "A supervision pair requires at least one observer"
         );
       }
-      byActor.set(target.actorId, target);
+      const workers = new Set(normalizedTargets.map((target) => target.actorId));
+      const overlap = normalizedObservers.find((observer) => workers.has(observer.actorId));
+      if (overlap !== undefined) {
+        throw new GroupXError(
+          "SUPERVISION_PAIR_INVALID",
+          "A supervision observer cannot also be a worker in the same command",
+          { actorId: overlap.actorId }
+        );
+      }
     }
-    const normalizedTargets = [...byActor.values()].sort((left, right) =>
-      left.actorId.localeCompare(right.actorId)
-    );
 
     const commandType = input.commandType ?? "message.send";
     const canonicalPayload = {
@@ -1174,7 +1206,20 @@ export class SqliteGroupXStore implements GroupXStore {
       causationId: input.causationId ?? null,
       correlationId: input.correlationId ?? null,
       idempotencyKey: input.idempotencyKey ?? null,
-      provenance: input.provenance ?? null
+      provenance: input.provenance ?? null,
+      supervision:
+        input.supervision === undefined
+          ? null
+          : {
+              mode: input.supervision.mode,
+              observers: normalizedObservers.map((target) => ({
+                actorId: target.actorId,
+                adapterId: target.adapterId,
+                bindingId: target.bindingId ?? null,
+                parentTurnId: target.parentTurnId ?? null,
+                hopCount: target.hopCount ?? 0
+              }))
+            }
     };
     const hash = canonicalHash(canonicalPayload);
     const existing = this.getClientCommand<AcceptMessageResult>(
@@ -1234,13 +1279,14 @@ export class SqliteGroupXStore implements GroupXStore {
             acceptedAt
           );
 
+        const limitTargets = [...normalizedTargets, ...normalizedObservers];
         this.#enforceAcceptMessageLimitsUnsafe(
-          normalizedTargets,
+          limitTargets,
           correlationId,
           limits
         );
         this.#enforceCausalGraphUnsafe({
-          targets: normalizedTargets,
+          targets: limitTargets,
           rootCorrelationId: correlationId,
           ...(input.correlationId === undefined
             ? {}
@@ -1267,8 +1313,9 @@ export class SqliteGroupXStore implements GroupXStore {
           ...(input.provenance === undefined ? {} : { provenance: input.provenance })
         });
 
-        const turns = normalizedTargets.map((target) => {
+        const workerTurns = normalizedTargets.map((target) => {
           const turn = this.#insertTurnUnsafe({
+            turnId: createId("turn"),
             sourceEventId: event.eventId,
             targetActorId: target.actorId,
             adapterId: target.adapterId,
@@ -1284,10 +1331,123 @@ export class SqliteGroupXStore implements GroupXStore {
           return { target: target.actorId, turnId: turn.turnId, status: "queued" as const };
         });
 
+        let watchTurns: AcceptedTurnResult[] | undefined;
+        let watchEventId: string | undefined;
+        let pairEventId: string | undefined;
+        if (input.supervision !== undefined) {
+          const watchBrief = buildSupervisionWatchBrief({
+            task: input.content,
+            workers: workerTurns.map((turn) => ({
+              actorId: turn.target,
+              turnId: turn.turnId
+            })),
+            observers: normalizedObservers.map((observer) => observer.actorId)
+          });
+          const watchEvent = this.#insertEventUnsafe({
+            roomId: input.roomId,
+            eventType: "message.created",
+            actorId: BUILTIN_ACTORS.system.actorId,
+            targets: normalizedObservers.map((observer) => observer.actorId),
+            replyToEventId: event.eventId,
+            causationId: event.eventId,
+            correlationId,
+            occurredAt: acceptedAt,
+            body: { content: watchBrief, kind: SUPERVISION_WATCH_KIND },
+            provenance: {
+              sourceKind: "supervision",
+              authorActorId: binding.actorId,
+              sourceEventId: event.eventId,
+              labels: ["supervision.watch"]
+            }
+          });
+          watchEventId = watchEvent.eventId;
+          watchTurns = normalizedObservers.map((observer) => {
+            const turn = this.#insertTurnUnsafe({
+              turnId: createId("turn"),
+              sourceEventId: watchEvent.eventId,
+              targetActorId: observer.actorId,
+              adapterId: observer.adapterId,
+              transport: observer.transport,
+              rootCorrelationId: correlationId,
+              ...(observer.bindingId === undefined ? {} : { bindingId: observer.bindingId }),
+              ...(observer.parentTurnId === undefined
+                ? {}
+                : { parentTurnId: observer.parentTurnId }),
+              hopCount: observer.hopCount ?? 0,
+              queuedAt: acceptedAt
+            });
+            return { target: observer.actorId, turnId: turn.turnId, status: "queued" as const };
+          });
+          const pairId = createId("pair");
+          const pairEvent = this.#insertEventUnsafe({
+            roomId: input.roomId,
+            eventType: "supervision.paired",
+            actorId: BUILTIN_ACTORS.system.actorId,
+            targets: [
+              ...normalizedTargets.map((target) => target.actorId),
+              ...normalizedObservers.map((observer) => observer.actorId)
+            ],
+            replyToEventId: event.eventId,
+            causationId: event.eventId,
+            correlationId,
+            occurredAt: acceptedAt,
+            body: {
+              pairId,
+              mode: input.supervision.mode,
+              sourceEventId: event.eventId,
+              watchEventId: watchEvent.eventId,
+              workers: workerTurns.map((turn) => ({
+                actorId: turn.target,
+                turnId: turn.turnId
+              })),
+              observers: watchTurns.map((turn) => ({
+                actorId: turn.target,
+                turnId: turn.turnId
+              }))
+            },
+            provenance: {
+              sourceKind: "supervision",
+              authorActorId: binding.actorId,
+              sourceEventId: event.eventId
+            }
+          });
+          pairEventId = pairEvent.eventId;
+          this.#database
+            .prepare(`
+              INSERT INTO supervision_pairs(
+                pair_id, room_id, correlation_id, source_event_id, watch_event_id,
+                pair_event_id, mode, created_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            `)
+            .run(
+              pairId,
+              input.roomId,
+              correlationId,
+              event.eventId,
+              watchEvent.eventId,
+              pairEvent.eventId,
+              input.supervision.mode,
+              acceptedAt
+            );
+          const insertPairTurn = this.#database.prepare(`
+            INSERT INTO supervision_pair_turns(turn_id, pair_id, role, actor_id, created_at)
+            VALUES (?, ?, ?, ?, ?)
+          `);
+          for (const turn of workerTurns) {
+            insertPairTurn.run(turn.turnId, pairId, "worker", turn.target, acceptedAt);
+          }
+          for (const turn of watchTurns) {
+            insertPairTurn.run(turn.turnId, pairId, "observer", turn.target, acceptedAt);
+          }
+        }
+
         const acceptance: AcceptMessageResult = {
           messageEventId: event.eventId,
           correlationId,
-          turns
+          turns: workerTurns,
+          ...(watchTurns === undefined ? {} : { watchTurns }),
+          ...(watchEventId === undefined ? {} : { watchEventId }),
+          ...(pairEventId === undefined ? {} : { pairEventId })
         };
         const commandUpdated = this.#database
           .prepare(`
@@ -2515,7 +2675,12 @@ export class SqliteGroupXStore implements GroupXStore {
     });
 
     let datedMemoryRollup: AgentDatedMemoryRollupRecord | undefined;
-    if (input.status === "completed" && responseEvent !== undefined && attempt !== undefined) {
+    if (
+      input.status === "completed" &&
+      responseEvent !== undefined &&
+      attempt !== undefined &&
+      this.#getSupervisionTurnRoleUnsafe(turn.turnId) !== "observer"
+    ) {
       const sourceBody = parseJson<Record<string, unknown>>(source.body_json, {});
       if (typeof sourceBody.content !== "string") {
         throw new GroupXError(
@@ -3924,6 +4089,169 @@ export class SqliteGroupXStore implements GroupXStore {
       ok: messages.length === 1 && messages[0] === "ok" && foreignKeyRows.length === 0,
       messages
     };
+  }
+
+  #normalizeTurnTargets(targets: readonly TurnTargetInput[]): TurnTargetInput[] {
+    const byActor = new Map<string, TurnTargetInput>();
+    for (const target of targets) {
+      const existingTarget = byActor.get(target.actorId);
+      if (
+        existingTarget &&
+        (existingTarget.adapterId !== target.adapterId ||
+          existingTarget.transport !== target.transport ||
+          existingTarget.bindingId !== target.bindingId ||
+          existingTarget.parentTurnId !== target.parentTurnId ||
+          (existingTarget.hopCount ?? 0) !== (target.hopCount ?? 0))
+      ) {
+        throw new GroupXError(
+          "INVALID_ENVELOPE",
+          "One target actor cannot carry conflicting Turn metadata"
+        );
+      }
+      byActor.set(target.actorId, target);
+    }
+    return [...byActor.values()].sort((left, right) => left.actorId.localeCompare(right.actorId));
+  }
+
+  #getSupervisionPairUnsafe(pairId: string): SupervisionPairRecord | undefined {
+    const row = this.#database
+      .prepare("SELECT * FROM supervision_pairs WHERE pair_id = ?")
+      .get(pairId) as Row | undefined;
+    return row ? mapSupervisionPair(row) : undefined;
+  }
+
+  #getSupervisionPairByTurnUnsafe(turnId: string): SupervisionPairRecord | undefined {
+    const row = this.#database
+      .prepare(`
+        SELECT supervision_pairs.*
+        FROM supervision_pair_turns
+        INNER JOIN supervision_pairs
+          ON supervision_pairs.pair_id = supervision_pair_turns.pair_id
+        WHERE supervision_pair_turns.turn_id = ?
+      `)
+      .get(turnId) as Row | undefined;
+    return row ? mapSupervisionPair(row) : undefined;
+  }
+
+  #getSupervisionTurnRoleUnsafe(turnId: string): SupervisionTurnRole | undefined {
+    const row = this.#database
+      .prepare("SELECT role FROM supervision_pair_turns WHERE turn_id = ?")
+      .get(turnId) as Row | undefined;
+    return row ? (requiredString(row.role, "role") as SupervisionTurnRole) : undefined;
+  }
+
+  #listSupervisionPairTurnsUnsafe(pairId: string): SupervisionPairTurnRecord[] {
+    return (
+      this.#database
+        .prepare(`
+          SELECT * FROM supervision_pair_turns
+          WHERE pair_id = ?
+          ORDER BY role, actor_id, turn_id
+        `)
+        .all(pairId) as Row[]
+    ).map(mapSupervisionPairTurn);
+  }
+
+  getSupervisionPair(pairId: string): SupervisionPairRecord | undefined {
+    this.#assertOpen();
+    return this.#getSupervisionPairUnsafe(pairId);
+  }
+
+  getSupervisionPairByTurn(turnId: string): SupervisionPairRecord | undefined {
+    this.#assertOpen();
+    return this.#getSupervisionPairByTurnUnsafe(turnId);
+  }
+
+  getSupervisionTurnRole(turnId: string): SupervisionTurnRole | undefined {
+    this.#assertOpen();
+    return this.#getSupervisionTurnRoleUnsafe(turnId);
+  }
+
+  listSupervisionPairTurns(pairId: string): SupervisionPairTurnRecord[] {
+    this.#assertOpen();
+    return this.#listSupervisionPairTurnsUnsafe(pairId);
+  }
+
+  attachSupervisionWorkerTurn(input: {
+    pairId: string;
+    turnId: string;
+    actorId: string;
+    createdAt?: string;
+  }): SupervisionPairTurnRecord {
+    this.#assertOpen();
+    return this.#withImmediateTransaction(() => {
+      const pair = this.#getSupervisionPairUnsafe(input.pairId);
+      if (!pair) {
+        throw new GroupXError("SUPERVISION_PAIR_INVALID", "The supervision pair does not exist");
+      }
+      const turn = this.#getTurnUnsafe(input.turnId);
+      if (!turn) {
+        throw new GroupXError("UNKNOWN_TARGET", "The steered Turn does not exist");
+      }
+      if (turn.rootCorrelationId !== pair.correlationId) {
+        throw new GroupXError(
+          "SUPERVISION_PAIR_INVALID",
+          "A steered Turn must stay in the pair correlation"
+        );
+      }
+      const createdAt = input.createdAt ?? nowIso();
+      this.#database
+        .prepare(`
+          INSERT INTO supervision_pair_turns(turn_id, pair_id, role, actor_id, created_at)
+          VALUES (?, ?, 'worker', ?, ?)
+        `)
+        .run(input.turnId, input.pairId, input.actorId, createdAt);
+      return this.#listSupervisionPairTurnsUnsafe(input.pairId).find(
+        (member) => member.turnId === input.turnId
+      )!;
+    });
+  }
+
+  getSteerCount(subjectTurnId: string): number {
+    this.#assertOpen();
+    const row = this.#database
+      .prepare("SELECT steer_count FROM supervision_steer_counts WHERE subject_turn_id = ?")
+      .get(subjectTurnId) as Row | undefined;
+    return row ? requiredNumber(row.steer_count, "steer_count") : 0;
+  }
+
+  incrementSteerCount(subjectTurnId: string, limit: number): number {
+    this.#assertOpen();
+    if (!Number.isSafeInteger(limit) || limit < 1) {
+      throw new GroupXError("INVALID_ENVELOPE", "Steer limit must be a positive integer");
+    }
+    return this.#withImmediateTransaction(() => {
+      const turn = this.#getTurnUnsafe(subjectTurnId);
+      if (!turn) {
+        throw new GroupXError("UNKNOWN_TARGET", "The watched Turn does not exist");
+      }
+      this.#database
+        .prepare(`
+          INSERT INTO supervision_steer_counts(subject_turn_id, steer_count)
+          VALUES (?, 0)
+          ON CONFLICT(subject_turn_id) DO NOTHING
+        `)
+        .run(subjectTurnId);
+      const updated = this.#database
+        .prepare(`
+          UPDATE supervision_steer_counts
+          SET steer_count = steer_count + 1
+          WHERE subject_turn_id = ? AND steer_count < ?
+        `)
+        .run(subjectTurnId, limit);
+      if (updated.changes !== 1) {
+        throw new GroupXError(
+          "STEER_LIMIT_REACHED",
+          `Steer count exceeds the configured limit ${limit}`,
+          {
+            limitKind: "steersPerSubjectTurn",
+            limit,
+            subjectTurnId
+          }
+        );
+      }
+      return this.getSteerCount(subjectTurnId);
+    });
   }
 
   close(): void {

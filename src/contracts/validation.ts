@@ -53,7 +53,11 @@ const PUBLIC_ERROR_MESSAGES: Readonly<Partial<Record<GroupXErrorCode, string>>> 
     "The native agent requested an interactive response despite GroupX unrestricted mode.",
   NATIVE_POLICY_BLOCKED: "A native policy blocked unrestricted agent execution.",
   MCP_BINDING_MISMATCH: "The MCP caller binding is not valid for this request.",
-  STORE_UNAVAILABLE: "GroupX storage is temporarily unavailable."
+  STORE_UNAVAILABLE: "GroupX storage is temporarily unavailable.",
+  STEER_LIMIT_REACHED: "This watched turn has reached its steer limit.",
+  SUPERVISION_WATCH_REQUIRED: "watch and steer are only available on a supervision watch turn.",
+  SUPERVISION_STEER_REQUIRED: "Redirect a watched worker with steer, not send or ask.",
+  SUPERVISION_PAIR_INVALID: "The supervision pair is missing or not valid for this caller."
 };
 
 function publicMessage(code: GroupXErrorCode | typeof INTERNAL_ERROR_CODE): string {
@@ -212,6 +216,10 @@ export function httpStatusForErrorCode(
   switch (code) {
     case "SENDER_FIELD_FORBIDDEN":
     case "INVALID_ENVELOPE":
+    case "SUPERVISION_PAIR_INVALID":
+    case "SUPERVISION_WATCH_REQUIRED":
+    case "SUPERVISION_STEER_REQUIRED":
+    case "STEER_LIMIT_REACHED":
       return 400;
     case "UNKNOWN_ACTOR":
     case "UNKNOWN_TARGET":
