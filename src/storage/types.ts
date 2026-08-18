@@ -245,6 +245,9 @@ export interface AcceptMessageInput {
   provenance?: PublicProvenance;
   limits?: AcceptMessageLimits;
   supervision?: SupervisionAcceptInput;
+  sourceEventType?: "message.created" | "operator.dispatch";
+  operation?: "send" | "worker_dispatch" | "worker_ask" | "dispatch_event";
+  existingSourceEventId?: string;
 }
 
 export interface AcceptedTurnResult {
@@ -649,6 +652,30 @@ export interface SupervisionPairTurnRecord {
   createdAt: string;
 }
 
+export interface AssistantConversationMessageRecord {
+  messageId: string;
+  role: "user" | "assistant";
+  content: string;
+  createdAt: string;
+  clientCommandId?: string;
+}
+
+export interface AppendAssistantMessageInput {
+  messageId?: string;
+  role: "user" | "assistant";
+  content: string;
+  createdAt?: string;
+  clientCommandId?: string;
+}
+
+export interface ContextResetRecord {
+  resetId: string;
+  roomId: string;
+  throughSeq: number;
+  createdAt: string;
+  resetNativeSessions: boolean;
+}
+
 export interface IntegrityCheckResult {
   ok: boolean;
   messages: string[];
@@ -694,8 +721,23 @@ export interface GroupXStore {
   acceptMessageWithDisposition(input: AcceptMessageInput): AcceptMessageOutcome;
   getSupervisionPair(pairId: string): SupervisionPairRecord | undefined;
   getSupervisionPairByTurn(turnId: string): SupervisionPairRecord | undefined;
+  getSupervisionPairByCorrelation(correlationId: string): SupervisionPairRecord | undefined;
+  listSupervisionPairs(input?: { roomId?: string; correlationId?: string }): SupervisionPairRecord[];
   getSupervisionTurnRole(turnId: string): SupervisionTurnRole | undefined;
   listSupervisionPairTurns(pairId: string): SupervisionPairTurnRecord[];
+  appendAssistantMessage(input: AppendAssistantMessageInput): AssistantConversationMessageRecord;
+  listAssistantMessages(limit?: number): AssistantConversationMessageRecord[];
+  getAssistantMessageByClientCommandId(
+    clientCommandId: string
+  ): AssistantConversationMessageRecord | undefined;
+  getAssistantReplyAfter(messageId: string): AssistantConversationMessageRecord | undefined;
+  recordContextReset(input: {
+    roomId: string;
+    throughSeq: number;
+    resetNativeSessions?: boolean;
+    createdAt?: string;
+  }): ContextResetRecord;
+  getLatestContextResetThroughSeq(roomId: string): number;
   attachSupervisionWorkerTurn(input: {
     pairId: string;
     turnId: string;

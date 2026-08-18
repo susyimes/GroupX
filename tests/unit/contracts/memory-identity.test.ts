@@ -143,7 +143,7 @@ describe("separate memory and identity write contracts", () => {
         authorActorId: "agent:grok",
         kind: "preference",
         content: "Prefer protocol evidence.",
-        sourceKind: "mcp",
+        sourceKind: "operator",
         status: "active",
         createdAt: "2026-08-11T12:00:00.000Z",
         futureRecordField: true

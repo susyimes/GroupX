@@ -118,6 +118,14 @@ describe("Web/MCP JSON schema safety", () => {
         sourceKind: "automatic_rollup"
       }).success
     ).toBe(true);
+    expect(
+      MemoryRecordSchema.safeParse({
+        ...base,
+        scope: { type: "room", id: "room:main" },
+        sourceKind: "operator",
+        authorActorId: "user:assistant"
+      }).success
+    ).toBe(true);
   });
 
   it("makes the unified error body strict at both levels", () => {

@@ -5,6 +5,12 @@ import { GroupXBroker } from "../broker/broker.js";
 import type { BrokerContextProvider, BrokerErrorContext } from "../broker/types.js";
 import { assertActiveTransport, isBuiltinAgentId, type GroupXConfig } from "../config.js";
 import {
+  ASSISTANT_ACTOR_ID,
+  LOCAL_OPERATOR_BINDING_ID,
+  LOCAL_OPERATOR_INSTANCE_ID,
+  LOCAL_OPERATOR_PROTOCOL
+} from "../core/assistant.js";
+import {
   asTransientEnvelope,
   createCorrelationId,
   createId,
@@ -52,9 +58,12 @@ import {
   type SessionProgress,
   type SessionResumePlan
 } from "./session-manager.js";
+import { GroupXOperatorBrokerApi } from "./operator-broker-api.js";
+import { GroupXAssistantHost, type AssistantHost } from "./operator-runtime.js";
 import { GroupXToolBrokerApi } from "./tool-broker-api.js";
 import { ActiveTurnCoordinator } from "./turn-lifecycle.js";
 import { GroupXWebBrokerApi } from "./web-broker-api.js";
+import { createGroupXOperatorMcpServer } from "../mcp/server/operator-tools.js";
 
 export interface GroupXRuntimeOptions {
   store?: GroupXStore;
@@ -82,6 +91,7 @@ export interface GroupXRuntimeStartResult {
 
 export const LOCAL_REST_WEB_INSTANCE_ID = "instance:web" as const;
 export const LOCAL_REST_WEB_BINDING_ID = "binding:web" as const;
+export { LOCAL_OPERATOR_INSTANCE_ID, LOCAL_OPERATOR_BINDING_ID };
 
 function compactionEventType(progress: RoomCompactionProgress) {
   return `context.compaction.${progress.phase}` as const;
@@ -176,9 +186,13 @@ export class GroupXRuntime {
   #turns: ActiveTurnCoordinator | undefined;
   #webApi: GroupXWebBrokerApi | undefined;
   #toolApi: GroupXToolBrokerApi | undefined;
+  #operatorApi: GroupXOperatorBrokerApi | undefined;
+  #assistantHost: AssistantHost | undefined;
   #mcpHandler: GroupXMcpHttpHandler | undefined;
+  #operatorMcpHandler: GroupXMcpHttpHandler | undefined;
   #http: GroupXHttpServer | undefined;
   #webBindingId: string | undefined;
+  #operatorBindingId: string | undefined;
   #startPromise: Promise<GroupXRuntimeStartResult> | undefined;
   #startResult: GroupXRuntimeStartResult | undefined;
   #closePromise: Promise<void> | undefined;
@@ -330,6 +344,7 @@ export class GroupXRuntime {
   async #performStart(): Promise<GroupXRuntimeStartResult> {
     try {
       this.#createWebBinding();
+      this.#createOperatorBinding();
       const turns = new ActiveTurnCoordinator({
         transport: this.config.transport,
         bindings: this.bindings,
@@ -379,6 +394,9 @@ export class GroupXRuntime {
 
       let toolApi: GroupXToolBrokerApi | undefined;
       let mcpHandler: GroupXMcpHttpHandler | undefined;
+      let operatorApi: GroupXOperatorBrokerApi | undefined;
+      let operatorMcpHandler: GroupXMcpHttpHandler | undefined;
+      const knownTargets = this.adapters.list().map((adapter) => adapter.actorId);
       if (this.config.transport === "structured") {
         toolApi = new GroupXToolBrokerApi({
           broker,
@@ -389,9 +407,39 @@ export class GroupXRuntime {
         mcpHandler = createGroupXMcpHttpHandler({
           broker: toolApi,
           bindings: this.bindings,
-          knownTargets: this.adapters.list().map((adapter) => adapter.actorId)
+          knownTargets
+        });
+        operatorApi = new GroupXOperatorBrokerApi({
+          broker,
+          restartCommands,
+          config: this.config,
+          roomId: this.roomId,
+          bindingId: this.#operatorBindingId!,
+          store: this.store,
+          askTimeoutMs: this.config.timeouts.askMs,
+          ...(this.#setupApi === undefined ? {} : { setupApi: this.#setupApi })
+        });
+        this.bindings.register({
+          bindingId: this.#operatorBindingId!,
+          actorId: ASSISTANT_ACTOR_ID,
+          instanceId: LOCAL_OPERATOR_INSTANCE_ID
+        });
+        this.bindings.markReady(this.#operatorBindingId!);
+        operatorMcpHandler = createGroupXMcpHttpHandler({
+          bindings: this.bindings,
+          knownTargets,
+          createServer: ({ binding, knownTargets: targets }) =>
+            createGroupXOperatorMcpServer({
+              broker: operatorApi!,
+              binding,
+              ...(targets === undefined ? {} : { knownTargets: targets })
+            })
         });
       }
+      const assistantHost = new GroupXAssistantHost({
+        config: this.config,
+        store: this.store
+      });
 
       const http = createGroupXHttpServer({
         broker: webApi,
@@ -403,14 +451,33 @@ export class GroupXRuntime {
           ? { staticRoot: fileURLToPath(new URL("../../web/", import.meta.url)) }
           : { staticRoot: this.#staticRoot }),
         ...(mcpHandler === undefined ? {} : { mcpHandler }),
+        ...(operatorMcpHandler === undefined ? {} : { operatorMcpHandler }),
         ...(this.#setupApi === undefined ? {} : { setupApi: this.#setupApi }),
+        assistantApi: {
+          snapshot: (signal) => {
+            signal.throwIfAborted();
+            return assistantHost.snapshot();
+          },
+          listMessages: (signal) => {
+            signal.throwIfAborted();
+            return { messages: assistantHost.listMessages() };
+          },
+          postMessage: async (request, signal) => await assistantHost.postMessage(request, signal),
+          cancel: async (request, signal) => {
+            signal.throwIfAborted();
+            return await assistantHost.cancel(request.clientCommandId);
+          }
+        },
         runtimeIdentity: this.runtimeIdentity
       });
       this.#broker = broker;
       this.#turns = turns;
       this.#webApi = webApi;
       this.#toolApi = toolApi;
+      this.#operatorApi = operatorApi;
+      this.#assistantHost = assistantHost;
       this.#mcpHandler = mcpHandler;
+      this.#operatorMcpHandler = operatorMcpHandler;
       this.#http = http;
 
       // Structured sessions need the actual bound origin. HTTP therefore
@@ -426,6 +493,7 @@ export class GroupXRuntime {
       await this.sessions.startAll({ nativeSessionIds: recovery.nativeSessionIds });
       await broker.recoverAfterRestart();
       this.datedMemoryEngine.recover(this.roomId);
+      await assistantHost.start(address.origin);
       this.readiness.markReady();
       const result = { address, recovery };
       this.#startResult = result;
@@ -483,6 +551,46 @@ export class GroupXRuntime {
     this.#webBindingId = LOCAL_REST_WEB_BINDING_ID;
   }
 
+  #createOperatorBinding(): void {
+    const existingInstance = this.store.getAgentInstance(LOCAL_OPERATOR_INSTANCE_ID);
+    const existingBinding = this.store.getSessionBinding(LOCAL_OPERATOR_BINDING_ID);
+    if (existingInstance === undefined && existingBinding === undefined) {
+      this.store.createAgentInstance({
+        instanceId: LOCAL_OPERATOR_INSTANCE_ID,
+        actorId: ASSISTANT_ACTOR_ID,
+        adapterId: "operator",
+        status: "ready"
+      });
+      this.store.createSessionBinding({
+        bindingId: LOCAL_OPERATOR_BINDING_ID,
+        instanceId: LOCAL_OPERATOR_INSTANCE_ID,
+        actorId: ASSISTANT_ACTOR_ID,
+        protocol: LOCAL_OPERATOR_PROTOCOL,
+        status: "ready",
+        capabilities: {
+          transport: "loopback-http",
+          access: "unrestricted",
+          facet: "operator"
+        }
+      });
+    } else if (
+      existingInstance?.actorId !== ASSISTANT_ACTOR_ID ||
+      existingInstance.adapterId !== "operator" ||
+      existingInstance.processEndedAt !== undefined ||
+      existingBinding?.instanceId !== LOCAL_OPERATOR_INSTANCE_ID ||
+      existingBinding.actorId !== ASSISTANT_ACTOR_ID ||
+      existingBinding.protocol !== LOCAL_OPERATOR_PROTOCOL ||
+      existingBinding.status !== "ready" ||
+      existingBinding.closedAt !== undefined
+    ) {
+      throw new GroupXError(
+        "STORE_CONFLICT",
+        "Stable local-operator assistant binding is missing or incompatible"
+      );
+    }
+    this.#operatorBindingId = LOCAL_OPERATOR_BINDING_ID;
+  }
+
   async #performClose(): Promise<void> {
     const failures: unknown[] = [];
     const settle = async (operation: () => void | Promise<void>): Promise<void> => {
@@ -494,6 +602,8 @@ export class GroupXRuntime {
     };
 
     await settle(async () => await this.#http?.close());
+    await settle(async () => await this.#assistantHost?.close());
+    await settle(async () => await this.#operatorMcpHandler?.close());
     await settle(async () => await this.#mcpHandler?.close());
     await settle(() => this.contextEngine.close());
     await settle(async () => await this.datedMemoryEngine.close());

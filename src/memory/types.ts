@@ -21,6 +21,7 @@ export type ContextPacketStore = Pick<
   GroupXStore,
   | "getDeliveryCursor"
   | "getActiveSummary"
+  | "getLatestContextResetThroughSeq"
   | "getEvent"
   | "getRoomHighWaterSeq"
   | "listEvents"
@@ -38,11 +39,19 @@ export interface RoomContextUsage {
   utilizationPercent: number;
   uncompactedMessageCount: number;
   summaryThroughSeq?: number;
+  resetThroughSeq?: number;
   compactable: boolean;
 }
 
 export interface RoomContextCompactionResult {
   compacted: boolean;
+  usage: RoomContextUsage;
+}
+
+export interface RoomContextResetResult {
+  reset: boolean;
+  throughSeq: number;
+  resetNativeSessions: boolean;
   usage: RoomContextUsage;
 }
 

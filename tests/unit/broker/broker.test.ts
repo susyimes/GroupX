@@ -420,7 +420,13 @@ describe.sequential("GroupXBroker acceptance, dispatch and terminal semantics", 
     const fixture = createFixture({
       contextController: {
         inspectUsage: () => usage,
-        compactNow
+        compactNow,
+        resetNow: () => ({
+          reset: false,
+          throughSeq: usage.throughSeq,
+          resetNativeSessions: false,
+          usage
+        })
       }
     });
     const command = {
@@ -438,6 +444,45 @@ describe.sequential("GroupXBroker acceptance, dispatch and terminal semantics", 
     await expect(Promise.all([first, concurrent])).resolves.toEqual([result, result]);
     await expect(fixture.broker.compactContextFromBinding(command)).resolves.toEqual(result);
     expect(compactNow).toHaveBeenCalledTimes(1);
+  });
+
+  it("single-flights and replays an explicit room context reset command", async () => {
+    const usage = {
+      roomId: "room:main",
+      throughSeq: 20,
+      estimatedCharacters: 128_000,
+      maxCharacters: 256_000,
+      compactionTriggerCharacters: 192_000,
+      utilizationPercent: 50,
+      uncompactedMessageCount: 18,
+      compactable: true
+    } as const;
+    const resetNow = vi.fn(() => ({
+      reset: true,
+      throughSeq: usage.throughSeq,
+      resetNativeSessions: false,
+      usage
+    }));
+    const fixture = createFixture({
+      contextController: {
+        inspectUsage: () => usage,
+        compactNow: async () => ({ compacted: false, usage }),
+        resetNow
+      }
+    });
+    const command = {
+      bindingId: "binding:web",
+      clientCommandId: "context-reset-1",
+      roomId: "room:main"
+    } as const;
+
+    const first = fixture.broker.resetContextFromBinding(command);
+    const concurrent = fixture.broker.resetContextFromBinding(command);
+    const [firstResult, concurrentResult] = await Promise.all([first, concurrent]);
+    expect(firstResult).toEqual(concurrentResult);
+    expect(firstResult.reset).toBe(true);
+    await expect(fixture.broker.resetContextFromBinding(command)).resolves.toEqual(firstResult);
+    expect(resetNow).toHaveBeenCalledTimes(1);
   });
 
   it("keeps one actor FIFO and persists only one response/terminal on duplicate native terminal", async () => {

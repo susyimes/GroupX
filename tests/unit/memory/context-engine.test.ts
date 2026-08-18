@@ -365,4 +365,106 @@ describe("RoomContextEngine", () => {
       { phase: "completed", attempt: 2 }
     ]);
   });
+
+  it("counts and compacts operator.dispatch with room messages", async () => {
+    const fixture = createMemoryTestFixture();
+    for (let index = 0; index < 4; index += 1) {
+      fixture.store.appendDurableEvent({
+        eventId: `evt_operator_dispatch_${index}`,
+        roomId: "room:main",
+        eventType: "operator.dispatch",
+        actorId: "user:assistant",
+        targets: ["agent:codex"],
+        correlationId: "corr_operator_dispatch",
+        body: {
+          content: `dispatch-${index} ${"d".repeat(40)}`,
+          operation: "worker_dispatch",
+          promptLength: 50,
+          targets: ["agent:codex"]
+        }
+      });
+    }
+    for (let index = 0; index < 8; index += 1) {
+      appendMessage(fixture, {
+        eventId: `evt_dispatch_context_${index}`,
+        actorId: index % 2 === 0 ? "user:web" : "agent:codex",
+        content: `chat-${index} ${"c".repeat(40)}`
+      });
+    }
+    const summarizer = new RecordingSummarizer();
+    const engine = new RoomContextEngine({
+      store: fixture.store,
+      summarizer,
+      maxChars: 10_000,
+      maxCompactionInputChars: 20_000,
+      maxSummaryChars: 500,
+      manualRetainMessages: 4
+    });
+
+    const before = engine.inspectUsage("room:main");
+    expect(before.uncompactedMessageCount).toBe(12);
+    expect(before.compactable).toBe(true);
+
+    const result = await engine.compactNow("room:main");
+    expect(result.compacted).toBe(true);
+    expect(summarizer.calls[0]!.messages.some((message) => message.eventId.startsWith("evt_operator_dispatch_"))).toBe(
+      true
+    );
+    expect(result.usage.uncompactedMessageCount).toBe(4);
+  });
+
+  it("does not compact or re-reset history before the current reset boundary", async () => {
+    const fixture = createMemoryTestFixture();
+    for (let index = 0; index < 8; index += 1) {
+      appendMessage(fixture, {
+        eventId: `evt_reset_old_${index}`,
+        actorId: index % 2 === 0 ? "user:web" : "agent:codex",
+        content: `old-${index} ${"o".repeat(40)}`
+      });
+    }
+    const summarizer = new RecordingSummarizer();
+    const engine = new RoomContextEngine({
+      store: fixture.store,
+      summarizer,
+      maxChars: 10_000,
+      maxCompactionInputChars: 20_000,
+      maxSummaryChars: 500,
+      manualRetainMessages: 4
+    });
+
+    const prior = await engine.compactNow("room:main");
+    expect(prior.compacted).toBe(true);
+    expect(fixture.store.getActiveSummary("room:main")).toBeDefined();
+
+    const first = engine.resetNow("room:main");
+    expect(first.reset).toBe(true);
+    expect(fixture.store.getActiveSummary("room:main")).toBeUndefined();
+    fixture.store.appendDurableEvent({
+      eventId: "evt_context_reset_audit",
+      roomId: "room:main",
+      eventType: "context.reset",
+      actorId: "system:groupx",
+      correlationId: "corr_context_reset",
+      body: { throughSeq: first.throughSeq, resetNativeSessions: false }
+    });
+    const idle = engine.resetNow("room:main");
+    expect(idle.reset).toBe(false);
+    expect(fixture.store.getLatestContextResetThroughSeq("room:main")).toBe(first.throughSeq);
+
+    for (let index = 0; index < 8; index += 1) {
+      appendMessage(fixture, {
+        eventId: `evt_reset_new_${index}`,
+        actorId: index % 2 === 0 ? "user:web" : "agent:codex",
+        content: `new-${index} ${"n".repeat(40)}`
+      });
+    }
+    const result = await engine.compactNow("room:main");
+    expect(result.compacted).toBe(true);
+    expect(summarizer.calls).toHaveLength(2);
+    expect(summarizer.calls[1]!.previousSummary).toBeUndefined();
+    expect(summarizer.calls[1]!.messages.every((message) => message.eventId.startsWith("evt_reset_new_"))).toBe(
+      true
+    );
+    expect(JSON.stringify(summarizer.calls[1])).not.toContain("old-");
+  });
 });

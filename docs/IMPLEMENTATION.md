@@ -78,11 +78,16 @@ M0-M2 不实现：
 
 ```mermaid
 flowchart LR
-    UI["Local Web UI"] -- "POST commands" --> API["REST API"]
+    UI["Local Web UI"] -- "POST /api/messages" --> API["REST API"]
+    AssistantUI["Assistant drawer"] -- "POST /api/assistant" --> API
     SSE["SSE stream"] --> UI
     API --> Broker["GroupX Broker"]
     Broker --> SSE
     Broker --> Store["SQLite/WAL"]
+    AssistantUI --> AssistantHost["Assistant host"]
+    AssistantHost --> AssistantBrain["Private brain CLI"]
+    AssistantBrain -.-> OperatorMCP["Operator MCP<br/>/mcp/operator"]
+    OperatorMCP --> Broker
     Broker --> CodexAdapter["Codex App Server Adapter"]
     Broker --> GrokAdapter["Grok ACP Adapter"]
     Broker --> KimiAdapter["Kimi ACP Adapter"]
@@ -110,6 +115,7 @@ M0-M2 使用一个 GroupX Node.js 主进程：
 - 每个 Agent 启动一个 Structured 长驻协议子进程；Direct runtime 入口不存在；
 - 每个 Agent 有独立 Adapter、进程监督、输出解析、状态机、超时和队列；
 - GroupX MCP 与 Broker 同进程运行，只在 Structured 模式为已验证可挂载 MCP 的原生会话建立独立调用方 binding；
+- 房间助理是同进程的 `local-operator` 客户端：侧边对话不经房间 composer；operator MCP 与成员 MCP 分入口；私有脑不进 Adapter 名册；
 - Browser 和 CLI 不直接打开数据库。
 
 CLI 退出不会使 Broker 退出；数据库异常属于 Broker 级故障，应停止接受新命令并保留明确健康状态。
@@ -305,8 +311,9 @@ M1 UI 使用原生 HTML/CSS/TypeScript，避免在首版引入大型框架。
 
 - 左侧：Agent 状态、cwd、会话状态、能力、重启按钮和可折叠的公共记忆；
 - 中间：群聊、发送者徽标、reply/forward、目标选择和取消；
-- Agent 设置：每个 Agent 的稳定身份、可维护的核心记忆与按日期分组的自动记忆；不保留右侧记忆栏；
-- 底部：composer，左侧明确选择 `@codex/@grok/@kimi/@all`，可选监督开关与独立 observer chips（不得与本次 worker 重叠）；输入区域右上角显示字符用量并提供“压缩会话”。时间线把 pair、观察里程碑和 steer 收成可见协作事件；不出现批准/拒绝原生工具的按钮。打断文案必须写明「取消的是整轮，不是某一次工具」。
+- 顶栏：房间助理入口打开侧边对话。未启用时引导去 `/setup#assistant`。助理不进目标芯片或 `@all`；
+- Agent 设置：每个 Agent 的稳定身份、可维护的核心记忆与按日期分组的自动记忆；名册下方单独有房间助理卡，写入 `groupx.json` 顶层 `assistant`，不是 `agents.assistant`；
+- 底部：composer，左侧明确选择已启用 `agent:*` 或 `@all`，可选监督开关与独立 observer chips（不得与本次 worker 重叠）；输入区域右上角显示字符用量并提供“压缩会话”。时间线把 pair、观察里程碑、steer 和折叠的 `operator.dispatch` 收成可见协作事件；不出现批准/拒绝原生工具的按钮。打断文案必须写明「取消的是整轮，不是某一次工具」。
 
 UI 只根据 Envelope actor 渲染发送者，不解析正文决定头像或身份。
 用量控件显示的是 active checkpoint 加其后 `message.created` 的保守字符估算，不是模型 token window；目标 Agent 身份、记忆与原生 instructions 仍会另占空间。手动压缩同样经过 Broker 和 `clientCommandId` receipt，保留最近 12 条消息原文，不删除 transcript。

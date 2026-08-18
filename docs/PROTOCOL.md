@@ -49,7 +49,7 @@ type ActorRef = {
 };
 
 type PublicProvenance = {
-  sourceKind: "web" | "adapter" | "mcp" | "system" | "generated_summary" | "supervision";
+  sourceKind: "web" | "adapter" | "mcp" | "system" | "generated_summary" | "supervision" | "operator";
   authorActorId?: string;
   subjectActorId?: string;
   sourceEventId?: string;
@@ -104,6 +104,8 @@ routing.loop_stopped
 supervision.paired
 supervision.observed
 supervision.steered
+operator.dispatch
+context.reset
 system.error
 ```
 
@@ -152,7 +154,7 @@ adapter.heartbeat
 }
 ```
 
-该事件有 durable `seq`，可以随 SQLite cursor 在刷新或重连后回放。`turn.reasoning.recorded` 与 `tool.progress.recorded` 都只服务本地时间线与审计，不属于 message、memory、identity 或 summary；Context Packet、reply chain、房间压缩与自动记忆只能消费明确的 `message.created`/记忆数据，不得读取两类记录正文。
+该事件有 durable `seq`，可以随 SQLite cursor 在刷新或重连后回放。`turn.reasoning.recorded` 与 `tool.progress.recorded` 都只服务本地时间线与审计，不属于 message、memory、identity 或 summary；Context Packet、reply chain、房间压缩与自动记忆只能消费明确的 `message.created`、`operator.dispatch` 或记忆数据，不得读取两类记录正文。`operator.dispatch` 是有界派活来源，不是普通聊天气泡。`context.reset` 只记录新的后续上下文下限，不删除 transcript。
 
 每个 Turn 恰好有一个 durable terminal event。可选 reasoning record、tool progress records、成功 response message、terminal event、Turn/attempt terminal 更新，以及一条很小的 dated-memory source/checkpoint 登记在同一事务提交；durable 事件顺序固定为 reasoning → tool progress → response（仅成功）→ terminal。checkpoint 只引用当前消息与最终回复，不产生 MemoryRecord/event，也不读取 reasoning/tool。后台 rollup 成功后才另行提交 `memory.remembered|superseded`。若崩溃发生在 final commit 前，可保存已合并的 partial text 并将 Turn 标记为 `interrupted`，但不能把 partial text 伪装成 completed message。
 
@@ -168,6 +170,15 @@ bindingId        本次 Direct invocation 或 Structured session 来源绑定
 ```
 
 `actorId` 和 `instanceId` 可进入公开 Envelope。`nativeSessionId` 与 `bindingId` 是 Broker 内部关联字段，默认不进入公共事件。
+
+预置用户身份：
+
+```text
+user:web         local-rest 客户端
+user:assistant   local-operator 客户端；kind 仍是 user，不进 agents 名册
+```
+
+`user:assistant` 不是 `agent:assistant`，也不是 `system:groupx`。它不占 hop，不吃 Context Packet，不被 `@all` 唤醒。私有脑进程可以使用内部 adapter id `__assistant__`，但该 id 禁止出现在名册、bootstrap 或目标芯片。
 
 ### 3.2 非权威字段
 
@@ -206,8 +217,9 @@ GroupX 将两个概念分开：
 1. Web UI 的结构化 recipients；
 2. Structured CLI 在已绑定的原生会话中显式调用 `groupx.send` 或 `groupx.ask`；
 3. Web UI 的可选监督配对：`to[]` 仍是 workers，`supervision.observers` 另建 Watch Turn。请求方不能自报「我是监督者」；`sourceKind: "supervision"` 由 Broker 写入。
+4. `local-operator` 的控场或派活：用户单独对助理说的话不经 Broker composer，也不先落房间 `message.created`。助理用 operator tool 取消/压缩/重启/记忆/setup 时不造群气泡；默认派活写 durable `operator.dispatch` 并创建目标 Turn。只有明确要让群看见时才 `send`，作者固定为 `user:assistant`。
 
-普通 CLI 回复和自然语言 `@name` 不触发新 Turn。把 worker 与 observer 同时放进同一条 `to[]` 只是并行执行同一任务，不是观察。
+普通 CLI 回复和自然语言 `@name` 不触发新 Turn。把 worker 与 observer 同时放进同一条 `to[]` 只是并行执行同一任务，不是观察。侧边对话里的自然语言 `@助理` 也不派发。
 
 ### 4.1 `@all`
 
@@ -240,7 +252,7 @@ type SupervisionPair = {
 };
 ```
 
-`POST /api/messages` 在现有 `to`（workers）之外带可选 `supervision`。Observer 由 Broker 另建 `commandType` 可区分的 Watch Turn；公开 `actor` 仍是 `user:web`（用户任务）或 observer binding（watch/steer 产出）。继续工作只来自：本次 steer 改道、supervisor 之后显式 `send`/`ask`、或用户再发。Broker 不在 steer 之后自动再开「监督循环第 N 轮」。
+`POST /api/messages` 在现有 `to`（workers）之外带可选 `supervision`。`local-operator` 的 `send` / `worker_dispatch` / `worker_ask` / `dispatch_event` 也可带同一 `supervision` 字段。Observer 由 Broker 另建 `commandType` 可区分的 Watch Turn；公开 `actor` 仍是任务作者（`user:web` 或 `user:assistant`）或 observer binding（watch/steer 产出）。无群气泡时，配对的任务引用是 `operator.dispatch` event id。继续工作只来自：本次 steer 改道、supervisor 之后显式 `send`/`ask`、或用户再发。Broker 不在 steer 之后自动再开「监督循环第 N 轮」。助理自己不当 observer，也没有 `watch`/`steer`。
 
 ## 5. Turn 状态机
 
@@ -527,17 +539,30 @@ Web UI 不再暴露 identity 写入面板；稳定 Agent 身份由 `/setup` 写�
 
 ### 10.5 单房间上下文用量与显式压缩
 
-`GET /api/context` 返回当前 `room:main` 的 active checkpoint、其后 `message.created` 与协议格式开销的字符估算：`estimatedCharacters/maxCharacters/compactionTriggerCharacters/utilizationPercent`。它不是任一模型的 token 计数，也不把目标 Agent 身份、记忆或原生 instructions 伪装成统一窗口。
+`GET /api/context` 返回当前 `room:main` 的 active checkpoint、其后 `message.created` / `operator.dispatch` 与协议格式开销的字符估算：`estimatedCharacters/maxCharacters/compactionTriggerCharacters/utilizationPercent`。它不是任一模型的 token 计数，也不把目标 Agent 身份、记忆或原生 instructions 伪装成统一窗口。
 
-`POST /api/context/compact` 接受严格的 `{ "clientCommandId": "..." }`。命令经 Web binding 和 Broker receipt 单飞，调用与自动压缩相同的 Room Context Engine、摘要校验与 CAS；默认保留最近 12 条 `message.created` 原文。`turn.reasoning.recorded`、`tool.progress.recorded` 与其他审计事件仍不进入压缩输入。响应只返回 `compacted` 与更新后的 usage 投影，不返回摘要正文。完整 transcript 不删除，失败也不替换 active summary。
+`POST /api/context/compact` 接受严格的 `{ "clientCommandId": "..." }`。命令经 Web binding 和 Broker receipt 单飞，调用与自动压缩相同的 Room Context Engine、摘要校验与 CAS；默认保留最近 12 条房间上下文消息原文（`message.created` 与 `operator.dispatch`）。`turn.reasoning.recorded`、`tool.progress.recorded` 与其他审计事件仍不进入压缩输入。响应只返回 `compacted` 与更新后的 usage 投影，不返回摘要正文。完整 transcript 不删除，失败也不替换 active summary。`context.reset` 与 compact 一样按 `clientCommandId` 单飞。reset 把后续 usage / compact / Context Packet 的下限推到当前 high-water，并 supersede 未越过该下限的检查点；Broker 写入的 `context.reset` 审计事件不是房间上下文消息，因此在没有新的 `message.created` / `operator.dispatch` 时再次 reset 返回 `reset: false`。
 
 ### 10.6 本机 Agent 引导与配置
 
-`GET /api/setup` 返回 config 路径、是否已有配置、runtime 是否正在运行、三种 native driver 的默认命令检测结果，以及可编辑的 `serverPort/storagePath/agents[]` 草稿。`POST /api/setup` 严格接收同一草稿并要求稳定 Agent ID 唯一、至少一个 Agent 启用；每个 Agent 只包含 `id/driver/name/command/cwd/enabled`。
+`GET /api/setup` 返回 config 路径、是否已有配置、runtime 是否正在运行、五种 native driver 的默认命令检测结果，以及可编辑的 `serverPort/storagePath/agents[]` 草稿和可选的顶层 `assistant` 卡。`POST /api/setup` 严格接收同一草稿并要求稳定 Agent ID 唯一、至少一个 Agent 启用；每个 Agent 只包含 `id/driver/name/identity/command/cwd/enabled`。`assistant` 不是名册成员；保留 id `assistant` 与 `__assistant__` 不能当作 roster Agent。首次引导默认勾选助理；已有 `groupx.json` 缺省该项时保持未启用。
 
 setup contract 不包含 `transport`、`access`、approval、sandbox、model 或任意 native flags。standalone `groupx init` 成功保存后启动正式 runtime，并让引导页轮询同源 `GET /api/setup/launch`；只有该接口返回 loopback 正式 origin 的 `ready` 状态后，页面才自动跳转到群聊，随后关闭临时服务。运行中的 `/setup` 可以更新配置文件，但响应必须标记 `restartRequired=true`，不能自动跳转或在旧 runtime 中热换 binding/session。
 
 `GET /api/health` 的正式 runtime 响应必须包含 `service="groupx"`、`protocol="groupx.runtime/1"` 和 64 位十六进制 `runtimeKey`。key 是 canonical config 与 canonical config path 的 SHA-256，只用于本机重复启动的实例相关性，不是 credential、安全边界或远程发现标识。`groupx start` 仅在 service/protocol/key 全部匹配时把已运行实例视为成功；其他 listener 必须 fail-closed 并提示端口冲突。CLI 的预检不能替代 `listen` 的原子租约，`EADDRINUSE` 后必须再做有界探测以处理并发启动竞态。
+
+### 10.7 房间助理侧边对话
+
+用户单独对助理说话走独立 REST，不经 `POST /api/messages`，不创建房间 `message.created` 或 Agent Turn：
+
+```text
+GET  /api/assistant
+GET  /api/assistant/messages
+POST /api/assistant/messages
+POST /api/assistant/cancel
+```
+
+`POST /api/assistant/messages` 只接受 `{ clientCommandId, content }`。请求不得携带 `from`、`actor`、`provenance`、`to` 或 `supervision`。同一 `clientCommandId` 会加入进行中的助理回合，或重放已写下的回复；用户行已在、回复未写时会再跑一轮脑，不追加第二条用户行。`GET /api/assistant/messages` 返回最近最多 200 条侧边对话。助理 harness 每次注入产品默认提示词，用户 `extraInstructions` 只能追加。助理若要动房间，必须再走 `/mcp/operator`；控场不落群气泡，派活默认写 `operator.dispatch`。
 
 ## 11. SSE 合同
 
@@ -599,6 +624,8 @@ groupx.identity.remember
 `watch`/`steer` 在工具发现面上对 Structured session 可见，但只有当前 Turn 是本次配对的 observer Watch Turn 时才能成功执行。它们不是审批层，不能 allow/deny 单次原生工具。
 
 `core_memory_remember` 不接受 scope、subject、author 或 binding 参数；Broker 从当前 session binding 固定 `scope_id=subject=author=调用 Agent` 以及 `agentMemoryType=core`。`identity.remember` 的 subject 同样固定为调用方自身。其他 Agent 对该身份的描述可以进入普通公共 memory，记录 `author != subject`，不能冒充对方的自我记忆。
+
+操作员面是独立 MCP 入口 `/mcp/operator`，只挂在稳定 `local-operator` binding（`binding:operator` / `user:assistant`）上。它不要求当前 Agent Turn，也不提供 `watch`/`steer`。成员面 `/mcp` 保持原样。操作员工具作者由 binding 固定为 `user:assistant`；写请求出现 `from`/`actor`/`provenance` 仍返回 `SENDER_FIELD_FORBIDDEN`。默认派活工具是 `worker_dispatch` / `worker_ask`；`send` 只用于公开说话。
 
 ## 13. A2A 映射边界
 

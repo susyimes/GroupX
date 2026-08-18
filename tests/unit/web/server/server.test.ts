@@ -37,6 +37,7 @@ import {
   type IdentityPage,
   type MemoryMutationAccepted,
   type MemoryPage,
+  type AssistantApi,
   type McpHttpHandler,
   type SetupApi
 } from "../../../../src/web/server/index.js";
@@ -467,6 +468,78 @@ describe("GroupXHttpServer", () => {
     });
     expect(saved.status).toBe(200);
     expect(await saved.json()).toMatchObject({ agentCount: 2, restartRequired: true });
+  });
+
+  it("keeps assistant side-chat off the room message API", async () => {
+    await server?.close();
+    const assistantCalls: Array<{ method: string; value?: unknown }> = [];
+    const assistantApi: AssistantApi = {
+      snapshot() {
+        assistantCalls.push({ method: "snapshot" });
+        return { enabled: true, name: "房间助理", status: "ready" };
+      },
+      listMessages() {
+        assistantCalls.push({ method: "listMessages" });
+        return { messages: [] };
+      },
+      postMessage(request) {
+        assistantCalls.push({ method: "postMessage", value: request });
+        return {
+          userMessage: {
+            messageId: "asst_user_1",
+            role: "user",
+            content: request.content,
+            createdAt,
+            clientCommandId: request.clientCommandId
+          },
+          assistantMessage: {
+            messageId: "asst_reply_1",
+            role: "assistant",
+            content: "已记下",
+            createdAt
+          },
+          status: "ready"
+        };
+      },
+      cancel(request) {
+        assistantCalls.push({ method: "cancel", value: request });
+        return { accepted: true };
+      }
+    };
+    server = createGroupXHttpServer({ broker, sse, staticRoot, port: 0, assistantApi });
+    origin = (await server.start()).origin;
+
+    expect(await (await fetch(`${origin}/api/assistant`)).json()).toMatchObject({
+      enabled: true,
+      status: "ready"
+    });
+    const posted = await fetch(`${origin}/api/assistant/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        clientCommandId: "web-assistant-1",
+        content: "停掉他们"
+      })
+    });
+    expect(posted.status).toBe(200);
+    expect(await posted.json()).toMatchObject({
+      userMessage: { content: "停掉他们", role: "user" },
+      status: "ready"
+    });
+    expect(assistantCalls.some((call) => call.method === "postMessage")).toBe(true);
+    expect(broker.calls.some((call) => call.method === "createMessage")).toBe(false);
+
+    const forged = await fetch(`${origin}/api/assistant/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        clientCommandId: "web-assistant-2",
+        content: "停掉他们",
+        from: "user:web"
+      })
+    });
+    expect(forged.status).toBeGreaterThanOrEqual(400);
+    expect(broker.calls.some((call) => call.method === "createMessage")).toBe(false);
   });
 
   it("exposes health/bootstrap and validates message JSON before calling Broker", async () => {

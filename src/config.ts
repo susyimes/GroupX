@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { GroupXError } from "./core/errors.js";
+import { isReservedAgentId } from "./core/assistant.js";
 import {
   BUILTIN_AGENT_IDS,
   resolveAgentCommand,
@@ -79,6 +80,13 @@ const agentsConfigSchema = z
       context.addIssue({ code: "custom", message: "At least one agent is required" });
     }
     for (const [agentId, agent] of Object.entries(agents)) {
+      if (isReservedAgentId(agentId)) {
+        context.addIssue({
+          code: "custom",
+          path: [agentId],
+          message: `Agent id "${agentId}" is reserved for the room assistant and cannot be a roster worker`
+        });
+      }
       if (agent.driver === undefined && !isBuiltinAgentId(agentId)) {
         context.addIssue({
           code: "custom",
@@ -96,6 +104,23 @@ const agentsConfigSchema = z
       ])
     )
   );
+
+const assistantBrainSchema = z
+  .object({
+    driver: z.enum(BUILTIN_AGENT_IDS),
+    command: commandInputSchema,
+    cwd: z.string().min(1)
+  })
+  .strict();
+
+const assistantConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    name: z.string().min(1).max(64).default("房间助理"),
+    brain: assistantBrainSchema,
+    extraInstructions: z.string().max(32_768).optional()
+  })
+  .strict();
 
 export function isBuiltinAgentId(agentId: string): agentId is BuiltinAgentId {
   return (BUILTIN_AGENT_IDS as readonly string[]).includes(agentId);
@@ -122,6 +147,7 @@ const groupXConfigSchema = z
       grok: { driver: "grok", command: { executable: "grok", prefixArgs: [] }, cwd: ".", enabled: true },
       kimi: { driver: "kimi", command: { executable: "kimi", prefixArgs: [] }, cwd: ".", enabled: true }
     }),
+    assistant: assistantConfigSchema.optional(),
     limits: z
       .object({
         // REST/MCP request schemas use the same fixed wire bound. Keep this
@@ -283,7 +309,27 @@ function resolveConfigPaths(
         ? resolveAgentCommand(agentId, agent.driver, agent.command, resolvedBaseDirectory, commandDependencies)
         : agent.command,
       cwd: path.resolve(resolvedBaseDirectory, agent.cwd)
-    }))
+    })),
+    ...(config.assistant === undefined
+      ? {}
+      : {
+          assistant: {
+            ...config.assistant,
+            brain: {
+              ...config.assistant.brain,
+              command: config.assistant.enabled
+                ? resolveAgentCommand(
+                    config.assistant.brain.driver,
+                    config.assistant.brain.driver,
+                    config.assistant.brain.command,
+                    resolvedBaseDirectory,
+                    commandDependencies
+                  )
+                : config.assistant.brain.command,
+              cwd: path.resolve(resolvedBaseDirectory, config.assistant.brain.cwd)
+            }
+          }
+        })
   };
 }
 

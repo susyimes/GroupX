@@ -9,6 +9,7 @@ import {
   parseSetupConfigDraft,
   type SetupAgentDraft,
   type SetupAgentDriver,
+  type SetupAssistantDraft,
   type SetupConfigDraft,
   type SetupSaveRequest,
   type SetupSaveResponse,
@@ -94,16 +95,49 @@ function setupAgent(
   };
 }
 
+function firstDetectedDriver(detected: ReadonlyMap<AgentDriver, boolean>): SetupAgentDriver {
+  return BUILTIN_AGENT_IDS.find((driver) => detected.get(driver) === true) ?? "codex";
+}
+
+function assistantDraft(
+  detected: ReadonlyMap<AgentDriver, boolean>,
+  enabled: boolean,
+  existing?: GroupXConfig["assistant"]
+): SetupAssistantDraft {
+  const driver = existing?.brain.driver ?? firstDetectedDriver(detected);
+  return {
+    enabled,
+    name: existing?.name ?? "房间助理",
+    brain: {
+      driver,
+      command: existing
+        ? {
+            executable: existing.brain.command.executable,
+            prefixArgs: [...existing.brain.command.prefixArgs]
+          }
+        : { executable: driver, prefixArgs: [] },
+      cwd: existing?.brain.cwd ?? "."
+    },
+    ...(existing?.extraInstructions === undefined || existing.extraInstructions.trim().length === 0
+      ? {}
+      : { extraInstructions: existing.extraInstructions })
+  };
+}
+
 function starterDraft(detected: ReadonlyMap<AgentDriver, boolean>): SetupConfigDraft {
   const agents = BUILTIN_AGENT_IDS.map((driver) => setupAgent(driver, driver, detected.get(driver) === true));
   return {
     serverPort: 4_310,
     storagePath: ".groupx/groupx.db",
-    agents
+    agents,
+    assistant: assistantDraft(detected, true)
   };
 }
 
-function configToDraft(config: GroupXConfig): SetupConfigDraft {
+function configToDraft(
+  config: GroupXConfig,
+  detected: ReadonlyMap<AgentDriver, boolean>
+): SetupConfigDraft {
   return {
     serverPort: config.server.port,
     storagePath: config.storage.path,
@@ -118,13 +152,14 @@ function configToDraft(config: GroupXConfig): SetupConfigDraft {
       },
       cwd: agent.cwd,
       enabled: agent.enabled
-    }))
+    })),
+    assistant: assistantDraft(detected, config.assistant?.enabled === true, config.assistant)
   };
 }
 
 function draftToDocument(
   draft: SetupConfigDraft,
-  preserved?: Pick<GroupXConfig, "limits" | "timeouts">
+  preserved?: Pick<GroupXConfig, "limits" | "timeouts" | "assistant">
 ): GroupXConfig {
   const agents = Object.fromEntries(
     draft.agents.map((agent) => [
@@ -145,12 +180,44 @@ function draftToDocument(
       }
     ])
   );
+  const assistant =
+    draft.assistant === undefined
+      ? undefined
+      : {
+          enabled: draft.assistant.enabled,
+          name: draft.assistant.name.trim() || "房间助理",
+          brain: {
+            driver: draft.assistant.brain.driver,
+            command:
+              draft.assistant.brain.command.prefixArgs.length === 0
+                ? draft.assistant.brain.command.executable.trim()
+                : {
+                    executable: draft.assistant.brain.command.executable.trim(),
+                    prefixArgs: draft.assistant.brain.command.prefixArgs.map((argument) =>
+                      argument.trim()
+                    )
+                  },
+            cwd: draft.assistant.brain.cwd.trim()
+          },
+          ...(draft.assistant.extraInstructions?.trim().length
+            ? { extraInstructions: draft.assistant.extraInstructions.trim() }
+            : {})
+        };
   return parseConfigDocument({
     transport: "structured",
     server: { host: "127.0.0.1", port: draft.serverPort },
     storage: { path: draft.storagePath.trim() },
     agents,
-    ...(preserved === undefined ? {} : preserved)
+    ...(assistant === undefined ? {} : { assistant }),
+    ...(preserved === undefined
+      ? {}
+      : {
+          limits: preserved.limits,
+          timeouts: preserved.timeouts,
+          ...(assistant === undefined && preserved.assistant !== undefined
+            ? { assistant: preserved.assistant }
+            : {})
+        })
   });
 }
 
@@ -177,7 +244,9 @@ export class GroupXConfigSetupService implements ConfigSetupApi {
     if (existing) {
       try {
         const raw: unknown = JSON.parse(await this.#dependencies.readConfigFile(this.#configPath));
-        config = parseSetupConfigDraft(configToDraft(parseConfigDocument(raw)));
+        config = parseSetupConfigDraft(
+          configToDraft(parseConfigDocument(raw), detected)
+        );
       } catch {
         existingConfigError = "现有配置无法解析；保存前请核对页面中的替代配置。";
       }
@@ -226,14 +295,20 @@ export class GroupXConfigSetupService implements ConfigSetupApi {
     return result;
   }
 
-  async #readPreservedConfig(): Promise<Pick<GroupXConfig, "limits" | "timeouts"> | undefined> {
+  async #readPreservedConfig(): Promise<
+    Pick<GroupXConfig, "limits" | "timeouts" | "assistant"> | undefined
+  > {
     if (!this.#dependencies.fileExists(this.#configPath)) return undefined;
     const contents = await this.#dependencies.readConfigFile(this.#configPath);
     try {
       const raw: unknown = JSON.parse(contents);
       const parsed = parseConfigDocument(raw);
       upgradeLegacyGeneratedDefaults(parsed);
-      return { limits: parsed.limits, timeouts: parsed.timeouts };
+      return {
+        limits: parsed.limits,
+        timeouts: parsed.timeouts,
+        ...(parsed.assistant === undefined ? {} : { assistant: parsed.assistant })
+      };
     } catch {
       return undefined;
     }

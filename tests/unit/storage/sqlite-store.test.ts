@@ -8,6 +8,7 @@ import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { GroupXError } from "../../../src/core/errors.js";
+import { isRoomContextMessage } from "../../../src/memory/context-messages.js";
 import { SqliteGroupXStore } from "../../../src/storage/sqlite-store.js";
 import type {
   AcceptMessageInput,
@@ -1553,6 +1554,31 @@ describe.sequential("SqliteGroupXStore summaries and recovery", () => {
     expect(fixture.store.countEvents()).toBe(2);
   });
 
+  it("supersedes the active room summary when recording a context reset", () => {
+    const fixture = createFixture();
+    const first = sourceEvent(fixture.store, "reset-summary-first");
+    const summary = fixture.store.replaceActiveSummary({
+      summaryId: "summary:reset-old",
+      roomId: "room:main",
+      fromSeq: first.seq,
+      throughSeq: first.seq,
+      content: "Pre-reset checkpoint",
+      generatorActorId: "agent:codex"
+    });
+    expect(fixture.store.getActiveSummary("room:main")).toEqual(summary);
+
+    const reset = fixture.store.recordContextReset({
+      roomId: "room:main",
+      throughSeq: first.seq
+    });
+    expect(reset.throughSeq).toBe(first.seq);
+    expect(fixture.store.getActiveSummary("room:main")).toBeUndefined();
+    expect(fixture.store.getLatestContextResetThroughSeq("room:main")).toBe(first.seq);
+    expect(fixture.store.listSummaries({ roomId: "room:main", includeHistory: true })).toEqual([
+      { ...summary, status: "superseded" }
+    ]);
+  });
+
   it("X-001 reopens sessions, transcript, Turns, cursor, memory and identity", () => {
     const fixture = createFixture();
     const accepted = fixture.store.acceptMessage(messageInput("X-001", "persist everything"));
@@ -1584,7 +1610,7 @@ describe.sequential("SqliteGroupXStore summaries and recovery", () => {
     });
     reopen(fixture);
 
-    expect(fixture.store.getSchemaVersion()).toBe(8);
+    expect(fixture.store.getSchemaVersion()).toBe(9);
     expect(fixture.store.getJournalMode()).toBe("wal");
     expect(fixture.store.getSessionBinding("binding:codex")?.capabilities).toEqual({
       prompt: true
@@ -1775,6 +1801,8 @@ describe.sequential("SqliteGroupXStore summaries and recovery", () => {
       ALTER TABLE memory_records DROP COLUMN agent_memory_type;
       DROP TABLE agent_dated_memory_sources;
       DROP TABLE agent_dated_memory_rollups;
+      DROP TABLE IF EXISTS context_resets;
+      DROP TABLE IF EXISTS assistant_conversation_messages;
       DROP TABLE IF EXISTS supervision_steer_counts;
       DROP TABLE IF EXISTS supervision_pair_turns;
       DROP TABLE IF EXISTS supervision_pairs;
@@ -1785,7 +1813,7 @@ describe.sequential("SqliteGroupXStore summaries and recovery", () => {
     raw.close();
 
     fixture.store = new SqliteGroupXStore(fixture.databasePath);
-    expect(fixture.store.getSchemaVersion()).toBe(8);
+    expect(fixture.store.getSchemaVersion()).toBe(9);
     expect(fixture.store.getTurnAttempt(claim.attempt.attemptId)).toMatchObject({
       dispatchPhase: "prompt_invoked",
       deliveryCertainty: "unknown"
@@ -1808,12 +1836,15 @@ describe.sequential("SqliteGroupXStore summaries and recovery", () => {
       ALTER TABLE memory_records DROP COLUMN agent_memory_type;
       DROP TABLE agent_dated_memory_sources;
       DROP TABLE agent_dated_memory_rollups;
+      DROP TABLE IF EXISTS context_resets;
+      DROP TABLE IF EXISTS assistant_conversation_messages;
       DROP TABLE IF EXISTS supervision_steer_counts;
       DROP TABLE IF EXISTS supervision_pair_turns;
       DROP TABLE IF EXISTS supervision_pairs;
       DELETE FROM schema_migrations WHERE version = 6;
       DELETE FROM schema_migrations WHERE version = 7;
       DELETE FROM schema_migrations WHERE version = 8;
+      DELETE FROM schema_migrations WHERE version = 9;
       PRAGMA user_version = 5;
       INSERT INTO memory_records(
         memory_id, scope_type, scope_id, kind, author_actor_id, subject_actor_id,
@@ -1829,7 +1860,7 @@ describe.sequential("SqliteGroupXStore summaries and recovery", () => {
     raw.close();
 
     fixture.store = new SqliteGroupXStore(fixture.databasePath);
-    expect(fixture.store.getSchemaVersion()).toBe(8);
+    expect(fixture.store.getSchemaVersion()).toBe(9);
     expect(fixture.store.getMemory("memory:legacy-agent")).toMatchObject({
       scopeType: "agent",
       agentMemoryType: "core",
@@ -1848,15 +1879,18 @@ describe.sequential("SqliteGroupXStore summaries and recovery", () => {
 
     const repair = new Database(fixture.databasePath);
     repair.exec(`
+      DROP TABLE IF EXISTS context_resets;
+      DROP TABLE IF EXISTS assistant_conversation_messages;
       DROP TABLE IF EXISTS supervision_steer_counts;
       DROP TABLE IF EXISTS supervision_pair_turns;
       DROP TABLE IF EXISTS supervision_pairs;
       DELETE FROM schema_migrations WHERE version = 8;
+      DELETE FROM schema_migrations WHERE version = 9;
     `);
     repair.pragma("user_version = 7");
     repair.close();
     fixture.store = new SqliteGroupXStore(fixture.databasePath);
-    expect(fixture.store.getSchemaVersion()).toBe(8);
+    expect(fixture.store.getSchemaVersion()).toBe(9);
     expect(fixture.store.integrityCheck()).toEqual({ ok: true, messages: ["ok"] });
   });
 
@@ -2402,6 +2436,80 @@ describe.sequential("SqliteGroupXStore paging and cursors", () => {
     });
     expect(cursor.lastDeliveredSeq).toBe(50);
     expect(cursor.lastSummarySeq).toBe(40);
+  });
+
+  it("persists operator.dispatch for replay and current-task content without a chat bubble", () => {
+    const fixture = createFixture();
+    fixture.store.createAgentInstance({
+      instanceId: "instance:operator",
+      actorId: "user:assistant",
+      adapterId: "operator",
+      processStartedAt: "2026-08-11T00:00:00.000Z",
+      status: "ready"
+    });
+    fixture.store.createSessionBinding({
+      bindingId: "binding:operator",
+      instanceId: "instance:operator",
+      actorId: "user:assistant",
+      protocol: "local-operator",
+      protocolVersion: "operator/1",
+      status: "ready",
+      capabilities: { prompt: true },
+      createdAt: "2026-08-11T00:00:00.000Z",
+      lastReadyAt: "2026-08-11T00:00:00.000Z"
+    });
+
+    const input: AcceptMessageInput = {
+      sourceBindingId: "binding:operator",
+      clientCommandId: "op-dispatch-1",
+      roomId: "room:main",
+      targets: [target("agent:codex")],
+      content: "review the plan",
+      sourceEventType: "operator.dispatch",
+      operation: "worker_dispatch"
+    };
+    const first = fixture.store.acceptMessageWithDisposition(input);
+    expect(first.disposition).toBe("accepted");
+    const event = fixture.store.getEvent(first.result.messageEventId);
+    expect(event).toMatchObject({
+      eventType: "operator.dispatch",
+      actorId: "user:assistant"
+    });
+    expect(event && isRoomContextMessage(event)).toBe(true);
+    expect((event?.body as { content?: string }).content).toBe("review the plan");
+    expect(
+      fixture.store.listEvents({ roomId: "room:main", limit: 100 }).events.filter(
+        (item) => item.eventType === "message.created"
+      )
+    ).toHaveLength(0);
+    expect(first.result.turns).toEqual([
+      expect.objectContaining({ target: "agent:codex", status: "queued" })
+    ]);
+
+    reopen(fixture);
+    const replay = fixture.store.acceptMessageWithDisposition(input);
+    expect(replay).toEqual({ result: first.result, disposition: "replayed" });
+    expect(fixture.store.getEvent(first.result.messageEventId)?.eventType).toBe("operator.dispatch");
+  });
+
+  it("lists the latest assistant conversation page and finds the next reply", () => {
+    const fixture = createFixture();
+    for (let index = 0; index < 120; index += 1) {
+      fixture.store.appendAssistantMessage({
+        role: index % 2 === 0 ? "user" : "assistant",
+        content: `side-${index}`,
+        createdAt: new Date(Date.UTC(2026, 7, 11, 0, 0, 0, index)).toISOString(),
+        ...(index % 2 === 0 ? { clientCommandId: `asst-cmd-${index}` } : {})
+      });
+    }
+    const listed = fixture.store.listAssistantMessages(10);
+    expect(listed).toHaveLength(10);
+    expect(listed[0]?.content).toBe("side-110");
+    expect(listed.at(-1)?.content).toBe("side-119");
+
+    const user = fixture.store.getAssistantMessageByClientCommandId("asst-cmd-118");
+    expect(user?.content).toBe("side-118");
+    expect(fixture.store.getAssistantReplyAfter(user!.messageId)?.content).toBe("side-119");
   });
 
   it("enforces one in-process writer and fails closed after close", () => {

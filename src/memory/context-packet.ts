@@ -1,6 +1,6 @@
 import { SUPERVISION_WATCH_PROTOCOL_NOTE } from "../core/supervision.js";
 import { GroupXError } from "../core/errors.js";
-import { isRoomContextMessage } from "./context-messages.js";
+import { contentFromTaskSourceEvent, isRoomContextMessage } from "./context-messages.js";
 import type {
   IdentityRecord,
   MemoryRecord,
@@ -48,23 +48,7 @@ function requireBudgetInteger(value: number, field: string): void {
 }
 
 function contentFromMessageEvent(event: StoredEventRecord): string {
-  if (event.eventType !== "message.created") {
-    throw new GroupXError(
-      "INVALID_ENVELOPE",
-      `Context message ${event.eventId} is not a message.created event`
-    );
-  }
-  if (
-    event.body === null ||
-    typeof event.body !== "object" ||
-    typeof (event.body as Record<string, unknown>).content !== "string"
-  ) {
-    throw new GroupXError(
-      "STORE_UNAVAILABLE",
-      `Context message ${event.eventId} has no string content`
-    );
-  }
-  return (event.body as { content: string }).content;
+  return contentFromTaskSourceEvent(event);
 }
 
 function sourceLabel(input: {
@@ -270,13 +254,19 @@ export class ContextPacketBuilder {
       replyToEventId,
       input.throughSeq
     );
+    const resetThroughSeq = this.#store.getLatestContextResetThroughSeq(input.roomId);
     const afterSeq = Math.min(
-      this.#store.getDeliveryCursor(input.targetActorId, input.roomId)?.lastDeliveredSeq ?? 0,
+      Math.max(
+        this.#store.getDeliveryCursor(input.targetActorId, input.roomId)?.lastDeliveredSeq ?? 0,
+        resetThroughSeq
+      ),
       input.throughSeq
     );
     const activeSummary = this.#store.getActiveSummary(input.roomId, input.throughSeq);
     const generatedSummary =
-      activeSummary !== undefined && activeSummary.throughSeq > afterSeq
+      activeSummary !== undefined &&
+      activeSummary.throughSeq > afterSeq &&
+      activeSummary.throughSeq > resetThroughSeq
         ? [summaryEntry(activeSummary)]
         : [];
     const transcriptAfterSeq = Math.max(

@@ -122,7 +122,7 @@ describe("supervision pairing persistence", () => {
     expect((watch.body as { content: string }).content).not.toBe("implement the feature");
     expect(pair.eventType).toBe("supervision.paired");
     expect(pair.provenance?.sourceKind).toBe("supervision");
-    expect(fixture.store.getSchemaVersion()).toBe(8);
+    expect(fixture.store.getSchemaVersion()).toBe(9);
   });
 
   it("rejects an overlapping pair and keeps steer counts visible", () => {

@@ -160,6 +160,7 @@ export const RoomContextUsageSchema = z
     utilizationPercent: z.number().int().min(0).max(100),
     uncompactedMessageCount: NonNegativeIntegerSchema,
     summaryThroughSeq: NonNegativeIntegerSchema.optional(),
+    resetThroughSeq: NonNegativeIntegerSchema.optional(),
     compactable: z.boolean()
   })
   .passthrough()
@@ -305,6 +306,7 @@ export const MemoryRecordSchema = z
     sourceKind: z.enum([
       "web",
       "mcp",
+      "operator",
       "generated_summary",
       "automatic_turn",
       "automatic_rollup"
@@ -339,7 +341,7 @@ export const IdentityRecordSchema = z.object({
   kind: IdentityKindSchema,
   content: z.string().max(MAX_MESSAGE_CONTENT_LENGTH),
   sourceEventId: ReferenceIdSchema.optional(),
-  sourceKind: z.enum(["web", "mcp", "adapter"]),
+  sourceKind: z.enum(["web", "mcp", "adapter", "operator"]),
   status: z.enum(["active", "superseded", "retracted"]),
   supersedesIdentityId: ReferenceIdSchema.optional(),
   createdAt: z.string().min(1).max(64),
