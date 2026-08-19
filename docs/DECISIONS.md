@@ -39,6 +39,7 @@
 | D-027 | 同步监督是房间协作配对，不是治理或审批层 | Accepted |
 | D-028 | 房间助理是 user:assistant 操作员客户端，不是名册 worker | Accepted |
 | D-029 | 无 schema 的协作闭环：publish、pending/collect、队列可见性与默认 reply chain | Accepted |
+| D-030 | 协作工具保持拓扑中立，由 Agent 自主组织讨论与收敛 | Accepted |
 
 ## D-001：透明 Broker
 
@@ -416,6 +417,8 @@ Hermes 0.20.1 的 initialize 当前未声明 `mcpCapabilities.http`，但官方�
 
 ## D-029：无 schema 的协作闭环
 
+更新：本决定第 5 项及旧的“单协调者两轮”完成标准已由 D-030 替代。第 1–4、6 项以及无 schema 的 publish/pending/collect/reply-chain 实现继续有效。
+
 触发证据：2026-08-19 对 Clue Codec 三方评审真实 correlation 的审计显示，最终结论正确，但协作机制产生 28 个 Turns。14 条定向 Agent 消息中有 8 条没有 `replyToEventId`；一次 ask 和随后一次 read 各等待约 300 秒后失败，而同一语义已被 active root Turns 从房间读取并回答；最后又出现 12 条滞后的 Codex response。审计同时确认每 Agent FIFO、parent/root/hop 和 sender provenance 正常，问题集中在「公开进度也会唤醒」「busy lane 上同步等待」「ask 后重复派发」与「回复链默认缺失」，无需重做队列或数据模型。
 
 本决定以该新证据取代 D-025 对成员 ask 超时返回、跟进方式和 3,600,000 ms 上限的选择；D-025 仍保留为当时的历史决策与证据记录。
@@ -426,7 +429,7 @@ Hermes 0.20.1 的 initialize 当前未声明 `mcpCapabilities.http`，但官方�
 2. **ask 先暴露队列，再有界等待**。send 返回 `queuePosition/activeTurnId`。ask 新 child Turn 前方已有非 terminal 工作时立即返回 `state=pending`；否则最多等待 60 秒。未完成结果是 pending，不再把“停止等待”冒充目标 timeout 终态。
 3. **pending 只续收，不重放**。新增 `collect(messageEventId)`，只按已有 `turns.source_event_id` 收集原 ask 的 exact child Turns；collect 不写命令、消息或 Turn。pending note 和工具说明要求调用方 collect，不得 resend/re-ask 同一问题。仍不增加自动回送或 Broker 自发 Turn，保持不变量 7。
 4. **默认形成回复链**。成员 send/ask/publish 未显式给 `replyToEventId` 时，Broker API 使用当前 active Turn 的 `sourceEventId`。actor、causation、root/hop 仍由 binding/lifecycle 决定，模型不能自报来源。
-5. **评审只设一个协调者**。MCP instructions、工具描述和 Context Packet 约定：协调者 fan-out/collect/汇总；reviewer 在被 ask 的当前 Turn final response 直接作答，不再 send 重复答案，不做 all-to-all 互审；公开进度用 publish。这是提示合同，不是任务编排状态机。
+5. **历史协作提示（已由 D-030 替代）**。本阶段最初把评审提示固定为单协调者 fan-out/collect/汇总，并限制 reviewer 互审。后续同场景核查证明该规则把可靠性优化误写成了讨论拓扑，现不再属于有效产品合同。
 6. **不兼容旧 Agent 工具合同**。ask result 改为显式 `state`，每目标带 `turnId/queuePosition`，未完成状态改为 `pending`，MCP wait 上限改为 60 秒。运行中的旧 native session 需要随 runtime 重启重新发现工具；不为旧 descriptor/result 维持双协议。
 
 对原始需求的影响：R1 的公共 transcript 保持完整但进度不再制造 Turn；R2 获得明确的发起、公开、续收三种语义；R3 的 unrestricted/无审批边界不变；R4 不新增记忆数据类；R5 复用 Broker、Envelope 和现有表；R6 sender 仍由 binding 决定；R7 减少长等待和重复 lane 工作。
@@ -435,7 +438,28 @@ Hermes 0.20.1 的 initialize 当前未声明 `mcpCapabilities.http`，但官方�
 
 复杂度与回滚：新增两个成员工具、一个 exact-source wait filter、一个 queue snapshot 和 active lifecycle 的 `sourceEventId`。不增加表、后台 scheduler、回送队列、`subsumed` 状态或 exactly-once 协调器。回滚可移除 publish/collect 和新结果字段；已写 publish event 仍是合法 `message.created`，无需数据清理。
 
-完成标准：聚焦合同/Store/Broker/MCP/Context tests 通过，类型检查与构建通过；重放同类三方评审时能用单协调者完成两轮，不修改评审对象，且不再出现原场景的重复 ask/send 滞后级联。按当前阶段采用“主要问题解决且不引入已知回归”的 80% 标准，不把模型是否每次完美遵循协调提示写成发布 Gate。
+完成标准（已由 D-030 修订）：聚焦合同/Store/Broker/MCP/Context tests 通过，类型检查与构建通过；同场景语义重放的快照、任务和评估口径以 D-030 为准。Turn 数不再作为优化目标。
+
+## D-030：协作工具拓扑中立，Agent 自主组织讨论
+
+触发证据：对同一 Clue Codec 任务的两次真实 correlation 复核发现，28→5 Turns 的算术成立，但两次任务并不等价。原场景从整份原始方案出发，三个 Agent 自行发起交叉质疑、修正和最终收敛；用户只指定 Codex 最后记录结论，没有指定协调者。后一次重放改成只读复核已生成的第 18 节，并在提示中加入“唯一协调者、不要互相讨论、固定两轮”，实际验证的是 ask/pending/collect 的机械链路，而不是原场景的自主讨论衔接。Turn 下降因此不能作为讨论质量改善的证据。
+
+决定：
+
+1. **Broker 提供协作工具，不规定协作拓扑**。GroupX 不指定唯一协调者、最终记录者、互评方向或讨论轮数，也不禁止 Agent 经 Broker 直接质疑、修正、委托或形成临时协调方式。用户可以在具体任务中指定最终记录者；“最终记录”不自动等于“负责调度”。
+2. **工具提示只解释可观察效果**。final/publish 对房间可见但不唤醒；send/ask 创建目标 Turn；collect 只续收原 ask；read 补读冻结上下文之后的公共状态；replyTo 连接所回应的具体消息。Agent 根据任务自行组合这些能力。
+3. **去重规则只约束同一请求**。pending ask 的同一逻辑请求使用 exact `messageEventId` collect，避免重复 Turn。实质不同的追问、反驳或新发现可以新建 send/ask；GroupX 不做语义去重，也不把“不要重发”扩大成“不要继续讨论”。
+4. **运行中的同根讨论不排延迟回合**。send/ask 即使面对同一 correlation 中已有 running Turn 的目标，也会创建一个排队的独立后续 Turn；publish 则只公开消息。因此模型应先 read 状态，并用 publish/read 在各自当前 Turn 中交换进行中的质疑与回应；只有有意要求后续独立行动时才 send/ask。这是工具效果说明，不限制谁质疑谁、讨论顺序或轮数。
+5. **显式触发边界不变**。公共消息和自然语言 `@name` 不自动唤醒 idle Agent；GroupX 不增加后台调度器、自动回送、共识状态机或隐式自治循环。运行中的参与者主动 read，idle 目标需要新行动时仍由 Agent 或用户显式 send/ask。
+6. **同场景重放按语义而非 Turn 数验收**。测试必须使用相同源内容初始快照和相同任务语义，最好在隔离副本上运行。至少 80% 的重要观点需要得到另一 Agent 有理由的明确回应；关键分歧必须解决或显式保留；同时不得出现 pending 重发、过期回复错接和重复 Turn。总 Turn 数仅作诊断记录，不能作为减少目标。若原始快照无法恢复，只能标为近似复现，不能声称同场景重放。
+
+对原始需求的影响：R1/R2 更贴近透明群聊——公开可见与显式唤醒仍分离，但讨论角色和路径交还模型智能；R3 的 unrestricted/无审批边界不变；R4 不新增记忆或共识数据类；R5 继续复用 Broker、Envelope 和现有表；R6 sender 仍由 binding 决定；R7 保留 exact collect、队列可见性、因果循环和资源上限，只删除过度的语义工作流限制。
+
+协议/存储迁移：无 schema migration。只修订 MCP instructions、工具 description、pending note、Context Packet 路由提醒和验收文档。历史事件、Turn、publish 和 collect 结果原样可读；wire schema 与错误码不变。
+
+复杂度与回滚：不增加表、状态、scheduler、语义去重器或自动 Agent。第一次同快照试跑证明，只写“拓扑中立”仍不足：三个 root Turn 已在 publish/read 中完成交叉回应并收敛，但早先互发的 targeted send 留下 14 个排队 child Turns，会在收敛后延迟重放。当前修订只把这个现有队列语义明确告诉模型；回滚会重新引入讨论拓扑偏置或延迟重复，因此不建议。
+
+完成标准：聚焦 MCP/Context/pending note tests、类型检查与构建通过；相同快照与任务的真实三方重放达到上述 80% 语义标准，且无新增机械回归。模型是否每次选择同一讨论方式不是发布 Gate。
 
 ## 决策变更规则
 

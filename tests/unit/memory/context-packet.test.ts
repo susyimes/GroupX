@@ -232,6 +232,11 @@ describe("ContextPacketBuilder provenance and cursor semantics", () => {
     expect(packet.text).toContain(
       "note=Final/publish wake no agent"
     );
+    expect(packet.text).toContain("No coordinator or rounds");
+    expect(packet.text).toContain("Active same-correlation peer: publish/read");
+    expect(packet.text).toContain("send/ask only for a later turn");
+    expect(packet.text).toContain("New work may route");
+    expect(packet.text).not.toContain("coordinator asks/collects");
     expect(packet.sections.currentMessage).toMatchObject({
       id: "evt_current",
       authorActorId: "user:web",

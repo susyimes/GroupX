@@ -302,11 +302,11 @@ type SendResult = {
 };
 ```
 
-适合异步委托和确实需要唤醒目标 Agent 的消息。`queuePosition` 是该目标前方尚未 terminal 的 Turn 数；`activeTurnId` 在目标正运行/取消时给出。`replyToEventId` 省略时，Broker 使用调用方当前 Turn 的 `sourceEventId`，让普通交接自动形成 reply chain。
+适合异步委托和确实需要目标另开一次行动的消息。send **总会**创建目标 Turn；若同一 correlation 中目标已有 running Turn，新 Turn 会排在其后，哪怕当前 running Turn 已能通过 `read` 看到这条公开消息。因此进行中的同根讨论应先 `read` 检查状态，并用 `publish/read` 交换质疑、回应和 checkpoint；只有确实需要当前 Turn 结束后的独立行动才 send。`queuePosition` 是该目标前方尚未 terminal 的 Turn 数；`activeTurnId` 在目标正运行/取消时给出。`replyToEventId` 省略时，Broker 使用调用方当前 Turn 的 `sourceEventId`，让普通交接自动形成 reply chain。
 
 ### 6.2 `groupx.publish`
 
-写入公开、durable 的进度或阶段结论，但不创建目标 Turn、不唤醒任何 Agent：
+写入公开、durable 的进度、质疑、回应或阶段结论，但不创建目标 Turn、不唤醒任何 Agent：
 
 ```ts
 type PublishInput = {
@@ -321,7 +321,7 @@ type PublishResult = {
 };
 ```
 
-`replyToEventId` 同样默认取当前 source event。publish 仍经 Broker 和 `client_commands` 幂等提交；它不是自然语言路由，也不是 `send(to=[])` 的隐式模式。
+`replyToEventId` 同样默认取当前 source event。publish 仍经 Broker 和 `client_commands` 幂等提交；它不是自然语言路由，也不是 `send(to=[])` 的隐式模式。对已经在同一 correlation 中运行的参与者，publish 是进行中讨论的公开投递面；参与者用 `read` 在自己的当前 Turn 内补读并回应，从而不把已经吸收的观点再排成延迟 Turn。
 
 ### 6.3 `groupx.ask`
 
@@ -357,11 +357,11 @@ type AskResult = {
 
 多目标 ask 并行等待，逐目标返回状态。一个目标失败不能丢弃其他目标已完成的结果。
 
-若任一新 child Turn 前方已有未完成工作，ask 不占用当前模型回合空等，立即返回 `state=pending`。否则最多等待 `min(timeouts.askMs, 60,000)`；调用方显式 `timeoutMs` 的上限也是 60,000 ms。等待结束但 child 尚未 terminal 时同样返回 pending，而不是把 Turn 伪造为 timeout terminal。
+若任一新 child Turn 前方已有未完成工作，ask 不占用当前模型回合空等，立即返回 `state=pending`。ask 与 send 一样仍已创建独立后续 Turn；对同一 correlation 中已经运行的参与者，进行中的问答应使用 `publish/read`，除非调用方有意要求其当前 Turn 结束后再行动一次。否则最多等待 `min(timeouts.askMs, 60,000)`；调用方显式 `timeoutMs` 的上限也是 60,000 ms。等待结束但 child 尚未 terminal 时同样返回 pending，而不是把 Turn 伪造为 timeout terminal。
 
 默认 `cancelOnTimeout=false`：bounded wait 结束只停止当前工具等待，目标 Turn 继续。若显式为 true，Broker 对仍运行的 ask child Turn 发起 best-effort 原生 cancel；结果在 durable terminal 前仍可为 pending。取消发起 ask 的父 Turn 时，Broker 默认也 best-effort 取消尚未 terminal 的同步 ask child；异步 `send` 创建的 Turn 不随父 Turn 取消。
 
-pending 结果的有界 `note` 明确要求使用同一 `messageEventId` 调用 collect，不得重新 ask/send 同一问题。`note` 只是工具指导，不增加回送、审批或自动派发。
+pending 结果的有界 `note` 说明：继续同一个请求时使用同一 `messageEventId` 调用 collect，避免重复派发；实质不同的追问仍可新建 send/ask。`note` 只解释工具效果，不指定讨论角色、拓扑或轮数，也不增加回送、审批或自动派发。
 
 ### 6.4 `groupx.collect`
 
@@ -378,7 +378,7 @@ type CollectResult = AskResult;
 
 Broker 校验该 message 属于当前 room/root correlation，并通过既有 `turns.source_event_id` 查询准确集合。collect 不写命令、不创建 Turn、不重放 prompt；目标仍排队时返回最新 queue metadata，lane 可运行时才做有界等待。
 
-评审类工作固定使用单协调者 fan-out：协调者调用 ask/collect 并汇总；reviewer 用被 ask 的当前 Turn final response 直接作答，不再 send 重复答案，也不发起 all-to-all 互审。阶段进度使用 publish。该规则由 MCP instructions、工具描述和 Context Packet 提示模型，不引入 Broker 编排状态机。
+GroupX 不为评审或其他协作指定协调者、互评拓扑、最终记录者或讨论轮数。Agent 可以经 Broker 自行 send/ask、公开质疑、交叉修正、委托或形成临时协调方式；用户指定的最终记录者只是一项任务要求，不自动成为调度者。MCP instructions、工具描述和 Context Packet 只说明工具的唤醒、等待、续收、回复链与上下文冻结语义，不把某一种工作流伪装成协议要求。
 
 ### 6.5 `groupx.read`
 

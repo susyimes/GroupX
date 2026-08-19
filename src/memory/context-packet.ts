@@ -29,9 +29,10 @@ const MAX_REPLY_DEPTH = 64;
  * GroupX tools to close a loop; harness behavior is otherwise unchanged.
  */
 const PROTOCOL_NOTE =
-  "Final/publish wake no agent; @name never routes. send/ask or user routes create turns. " +
-  "Reviews: coordinator asks/collects; reviewers answer in final, never resend. Pending: collect " +
-  "its messageEventId. Context frozen at through_seq; read before risky actions.";
+  "Final/publish wake no agent; @name no route; send/ask create turns. " +
+  "No coordinator or rounds. Active same-correlation peer: publish/read; " +
+  "send/ask only for a later turn. Pending ask: collect messageEventId; do not resend. " +
+  "New work may route. Context frozen at through_seq; read before risk.";
 
 type OptionalSectionName = Exclude<keyof ContextPacketOmissions, "generatedSummary">;
 

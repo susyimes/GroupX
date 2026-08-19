@@ -130,7 +130,8 @@ binding 是 provenance/correlation handle，不是 secret、token 或本机抗�
 | C-021 | busy lane 上 ask | 立即返回 `state=pending`、queuePosition/activeTurnId，不进入长等待 |
 | C-022 | `groupx.collect` | 只按原 ask `messageEventId` 收集 exact child Turns；不新增 command/message/Turn，不重放 prompt |
 | C-023 | 默认 reply chain | send/ask/publish 未给 replyTo 时固定为当前 Turn source event；显式值仍保留 |
-| C-024 | 评审提示合同 | instructions 与 Context Packet 要求单协调者、reviewer final 直接作答、pending 只 collect、进度只 publish |
+| C-024 | 协作拓扑中立提示合同 | instructions 与 Context Packet 不指定协调者、互评方向或轮数；解释 running same-correlation peer 应以 publish/read 在当前 Turn 内继续讨论，send/ask 会排独立后续 Turn；继续同一 pending 请求时精确 collect，实质不同且确需后续 Turn 的追问仍可新路由 |
+| C-025 | 同场景语义重放 | 使用相同源内容初始快照与相同任务语义；至少 80% 的重要观点得到另一 Agent 有理由的明确回应，关键分歧解决或显式保留；不出现 pending 重发、过期回复错接或重复 Turn。Turn 总数只记录，不作为优化目标 |
 
 ## 8. Turn、队列、取消与恢复
 

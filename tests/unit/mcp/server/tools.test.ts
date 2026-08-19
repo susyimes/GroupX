@@ -237,7 +237,7 @@ describe("GroupX MCP tools", () => {
     }
   });
 
-  it("teaches no-wakeup publication, exact collection, and frozen-context semantics", async () => {
+  it("teaches topology-neutral collaboration, exact collection, and frozen-context semantics", async () => {
     const fixture = await connectFixture();
     closeables.push(fixture.client, fixture.server);
 
@@ -246,14 +246,23 @@ describe("GroupX MCP tools", () => {
     const byName = new Map(listed.tools.map((tool) => [tool.name, tool] as const));
     expect(byName.get("send")?.description).toContain("wake no one");
     expect(byName.get("send")?.description).toContain("supervision.observers");
+    expect(byName.get("send")?.description).toContain("always creates");
+    expect(byName.get("send")?.description).toContain("use publish for in-flight peer");
     expect(byName.get("publish")?.description).toContain("without waking any agent");
+    expect(byName.get("publish")?.description).toContain("without building a delayed queue");
     expect(byName.get("ask")?.description).toContain("state=pending");
+    expect(byName.get("ask")?.description).toContain("distinct later Turn");
     expect(byName.get("collect")?.description).toContain("never creates or replays");
     expect(byName.get("read")?.description).toContain("frozen at dispatch");
     expect(byName.get("watch")?.description).toContain("not approval");
     expect(byName.get("steer")?.description).toContain("cannot approve");
     expect(fixture.client.getInstructions()).toContain("not an approval layer");
-    expect(fixture.client.getInstructions()).toContain("must not send the same answer back");
+    expect(fixture.client.getInstructions()).toContain("does not appoint a coordinator");
+    expect(fixture.client.getInstructions()).toContain("peer already running in this correlation");
+    expect(fixture.client.getInstructions()).toContain("publish plus read");
+    expect(fixture.client.getInstructions()).toContain("a materially different follow-up");
+    expect(fixture.client.getInstructions()).not.toContain("must not send the same answer back");
+    expect(fixture.client.getInstructions()).not.toContain("all-to-all review traffic");
   });
 
   it("routes watch and steer without accepting a caller-supplied from field", async () => {

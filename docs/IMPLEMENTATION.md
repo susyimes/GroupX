@@ -274,9 +274,9 @@ groupx.identity.remember
 
 工具调用方来自 session binding。`core_memory_remember` 没有 scope/subject/author 输入，只能写调用 Agent 自己的 core；Agent 也只能以自己的 actor 身份写 identity record。Web UI 可以为任意 Agent 写用户来源的 identity/core record。
 
-`groupx.send` 持久化并创建目标 Turn 后异步返回，结果含每个目标的 `queuePosition/activeTurnId`；`groupx.publish` 只写公开进度消息，不创建 Turn、不唤醒 Agent。`groupx.ask` 最多等待 60 秒；目标 lane 已有工作时立即返回 `state=pending`，不得重发同一问题。调用方用该 ask 的 `messageEventId` 调用 `groupx.collect`，只收集这条消息创建的 child Turns；collect 本身不创建或重放 Turn。`groupx.read` 仍用于按 correlation/cursor 补读公共状态。`send/ask/publish` 未显式传 `replyToEventId` 时默认引用当前 Turn 的 source event。同步 ask 遇到 active causal stack 中的祖先 Agent 时返回 `CAUSAL_CYCLE`，避免相互等待死锁。`watch`/`steer` 只在本次监督 Watch Turn 上成功：前者等待有界里程碑，后者 nudge 或 interrupt 整段被观察 Turn。它们不是审批层。
+`groupx.send` 持久化并创建目标 Turn 后异步返回，结果含每个目标的 `queuePosition/activeTurnId`；`groupx.publish` 只写公开消息，不创建 Turn、不唤醒 Agent。`groupx.ask` 最多等待 60 秒；目标 lane 已有工作时仍创建独立后续 Turn，并立即返回 `state=pending`。因此，同一 correlation 中已经运行的参与者之间，进行中的质疑、回应与 checkpoint 默认走 `publish`，各参与者用 `read` 在当前 Turn 内补读；只有模型确实需要目标在当前 Turn 结束后另开一次行动时才用 `send/ask`。这不限制讨论拓扑，只把“公开给正在讨论的人看”和“再排一个未来 Turn”两种效果分开。调用方用该 ask 的 `messageEventId` 调用 `groupx.collect`，只收集这条消息创建的 child Turns；collect 本身不创建或重放 Turn。同一个 pending 请求应 collect 而不是重复派发；实质不同且确需独立后续 Turn 的追问仍可新建 send/ask。`groupx.read` 仍用于按 correlation/cursor 补读公共状态。`send/ask/publish` 未显式传 `replyToEventId` 时默认引用当前 Turn 的 source event。同步 ask 遇到 active causal stack 中的祖先 Agent 时返回 `CAUSAL_CYCLE`，避免相互等待死锁。`watch`/`steer` 只在本次监督 Watch Turn 上成功：前者等待有界里程碑，后者 nudge 或 interrupt 整段被观察 Turn。它们不是审批层。
 
-多方评审采用单协调者 fan-out：协调者负责 ask/collect 和最终汇总；reviewer 直接用当前 Turn 的 final response 回答，不再 `send` 一份重复答案，也不做 all-to-all 互审。公开阶段进度使用 `publish`。这是工具合同和提示规则，不是 Broker 内置任务编排器。
+GroupX MCP 保持协作拓扑中立：不指定协调者、最终记录者、互评方向或讨论轮数，也不禁止 Agent 之间经 Broker 直接质疑、修正或委托。用户可以指定最终记录者，Agent 也可以在讨论中自行形成临时协调方式；这些都是模型层决定，不是 Broker 或工具提示词的工作流。工具说明只解释可观察效果：final/publish 不唤醒，send/ask 总会创建独立目标 Turn，collect 续收原 ask，read 补读新状态；据此提醒运行中的同根参与者用 publish/read 完成进行中讨论，避免把已吸收的意见排成延迟子 Turn。
 
 GroupX 必须实现并测试 `send/publish/ask/collect/read` 工具服务，但只向 Structured capability probe 已验证可以挂载并调用 MCP 的原生会话声明工具。selected transport 非 Structured、未验证或明确不支持时，attachment/HTTP 入口返回稳定 `MCP_UNAVAILABLE`（HTTP 503）；Agent 只有已由独立外部策略 evidence 投影为 `native_policy_blocked` 时，才能把该状态作为 MCP 不可用的上游原因。普通 attach/call 失败不能生成 `native_policy_blocked`。不能改用 `SESSION_NOT_AVAILABLE`，也不得改用正文 `@某人`、Direct 或另一 transport。此时用户仍可从 Web/REST 明确选择 recipients；所有最终回复仍进入公共 transcript。
 
@@ -351,7 +351,7 @@ sequenceDiagram
 1. Structured 模式下，任一已配置且支持 MCP 的 Agent 在自己的长驻会话中调用 `groupx.send`、`groupx.publish` 或 `groupx.ask`。
 2. GroupX MCP 根据该会话 binding 固定调用方，先持久化公共 message 和目标 Turn，再由 Broker 派发。
 3. `send` 立即返回持久化标识与队列位置；`publish` 只落公开消息；`ask` 在 lane 空闲时有界等待，在 lane 已忙时立即返回 pending。
-4. pending ask 只能用原 `messageEventId` 调用 `collect` 续收，不重复派发；问题、回复和失败状态同时进入公共 transcript，整个过程不建立物理 P2P。
+4. 同一个 pending ask 用原 `messageEventId` 调用 `collect` 续收，不重复派发；实质不同的后续问题可由 Agent 自行选择新 send/ask。问题、回复和失败状态同时进入公共 transcript，整个过程不建立物理 P2P，也不规定逻辑讨论拓扑。
 
 用户可从 Web/REST 明确选择 Grok（或 `@all`）创建后续 Turn。普通文本中的 `@codex` 不自动创建新 Turn，不能作为 MCP 不可用时的隐式替代。
 

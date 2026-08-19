@@ -395,6 +395,9 @@ describe("GroupXToolBrokerApi", () => {
     const note = result.results[0]?.note;
     expect(note).toContain("queued or still running");
     expect(note).toContain('messageEventId "event:question"');
+    expect(note).toContain("materially different follow-up");
+    expect(note).toContain("distinct later Turn");
+    expect(note).toContain("publish/read for in-flight discussion");
     expect(note?.length ?? 0).toBeLessThanOrEqual(500);
   });
 

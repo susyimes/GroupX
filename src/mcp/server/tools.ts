@@ -161,12 +161,17 @@ export function createGroupXMcpServer(options: CreateGroupXMcpServerOptions): Mc
         "GroupX tools route explicit local group messages and memory operations. Caller identity " +
         "comes from the current Adapter/session binding. Routing rules: (1) Your final turn and " +
         "publish are visible to the room but wake no agent, and @name mentions in plain text " +
-        "never route; only send or ask creates target Turns. (2) In a review, appoint one " +
-        "coordinator to fan out. A reviewer answers the current ask in its final response and " +
-        "must not send the same answer back as another Turn or start all-to-all review traffic. " +
-        "(3) ask waits at most 60000 ms and returns state=pending immediately when a target is " +
-        "already queued. Continue only with collect using that ask's exact messageEventId; never " +
-        "resend the same question. publish is the no-wakeup progress/checkpoint path. (4) replyTo " +
+        "never route; only send or ask creates target Turns. (2) Choose send, ask, publish, and " +
+        "read as needed to organize, delegate, challenge, rebut, or converge. GroupX does not " +
+        "appoint a coordinator, forbid agent-to-agent review, or prescribe a number of rounds. " +
+        "For a peer already running in this correlation, prefer publish plus read for the " +
+        "in-flight discussion: send or ask always queues a distinct later Turn, even when that " +
+        "peer can already read your public message. Use send or ask there only when you " +
+        "intentionally need that later Turn. (3) ask waits at most 60000 ms and returns " +
+        "state=pending immediately when a target is " +
+        "already queued. Use collect with that ask's exact messageEventId to continue the same " +
+        "request without duplicating it; a materially different follow-up may use send or ask. " +
+        "publish is the no-wakeup public-message path. (4) replyTo " +
         "defaults to the current source message, preserving the handoff chain. Your prompt context is frozen at " +
         "dispatch time; call read to catch up on newer room messages before irreversible " +
         "actions such as pushing commits or declaring agreement with another agent. (5) watch " +
@@ -182,8 +187,11 @@ export function createGroupXMcpServer(options: CreateGroupXMcpServerOptions): Mc
     "publish",
     {
       description:
-        "Publish a durable public progress update or synthesis without waking any agent or " +
-        "creating a Turn. replyToEventId defaults to the current source message.",
+        "Publish a durable public message without waking any agent or creating a Turn. Use it " +
+        "for checkpoints and for in-flight challenges or replies among peers that already have " +
+        "running Turns in this correlation; they catch up with read and can respond from those " +
+        "Turns without building a delayed queue. replyToEventId defaults to the current source " +
+        "message.",
       inputSchema: McpPublishInputSchema,
       outputSchema: McpPublishResultSchema
     },
@@ -199,9 +207,11 @@ export function createGroupXMcpServer(options: CreateGroupXMcpServerOptions): Mc
     "send",
     {
       description:
-        "Send a public GroupX message asynchronously to one or more agents. Each target is " +
-        "woken with a new turn. This (or ask) is the only way to make another agent act: " +
-        "plain final responses and @name mentions in text wake no one. Optional " +
+        "Send a public GroupX message asynchronously to one or more agents. This always creates " +
+        "a distinct target Turn; if a target already has a running Turn in this correlation, the " +
+        "new Turn waits behind it. Inspect state with read and use publish for in-flight peer " +
+        "discussion unless you intentionally need that later Turn. Plain final responses and " +
+        "@name mentions in text wake no one. Optional " +
         "supervision.observers starts a live_steer pair: those agents watch the workers and " +
         "may later watch/steer. Observers cannot overlap to[], and you cannot observe yourself.",
       inputSchema: McpSendWireInputSchema,
@@ -223,8 +233,11 @@ export function createGroupXMcpServer(options: CreateGroupXMcpServerOptions): Mc
     {
       description:
         "Ask one or more agents and wait up to 60000 ms for their terminal results. If a target " +
-        "is already busy or the bounded wait ends, returns state=pending with queuePosition. " +
-        "Resume only with collect(messageEventId); do not send the same question again. Optional " +
+        "is already busy, ask still creates a distinct later Turn and immediately returns " +
+        "state=pending with queuePosition. For a peer already running in this correlation, use " +
+        "publish plus read for in-flight discussion unless a later Turn is intentional. " +
+        "Continue that same request with collect(messageEventId) instead of duplicating it; a " +
+        "materially different follow-up may use send or ask. Optional " +
         "supervision.observers starts the same live_steer pair as send.",
       inputSchema: McpAskWireInputSchema,
       outputSchema: McpAskResultSchema
@@ -298,8 +311,9 @@ export function createGroupXMcpServer(options: CreateGroupXMcpServerOptions): Mc
       description:
         "Read durable GroupX events and turn state by correlation or sequence cursor. Your " +
         "prompt context is frozen at dispatch time; use read to catch up on newer room " +
-        "messages, sibling answers, and running turn status, especially before irreversible " +
-        "actions.",
+        "messages, sibling answers, and running turn status. Inspect same-correlation peers with " +
+        "read before send/ask so an in-flight reply does not become a delayed duplicate Turn, " +
+        "and read again before irreversible actions.",
       inputSchema: McpReadInputSchema,
       outputSchema: McpReadWireResultSchema
     },

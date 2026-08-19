@@ -452,7 +452,9 @@ export class GroupXToolBrokerApi implements ToolBrokerApi {
           ...this.#queueFields(queue),
           note:
             `${turn.target} is queued or still running. Collect this exact request with ` +
-            `messageEventId "${messageEventId}"; do not send the same question again.`
+            `messageEventId "${messageEventId}" instead of duplicating it. A materially ` +
+            `different follow-up may use send or ask only when a distinct later Turn is ` +
+            `intended; use publish/read for in-flight discussion with a running peer.`
         };
       })
     });
@@ -480,7 +482,9 @@ export class GroupXToolBrokerApi implements ToolBrokerApi {
           ...queueFields,
           note:
             `${acceptedTurn.target} is queued or still running. Collect this exact request with ` +
-            `messageEventId "${messageEventId}"; do not send the same question again.`
+            `messageEventId "${messageEventId}" instead of duplicating it. A materially ` +
+            `different follow-up may use send or ask only when a distinct later Turn is ` +
+            `intended; use publish/read for in-flight discussion with a running peer.`
         };
       }
       if (turn.status === "completed") {
