@@ -588,7 +588,7 @@ Web UI 不再暴露 identity 写入面板；稳定 Agent 身份由 `/setup` 写�
 
 setup contract 不包含 `transport`、`access`、approval、sandbox、model 或任意 native flags。standalone `groupx init` 成功保存后启动正式 runtime，并让引导页轮询同源 `GET /api/setup/launch`；只有该接口返回 loopback 正式 origin 的 `ready` 状态后，页面才自动跳转到群聊，随后关闭临时服务。运行中的 `/setup` 可以更新配置文件，但响应必须标记 `restartRequired=true`，不能自动跳转或在旧 runtime 中热换 binding/session。
 
-`GET /api/health` 的正式 runtime 响应必须包含 `service="groupx"`、`protocol="groupx.runtime/1"` 和 64 位十六进制 `runtimeKey`。key 是 canonical config 与 canonical config path 的 SHA-256，只用于本机重复启动的实例相关性，不是 credential、安全边界或远程发现标识。`groupx start` 仅在 service/protocol/key 全部匹配时把已运行实例视为成功；其他 listener 必须 fail-closed 并提示端口冲突。CLI 的预检不能替代 `listen` 的原子租约，`EADDRINUSE` 后必须再做有界探测以处理并发启动竞态。
+`GET /api/health` 的正式 runtime 响应必须包含 `service="groupx"`、`protocol="groupx.runtime/1"`、64 位十六进制 `runtimeKey` 和 `runtimeScopeKey`。前者是 canonical config + canonical config path 的 SHA-256；后者只由 canonical config path 生成，因此 Agent 名册等配置内容保存后仍保持稳定。两者都只用于本机实例相关性，不是 credential、安全边界或远程发现标识。`groupx start` 仅在 service/protocol/runtimeKey 全部匹配时把已运行实例视为成功；其他 listener 必须 fail-closed 并提示端口冲突。CLI 的预检不能替代 `listen` 的原子租约，`EADDRINUSE` 后必须再做有界探测以处理并发启动竞态。
 
 ### 10.7 房间助理侧边对话
 
@@ -602,6 +602,31 @@ POST /api/assistant/cancel
 ```
 
 `POST /api/assistant/messages` 只接受 `{ clientCommandId, content }`。请求不得携带 `from`、`actor`、`provenance`、`to` 或 `supervision`。同一 `clientCommandId` 会加入进行中的助理回合，或重放已写下的回复；用户行已在、回复未写时会再跑一轮脑，不追加第二条用户行。`GET /api/assistant/messages` 返回最近最多 200 条侧边对话。助理 harness 每次注入产品默认提示词，用户 `extraInstructions` 只能追加。助理若要动房间，必须再走 `/mcp/operator`；控场不落群气泡，派活默认写 `operator.dispatch`。
+
+### 10.8 本机 runtime 停止与重载
+
+`groupx stop` 与 `groupx restart` 使用同一个窄的 loopback 生命周期端点，不把进程停止/重载伪装成 Broker message 或 durable command：
+
+```http
+POST /api/runtime/shutdown
+Content-Type: application/json
+
+{ "runtimeScopeKey": "<64-hex>" }
+```
+
+只有正式 product runtime 暴露该端点。请求必须严格匹配当前 health 返回的 `runtimeScopeKey`；不匹配返回 conflict，不停止进程。成功先返回：
+
+```json
+{
+  "accepted": true,
+  "runtimeKey": "<64-hex>",
+  "runtimeScopeKey": "<64-hex>"
+}
+```
+
+HTTP 状态为 `202 Accepted`。响应完成后 runtime 进入 draining：关闭 SSE、拒绝新的产品请求并有界等待已开始的 REST 工作，但 listener 仍保持绑定；随后按既有关闭合同收敛房间助理、MCP、Broker、Agent session、publisher/SSE 与 Store，最后才关闭 HTTP listener。draining 期间 `GET /api/health` 返回 HTTP 503、`status="closing"` 和完整 runtime identity，使 CLI 不把关闭中的 listener 误认成外部占用。
+
+CLI 只有在当前配置的 origin 可达，且旧 runtime 的 `runtimeKey` 完全相同或 `runtimeScopeKey` 与当前 canonical config path 相同时才调用该端点。它连续确认端口不可达后，`stop` 直接完成且不启动任何 runtime；`restart` 才按最新配置执行普通 start 竞态流程。关闭超时、listener 被替换、旧版 runtime 无端点或配置路径不同都 fail-closed。若实例未运行，`stop` 报告未检测到实例，启动时应使用 `groupx start`；若 `server.port` 也已变化，必须先停止旧端口实例。shutdown request 不写 `client_commands`、event 或新的持久状态，重复请求依赖 runtime `close()` 的进程内幂等。
 
 ## 11. SSE 合同
 

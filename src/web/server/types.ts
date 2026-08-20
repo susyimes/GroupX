@@ -79,6 +79,11 @@ export interface AssistantApi {
   cancel(request: AssistantCancelRequest, signal: AbortSignal): Awaitable<AssistantCancelResult>;
 }
 
+export interface RuntimeControl {
+  requestShutdown(): Awaitable<void>;
+  onShutdownError?(error: unknown): void;
+}
+
 /**
  * The HTTP layer deliberately knows only this command/query surface. Turn
  * state, idempotency, actor assignment and persistence remain Broker concerns.
@@ -154,6 +159,8 @@ export interface GroupXHttpServerOptions {
   readonly assistantApi?: AssistantApi;
   /** Present on the product runtime; optional only for embedded/test servers. */
   readonly runtimeIdentity?: GroupXRuntimeIdentity;
+  /** Product-runtime lifecycle control used by local `groupx stop` / `groupx restart`. */
+  readonly runtimeControl?: RuntimeControl;
 }
 
 export interface GroupXHttpServerAddress {

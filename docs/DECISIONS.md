@@ -40,6 +40,7 @@
 | D-028 | 房间助理是 user:assistant 操作员客户端，不是名册 worker | Accepted |
 | D-029 | 无 schema 的协作闭环：publish、pending/collect、队列可见性与默认 reply chain | Accepted |
 | D-030 | 协作工具保持拓扑中立，由 Agent 自主组织讨论与收敛 | Accepted |
+| D-031 | `groupx stop` / `groupx restart` 以配置路径作用域优雅控制 runtime | Accepted |
 
 ## D-001：透明 Broker
 
@@ -227,7 +228,7 @@ Structured resume/load 不能自动重放不确定 Turn。历史 Direct attempt 
 
 runtime 启动时把名册中的自定义/改名 agent upsert 进 actors 表，显示名由此流入 durable 事件与 Web UI;Web UI 的目标 chips、Agent 卡片、身份记忆下拉全部按 bootstrap 名册动态渲染，非内置 id 按 actor id 哈希分配固定调色板色调。
 
-分发形态为 npm 公共 scoped包 `@susyimes/groupx`,`bin.groupx` 指向 `dist/src/cli.js`，提供 `start`(默认，自动打开浏览器，可 `--no-open`)、`doctor`(系统/Node/CLI 检测)、`init`(浏览器 Agent 引导并在保存后启动/进入群聊)、`update`(查询 npm latest 并更新当前全局安装，可 `--check`)子命令。`update` 先读取 Registry 的稳定精确版本，再把该版本固定传给 npm 全局安装；已最新或本地版本更高时不重装/降级。Windows 通过当前 Node 执行 `npm-cli.js`，macOS/Linux 使用同安装入口或 PATH 中可执行 npm，全程 `shell:false`。首次 `start` 未找到配置时先进入引导页；引导页允许重复添加同一 driver、编辑稳定 id/name/cwd/command，并只写 GroupX 配置。standalone 保存后由临时同源 launch 状态等待正式 runtime ready，再在当前页面自动跳转；运行中的 `/setup` 可编辑现有名册，保存后明确要求重启，不自动跳转且不在运行中热换 session。静态资源根从进程 cwd 改为按模块位置解析(`dist/web`)，使全局安装后可在任意目录启动。进程管理与命令解析的跨平台分支(win32 taskkill / posix 负 pid 进程树、PATH 查找)已内置于 supervisor 与 launch 层,macOS/Linux 行为通过依赖注入测试覆盖。
+分发形态为 npm 公共 scoped包 `@susyimes/groupx`,`bin.groupx` 指向 `dist/src/cli.js`，提供 `start`(默认，自动打开浏览器，可 `--no-open`)、`stop`(按 D-031 优雅停止同配置路径 runtime)、`restart`(按 D-031 优雅重载同配置路径 runtime)、`doctor`(系统/Node/CLI 检测)、`init`(浏览器 Agent 引导并在保存后启动/进入群聊)、`update`(查询 npm latest 并更新当前全局安装，可 `--check`)子命令。`update` 先读取 Registry 的稳定精确版本，再把该版本固定传给 npm 全局安装；已最新或本地版本更高时不重装/降级。Windows 通过当前 Node 执行 `npm-cli.js`，macOS/Linux 使用同安装入口或 PATH 中可执行 npm，全程 `shell:false`。首次 `start` 未找到配置时先进入引导页；引导页允许重复添加同一 driver、编辑稳定 id/name/cwd/command，并只写 GroupX 配置。standalone 保存后由临时同源 launch 状态等待正式 runtime ready，再在当前页面自动跳转；运行中的 `/setup` 可编辑现有名册，保存后明确要求重启，不自动跳转且不在运行中热换 session。静态资源根从进程 cwd 改为按模块位置解析(`dist/web`)，使全局安装后可在任意目录启动。进程管理与命令解析的跨平台分支(win32 taskkill / posix 负 pid 进程树、PATH 查找)已内置于 supervisor 与 launch 层,macOS/Linux 行为通过依赖注入测试覆盖。
 
 正式 runtime 的 HTTP loopback bind 必须先于 stale session recovery。端口冲突代表另一个 runtime 可能仍在运行；失败进程不得修改现有 Agent instance/session lineage。该顺序防止重复执行 `groupx start` 将活跃 binding 错标为 interrupted，并使新消息永久停在 queued。
 
@@ -460,6 +461,26 @@ Hermes 0.20.1 的 initialize 当前未声明 `mcpCapabilities.http`，但官方�
 复杂度与回滚：不增加表、状态、scheduler、语义去重器或自动 Agent。第一次同快照试跑证明，只写“拓扑中立”仍不足：三个 root Turn 已在 publish/read 中完成交叉回应并收敛，但早先互发的 targeted send 留下 14 个排队 child Turns，会在收敛后延迟重放。当前修订只把这个现有队列语义明确告诉模型；回滚会重新引入讨论拓扑偏置或延迟重复，因此不建议。
 
 完成标准：聚焦 MCP/Context/pending note tests、类型检查与构建通过；相同快照与任务的真实三方重放达到上述 80% 语义标准，且无新增机械回归。模型是否每次选择同一讨论方式不是发布 Gate。
+
+## D-031：`groupx stop` / `groupx restart` 以配置路径作用域优雅控制 runtime
+
+触发证据：运行中从 Agent 设置保存新成员后，旧 runtime 有意不热换 Adapter/session，新成员只显示 `pending_restart`。但 `groupx start` 的幂等合同会复用完全相同的 runtime；配置内容已变化时又会按不同 `runtimeKey` 报冲突。用户只能回到拥有旧前台进程的终端按 `Ctrl+C`，既缺少从任意终端完成“关闭旧实例并加载最新名册”的产品命令，也缺少只优雅停止当前 runtime 的独立命令。
+
+决定：
+
+1. **新增显式 CLI 命令**。`groupx stop [--config <path>]` 与 `groupx restart [--config <path>] [--no-open]` 只处理已经在当前配置 `server.port` 上运行的正式 GroupX。实例本来未运行时 fail-closed；`restart` 提示启动应使用 `groupx start`，不会把它偷换成可能制造第二个 Store writer 的 start。`stop` 在完整关闭后结束，不创建替代 runtime。
+2. **配置内容与配置路径分开相关**。现有 `runtimeKey` 继续由 canonical config + canonical config path 生成，服务 `start` 的精确复用；新增非秘密 `runtimeScopeKey` 只由 canonical config path 生成，使 Agent 名册保存后仍能确认旧、新 runtime 属于同一配置文件。它是 correlation handle，不是 credential、认证或第二套锁。
+3. **只控制同作用域 runtime**。CLI 只有在 runtimeKey 完全相同，或旧 health 的 runtimeScopeKey 与当前 canonical path 相同时，才调用 `POST /api/runtime/shutdown`。另一配置文件、旧版/不兼容 GroupX、外部 listener 与 scope mismatch 均 fail-closed。若 `server.port` 同时改变，当前 origin 无法发现旧实例，必须先手动停止旧端口；不扫描端口或进程。
+4. **listener 是完整关闭租约**。shutdown 的 202 响应完成后，HTTP 先进入 draining，关闭 SSE、拒绝新工作并等待已开始的 REST 请求，但不释放端口；随后有界关闭房间助理、MCP、Broker、Agent session、publisher/SSE 和 Store，最后才关闭 listener。CLI 需要连续观察不可达，避免一次连接抖动被当作退出；`stop` 此时完成，只有 `restart` 执行既有 start 竞态流程。
+5. **不扩大恢复权限**。重载后的新进程仍走 D-016 与存储 5.1-5.3 的恢复：queued/明确未交付可恢复，已交付或不确定 Turn 不自动重放；Structured session resume/load 只服务后续 Turn。restart 不是当前 Turn retry。
+
+对原始需求的影响：R1 的动态名册获得可操作的停止/加载闭环；R3 的 unrestricted 与无审批边界不变，runtimeScopeKey 也不构成安全机制；R4 的 transcript/记忆继续由同一 SQLite 事实源恢复；R5 只增加窄 CLI 命令并复用既有 loopback 生命周期面，不引入 daemon manager 或锁服务；R6 sender binding 在 restart 后按稳定 actor 重建；R7 以先完整关闭再启动避免双 Broker、双 session 与双 Store writer。
+
+协议/存储迁移：`groupx.runtime/1` health 增加可选兼容字段 `runtimeScopeKey`，并增加严格的 `POST /api/runtime/shutdown` 请求/202 响应；draining health 为 503 + identity。没有 SQLite schema、event、`client_commands`、PID/lock 文件或配置迁移。运行中的旧版本没有端点时要求手动停止一次。
+
+复杂度与回滚：增加一个路径 hash、一个受 scope 校验的 loopback handler、HTTP draining 阶段和 CLI 有界轮询；`stop` 与 `restart` 共用该路径。回滚可移除 stop/restart 命令与端点；已发布 health 的附加字段可被旧 reader 忽略，数据库无清理工作。不能回滚为按端口强杀、按 PID 当稳定身份或在旧 Store writer 退出前启动替代进程。
+
+完成标准：单元测试覆盖同 path 配置变化、不同 path/占用者拒绝、旧端点缺失、连续不可达与关闭超时；HTTP 测试覆盖严格 scope 和 draining health；runtime integration 用被阻塞的 Adapter close 证明 listener 在 session 完整关闭前仍绑定；类型检查、全量测试和构建通过。
 
 ## 决策变更规则
 

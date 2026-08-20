@@ -26,6 +26,7 @@ import type {
 } from "../../../../src/contracts/index.js";
 import { SafeErrorBodySchema } from "../../../../src/contracts/index.js";
 import type { GroupXEnvelope } from "../../../../src/core/envelope.js";
+import { createGroupXRuntimeIdentity } from "../../../../src/core/runtime-instance.js";
 import { SseRuntime, type DurableGroupXEnvelope } from "../../../../src/web/sse/index.js";
 import {
   createGroupXHttpServer,
@@ -601,6 +602,55 @@ describe("GroupXHttpServer", () => {
       body: "hello"
     });
     expect(wrongMedia.status).toBe(415);
+  });
+
+  it("accepts a scoped CLI shutdown request and retains health identity while draining", async () => {
+    await server?.close();
+    const identity = createGroupXRuntimeIdentity(
+      { config: "current" },
+      { configPath: "D:\\GroupX\\groupx.json" }
+    );
+    let shutdownRequested = false;
+    server = createGroupXHttpServer({
+      broker,
+      sse,
+      staticRoot,
+      port: 0,
+      runtimeIdentity: identity,
+      runtimeControl: {
+        requestShutdown() {
+          shutdownRequested = true;
+          server?.beginClose();
+        }
+      }
+    });
+    origin = (await server.start()).origin;
+
+    const rejected = await fetch(`${origin}/api/runtime/shutdown`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ runtimeScopeKey: "0".repeat(64) })
+    });
+    expect(rejected.status).not.toBe(202);
+    expect(shutdownRequested).toBe(false);
+
+    const accepted = await fetch(`${origin}/api/runtime/shutdown`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ runtimeScopeKey: identity.runtimeScopeKey })
+    });
+    expect(accepted.status).toBe(202);
+    expect(await accepted.json()).toEqual({
+      accepted: true,
+      runtimeKey: identity.runtimeKey,
+      runtimeScopeKey: identity.runtimeScopeKey
+    });
+    await eventually(() => shutdownRequested);
+
+    const health = await fetch(`${origin}/api/health`);
+    expect(health.status).toBe(503);
+    expect(await health.json()).toEqual({ status: "closing", ...identity });
+    expect(server.address?.origin).toBe(origin);
   });
 
   it("exposes room context usage and validates the explicit compaction command", async () => {

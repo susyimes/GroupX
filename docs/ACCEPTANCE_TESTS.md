@@ -47,6 +47,7 @@
 | G-015 | Claude 延后 `system`/`init` 帧 | `init` 帧只在首条用户消息之后到达，不得当作握手；到达时 `session_id`、`cwd` 与 `permissionMode` 必须与 GroupX 启动值一致，无法解析或不一致都使当前 Turn 失败 |
 | G-016 | Claude 取消与迟到 `result` | `aborted_streaming`(流式中) 与 `aborted_tools`(工具执行中) 都归一化为 `turn.cancelled` 且不污染 session；interrupt 输给正在收敛的 Turn 时补发的 `result` 必须在 cancel 窗口内被吸收，不得终结下一个 Turn |
 | G-017 | Claude 交互类 control request | `can_use_tool`、`elicitation`、`request_user_dialog` 一律拒绝并以 `UNEXPECTED_NATIVE_INTERACTION` 失败当前 Turn；`hook_callback` 等非决策类只回协议错误，不影响 Turn |
+| G-018 | `groupx stop` / `groupx restart` identity 选择 | 配置内容变化但 canonical config path 相同时可请求旧 runtime 关闭；`stop` 完成后不启动替代实例；另一配置路径、旧版/不兼容 GroupX、其他 listener、当前端口不可达都 fail-closed，不误停或启动额外实例 |
 
 精确 native profile：
 
@@ -155,6 +156,7 @@ binding 是 provenance/correlation handle，不是 secret、token 或本机抗�
 | T-016 | `cancelling + prepared + not_delivered` 后重启 | CAS 到 `cancelled`，不回 queued |
 | T-017 | cancel 与 native completion 竞态 | 恰好一个 terminal；completion 抢先可合法收敛 completed |
 | T-018 | delivered attempt 对账失败 | terminal 可为 interrupted，但 `delivery_certainty` 保留 delivered，不倒退 unknown |
+| T-019 | runtime 优雅停止/重载 | shutdown 先令 HTTP draining 并等待当前 REST，再关闭 Broker/session/Store；listener 在旧 Store writer 与原生 session 收敛前不释放，CLI 连续确认不可达后才报告停止，且仅 `restart` 启动替代 runtime；恢复仍遵守无自动 replay |
 
 ## 9. Native interaction fail-closed
 
@@ -233,6 +235,7 @@ binding 是 provenance/correlation handle，不是 secret、token 或本机抗�
 | W-011 | `groupx update` | 查询 npm latest；已最新/本地更高不安装，`--check` 无副作用，有更新时锁定精确版本并通过 shell-free npm 入口全局安装 |
 | W-012 | 单房间上下文控件 | 输入窗口右上角显示明确标注的字符估算；手动压缩经 Broker/clientCommandId 单飞，保留最近消息与完整 transcript，reasoning/tool 记录不进入摘要 |
 | W-013 | Agent 设置两层记忆 | core 独立展示并可维护；dated 只读按本地日期分组并允许显式移除；公共记忆仍在群聊左栏 |
+| W-016 | CLI runtime control | health 返回非秘密 `runtimeKey/runtimeScopeKey`；匹配的 `POST /api/runtime/shutdown` 返回 202，draining health 为 503 + identity；不匹配 scope 不触发关闭；端点不创建 durable command/event |
 
 loopback 与 binding 是产品范围/来源合同，不是认证或安全保证。
 
@@ -294,6 +297,7 @@ Broker 指标不含模型网络/推理；只测 Structured session startup/reuse
 
 - Web/REST/SSE、Broker、SQLite、三 Agent selected transport 闭环；
 - public transcript、sender、memory、identity、Context Packet 与重启恢复通过；
+- `groupx stop` / `groupx restart` 的同配置路径识别、draining 端口租约、完整关闭、仅 restart 再启动及冲突 fail-closed 通过；
 - UI/health/bootstrap 明确显示 Structured `active`、Direct `deprecated`。
 
 ### M2

@@ -29,6 +29,7 @@ class RuntimeAdapter implements CliAdapter {
   readonly resumes: Array<LaunchProfile & { nativeSessionId: string }> = [];
   readonly closes: NativeSession[] = [];
   readonly prompts: PromptInput[] = [];
+  closeBarrier: Promise<void> | undefined;
   mcpReachableStatus: number | undefined;
   failStart = false;
   failNextPromptWithProtocolError = false;
@@ -92,6 +93,7 @@ class RuntimeAdapter implements CliAdapter {
 
   async close(session: NativeSession): Promise<void> {
     this.closes.push(session);
+    await this.closeBarrier;
   }
 
   health(): AdapterHealth {
@@ -208,6 +210,37 @@ describe("GroupXRuntime composition", () => {
       expect(f.store.getSessionBinding(webBindingId)?.status).toBe("ready");
       expect(f.adapter.closes).toHaveLength(1);
     } finally {
+      await f.runtime.close().catch(() => undefined);
+      f.store.close();
+    }
+  });
+
+  it("keeps the listener lease until a CLI-requested graceful shutdown fully closes sessions", async () => {
+    const f = fixture("structured");
+    let releaseClose: (() => void) | undefined;
+    f.adapter.closeBarrier = new Promise<void>((resolve) => {
+      releaseClose = resolve;
+    });
+    try {
+      const started = await f.runtime.start();
+      const identity = f.runtime.runtimeIdentity;
+      const accepted = await fetch(`${started.address.origin}/api/runtime/shutdown`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ runtimeScopeKey: identity.runtimeScopeKey })
+      });
+      expect(accepted.status).toBe(202);
+      await vi.waitFor(() => expect(f.adapter.closes).toHaveLength(1));
+
+      const draining = await fetch(`${started.address.origin}/api/health`);
+      expect(draining.status).toBe(503);
+      expect(await draining.json()).toEqual({ status: "closing", ...identity });
+
+      releaseClose?.();
+      await f.runtime.close();
+      await expect(fetch(`${started.address.origin}/api/health`)).rejects.toThrow();
+    } finally {
+      releaseClose?.();
       await f.runtime.close().catch(() => undefined);
       f.store.close();
     }

@@ -8,7 +8,7 @@
 
 ![npm](https://img.shields.io/npm/v/@susyimes/groupx?color=3370ff&label=npm)
 ![Node](https://img.shields.io/badge/node-24.14.x-3c873a)
-![Tests](https://img.shields.io/badge/tests-602%20passing-0d9f6e)
+![Tests](https://img.shields.io/badge/tests-618%20passing-0d9f6e)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%C2%B7%20macOS%20%C2%B7%20Linux-0078d6)
 ![Transport](https://img.shields.io/badge/transport-structured-9440c9)
 
@@ -44,6 +44,12 @@ GroupX 是一个只监听本机 loopback 的多 Agent 群聊 Broker。用户从�
 - **公共记忆**：用户显式固定给整个房间的事实、决定、偏好、指令、约束或备注。
 - **两层 Agent 记忆**：每个 Agent 拥有主动维护的核心记忆，以及把成功回合批量整理成每日一条的私有工作记忆。
 - **会话恢复与故障收敛**：原生 session 支持 resume/load；可能已送达的业务 Prompt 不会自动重放。
+
+## 0.1.16 更新
+
+- 新增 `groupx restart [--config <path>] [--no-open]`，保存 Agent 名册后可从任意终端优雅关闭旧 runtime，并按最新配置重载。
+- 新增 `groupx stop [--config <path>]`，完整关闭同配置路径的 Agent session、Broker、Store 与 listener，且不启动替代实例。
+- 两个命令都按 canonical 配置路径校验 runtime，关闭超时、端口变化、另一配置或不兼容 listener 均 fail-closed。
 
 ## 0.1.15 更新
 
@@ -118,13 +124,18 @@ groupx start
 groupx start                   # 启动，或复用同配置的现有 GroupX
 groupx start --no-open         # 启动但不自动打开浏览器
 groupx start --config x.json   # 使用指定配置文件
+groupx stop                    # 优雅停止当前 groupx.json 对应的 GroupX
+groupx stop --config x.json    # 停止指定配置文件对应的 GroupX
+groupx restart                 # 优雅关闭并按最新 groupx.json 重载
+groupx restart --no-open       # 重载但不自动打开浏览器
+groupx restart --config x.json # 重载指定配置文件对应的 GroupX
 groupx init                    # 打开 Agent 配置引导页
 groupx doctor                  # 检查 Node 与本机 CLI
 groupx update --check          # 只检查 npm 更新
 groupx update                  # 更新当前全局安装
 ```
 
-运行中的 Agent 名册可以从右上角“Agent 设置”修改。保存后主房间会立即显示新数量；尚未启动的 Agent 标记为“等待重启”且不能接收消息，重启 GroupX 后才会建立原生 session。`Ctrl+C` 会有界关闭当前进程，不会删除 SQLite 数据。
+运行中的 Agent 名册可以从右上角“Agent 设置”修改。保存后主房间会立即显示新数量；尚未启动的 Agent 标记为“等待重启”且不能接收消息。此时运行 `groupx restart`，GroupX 会优雅关闭旧 runtime，再从最新配置建立 Agent 与房间助理 session。`groupx stop` 或原进程中的 `Ctrl+C` 会有界关闭当前 runtime，不会删除 SQLite 数据。
 
 > 全局命令是 `groupx`，不是 `group`。安装后如果仍提示找不到命令，请重新打开终端，并确认 npm 全局 bin 目录已经加入 `PATH`。
 
@@ -194,7 +205,7 @@ GroupX 当前保持单房间结构，房间 ID 为 `room:main`。
 }
 ```
 
-每个启用的 Agent 拥有独立原生 process/session。修改名册不会热替换正在运行的 session；主房间会把新增项显示为“等待重启”，重启 GroupX 后才转为可用。房间助理写在配置顶层 `assistant`，保存后同样需要重启才能接上私有脑会话。
+每个启用的 Agent 拥有独立原生 process/session。修改名册不会热替换正在运行的 session；主房间会把新增项显示为“等待重启”，运行 `groupx restart` 后才转为可用。房间助理写在配置顶层 `assistant`，保存后同样通过该命令接上新的私有脑会话。
 
 Hermes 使用固定的 `hermes --yolo acp` 启动形状，并在每次 `session/new` 或 `session/load` 后、首个 prompt 前设置 ACP mode 为 `dont_ask`。可先运行 `hermes acp --check` 检查本机 ACP 安装。GroupX 不修改 Hermes 的全局配置。
 
@@ -214,6 +225,8 @@ Claude 使用固定的 `claude --print --input-format stream-json --output-forma
 ### 端口已经占用
 
 相同配置的新版 GroupX 会复用现有 runtime。如果端口属于另一配置、旧版 GroupX 或其他程序，CLI 会明确提示冲突，不会自动终止占用进程或偷偷切换端口。
+
+`groupx stop` 和 `groupx restart` 只会停止 canonical 配置路径相同、且仍监听当前配置 `server.port` 的新版 GroupX；配置内容（例如 Agent 名册）刚刚变化不影响识别。它们不会停止另一配置文件、旧版 GroupX 或其他端口占用程序。若实例本来没有运行，`stop` 会明确报告未检测到实例，启动时请使用 `groupx start`；若同时改了端口，请先手动停止旧端口上的实例。运行中的旧版本若尚未提供生命周期控制端点，也需要先手动停止一次；之后即可使用这两个命令。
 
 ### Node 版本不受支持
 

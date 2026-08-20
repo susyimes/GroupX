@@ -148,6 +148,18 @@ export const RestartAgentAcceptedSchema = z.object({
   previousInstanceId: ReferenceIdSchema.optional()
 }).passthrough();
 
+const RuntimeIdentityKeySchema = z.string().regex(/^[a-f0-9]{64}$/u);
+
+export const RuntimeShutdownRequestSchema = z.strictObject({
+  runtimeScopeKey: RuntimeIdentityKeySchema
+});
+
+export const RuntimeShutdownAcceptedSchema = z.strictObject({
+  accepted: z.literal(true),
+  runtimeKey: RuntimeIdentityKeySchema,
+  runtimeScopeKey: RuntimeIdentityKeySchema
+});
+
 export const CompactContextRequestSchema = z.strictObject({
   clientCommandId: ClientCommandIdSchema
 });
@@ -413,6 +425,8 @@ export type CancelTurnRequest = z.infer<typeof CancelTurnRequestSchema>;
 export type CancelTurnResult = z.infer<typeof CancelTurnResultSchema>;
 export type RestartAgentRequest = z.infer<typeof RestartAgentRequestSchema>;
 export type RestartAgentAccepted = z.infer<typeof RestartAgentAcceptedSchema>;
+export type RuntimeShutdownRequest = z.infer<typeof RuntimeShutdownRequestSchema>;
+export type RuntimeShutdownAccepted = z.infer<typeof RuntimeShutdownAcceptedSchema>;
 export type CompactContextRequest = z.infer<typeof CompactContextRequestSchema>;
 export type RoomContextUsage = z.infer<typeof RoomContextUsageSchema>;
 export type CompactContextResult = z.infer<typeof CompactContextResultSchema>;
@@ -449,6 +463,10 @@ export function parseCancelTurnRequest(input: unknown): CancelTurnRequest {
 
 export function parseRestartAgentRequest(input: unknown): RestartAgentRequest {
   return parseWriteRequest(RestartAgentRequestSchema, input);
+}
+
+export function parseRuntimeShutdownRequest(input: unknown): RuntimeShutdownRequest {
+  return parseWriteRequest(RuntimeShutdownRequestSchema, input);
 }
 
 export function parseCompactContextRequest(input: unknown): CompactContextRequest {
@@ -517,6 +535,10 @@ export function parseCancelTurnResult(input: unknown): CancelTurnResult {
 
 export function parseRestartAgentAccepted(input: unknown): RestartAgentAccepted {
   return parseContractOutput(RestartAgentAcceptedSchema, input);
+}
+
+export function parseRuntimeShutdownAccepted(input: unknown): RuntimeShutdownAccepted {
+  return parseContractOutput(RuntimeShutdownAcceptedSchema, input);
 }
 
 export function parseRoomContextUsage(input: unknown): RoomContextUsage {

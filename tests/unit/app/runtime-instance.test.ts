@@ -7,7 +7,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   describeGroupXRuntimeLaunch,
   isAddressInUseError,
-  probeGroupXRuntime
+  probeGroupXRuntime,
+  requestGroupXRuntimeShutdown
 } from "../../../src/app/runtime-instance.js";
 import { createGroupXRuntimeIdentity } from "../../../src/core/runtime-instance.js";
 
@@ -69,7 +70,8 @@ describe("GroupX runtime instance discovery", () => {
     expect(first.identity).toMatchObject({
       service: "groupx",
       protocol: "groupx.runtime/1",
-      runtimeKey: expect.stringMatching(/^[a-f0-9]{64}$/u)
+      runtimeKey: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      runtimeScopeKey: expect.stringMatching(/^[a-f0-9]{64}$/u)
     });
 
     const reordered = configDocument(4_310);
@@ -90,6 +92,8 @@ describe("GroupX runtime instance discovery", () => {
     writeFileSync(configPath, JSON.stringify(configDocument(4_310, "reviewer")), "utf8");
     const changed = await describeGroupXRuntimeLaunch(configPath);
     expect(changed.identity.runtimeKey).not.toBe(first.identity.runtimeKey);
+    expect(changed.identity.runtimeScopeKey).toBe(first.identity.runtimeScopeKey);
+    expect(changed.closeTimeoutMs).toBe(5_000);
   });
 
   it("distinguishes the same runtime, another config, legacy GroupX and foreign HTTP", async () => {
@@ -135,5 +139,40 @@ describe("GroupX runtime instance discovery", () => {
     });
     expect(isAddressInUseError({ cause: { code: "EADDRINUSE" } })).toBe(true);
     expect(isAddressInUseError({ code: "ECONNREFUSED" })).toBe(false);
+  });
+
+  it("requests shutdown only for the matching config-path scope", async () => {
+    const descriptor = await describeGroupXRuntimeLaunch(writeConfig(4_310));
+    let requestBody: unknown;
+    const fetch = async (_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      requestBody = JSON.parse(String(init?.body));
+      return new Response(
+        JSON.stringify({
+          accepted: true,
+          runtimeKey: descriptor.identity.runtimeKey,
+          runtimeScopeKey: descriptor.identity.runtimeScopeKey
+        }),
+        { status: 202, headers: { "content-type": "application/json" } }
+      );
+    };
+
+    await expect(
+      requestGroupXRuntimeShutdown(descriptor, descriptor.identity, { fetch })
+    ).resolves.toBeUndefined();
+    expect(requestBody).toEqual({ runtimeScopeKey: descriptor.identity.runtimeScopeKey });
+
+    await expect(
+      requestGroupXRuntimeShutdown(
+        descriptor,
+        createGroupXRuntimeIdentity({ other: true }),
+        { fetch }
+      )
+    ).rejects.toThrow("同一配置路径");
+
+    await expect(
+      requestGroupXRuntimeShutdown(descriptor, descriptor.identity, {
+        fetch: () => Promise.resolve(new Response("not found", { status: 404 }))
+      })
+    ).rejects.toThrow("请先手动停止一次");
   });
 });

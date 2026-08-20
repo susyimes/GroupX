@@ -11,11 +11,13 @@ import {
   describeGroupXRuntimeLaunch,
   isAddressInUseError,
   probeGroupXRuntime,
+  requestGroupXRuntimeShutdown,
   type GroupXRuntimeLaunchDescriptor,
   type GroupXRuntimeProbe
 } from "./app/runtime-instance.js";
 import { runGroupXUpdate } from "./app/update.js";
 import { parseConfigPath } from "./config.js";
+import type { GroupXRuntimeIdentity } from "./core/runtime-instance.js";
 import { openBrowser } from "./utils/open-browser.js";
 import { createGroupXSetupHttpServer } from "./web/setup/index.js";
 
@@ -23,6 +25,8 @@ const HELP = `GroupX — 本机多 CLI 群聊
 
 用法:
   groupx [start] [--config <path>] [--no-open]   启动 Broker 与 Web UI(默认命令)
+  groupx stop [--config <path>]                  优雅关闭当前配置对应的 runtime
+  groupx restart [--config <path>] [--no-open]   关闭现有 runtime 并按最新配置重载
   groupx doctor [--config <path>]                检测系统、Node 与 codex/grok/kimi/hermes/claude CLI
   groupx init [--config <path>] [--no-open]      配置 Agent，随后启动并进入群聊
   groupx update [--check]                       检查并安装 npm latest 版本
@@ -51,6 +55,20 @@ export interface StartConfiguredRuntimeDependencies {
   delay(milliseconds: number): Promise<void>;
 }
 
+export interface StopConfiguredRuntimeDependencies {
+  describeLaunch(configPath: string): Promise<GroupXRuntimeLaunchDescriptor>;
+  probe(descriptor: GroupXRuntimeLaunchDescriptor): Promise<GroupXRuntimeProbe>;
+  writeLine(line: string): void;
+  delay(milliseconds: number): Promise<void>;
+  requestShutdown(
+    descriptor: GroupXRuntimeLaunchDescriptor,
+    runningIdentity: GroupXRuntimeIdentity
+  ): Promise<void>;
+}
+
+export type RestartConfiguredRuntimeDependencies =
+  StartConfiguredRuntimeDependencies & StopConfiguredRuntimeDependencies;
+
 export type StartConfiguredRuntimeResult =
   | { readonly kind: "started"; readonly origin: string; readonly runtime: GroupXRuntime }
   | { readonly kind: "reused"; readonly origin: string };
@@ -69,30 +87,36 @@ const startDependencies: StartConfiguredRuntimeDependencies = {
   }
 };
 
+const restartDependencies: RestartConfiguredRuntimeDependencies = {
+  ...startDependencies,
+  requestShutdown: requestGroupXRuntimeShutdown
+};
+
 function portConflictError(
   descriptor: GroupXRuntimeLaunchDescriptor,
-  probe: Exclude<GroupXRuntimeProbe, { kind: "same" } | { kind: "unreachable" }>
+  probe: Exclude<GroupXRuntimeProbe, { kind: "same" } | { kind: "unreachable" }>,
+  action: "启动" | "停止" | "重启" = "启动"
 ): Error {
   if (probe.kind === "different-config") {
     return new Error(
-      `无法启动 GroupX：${descriptor.origin} 上已有使用其他配置的 GroupX。` +
+      `无法${action} GroupX：${descriptor.origin} 上已有使用其他配置的 GroupX。` +
         "请停止原实例，或修改当前配置的 server.port。"
     );
   }
   if (probe.kind === "legacy-groupx") {
     return new Error(
-      `无法启动 GroupX：${descriptor.origin} 上已有旧版 GroupX，无法确认配置一致。` +
+      `无法${action} GroupX：${descriptor.origin} 上已有旧版 GroupX，无法确认配置一致。` +
         "请先停止原实例再重试。"
     );
   }
   if (probe.kind === "incompatible-groupx") {
     return new Error(
-      `无法启动 GroupX：${descriptor.origin} 上已有不兼容的 GroupX runtime。` +
+      `无法${action} GroupX：${descriptor.origin} 上已有不兼容的 GroupX runtime。` +
         "请先停止原实例再重试。"
     );
   }
   return new Error(
-    `无法启动 GroupX：端口 ${descriptor.port} 已被其他程序占用。` +
+    `无法${action} GroupX：端口 ${descriptor.port} 已被其他程序占用。` +
       "请停止占用程序，或修改当前配置的 server.port。"
   );
 }
@@ -167,6 +191,112 @@ export async function startConfiguredRuntime(
   return { kind: "started", origin, runtime };
 }
 
+function controllableIdentity(
+  descriptor: GroupXRuntimeLaunchDescriptor,
+  probe: GroupXRuntimeProbe
+): GroupXRuntimeIdentity | undefined {
+  if (probe.kind === "same") return probe.identity;
+  if (
+    probe.kind === "different-config" &&
+    probe.identity.runtimeScopeKey !== undefined &&
+    probe.identity.runtimeScopeKey === descriptor.identity.runtimeScopeKey
+  ) {
+    return probe.identity;
+  }
+  return undefined;
+}
+
+async function waitForRuntimeStop(
+  descriptor: GroupXRuntimeLaunchDescriptor,
+  operation: "stop" | "restart",
+  dependencies: StopConfiguredRuntimeDependencies
+): Promise<void> {
+  const pollMilliseconds = 100;
+  const waitMilliseconds = Math.max(
+    15_000,
+    Math.min(300_000, descriptor.closeTimeoutMs * 3 + 1_000)
+  );
+  const attempts = Math.ceil(waitMilliseconds / pollMilliseconds) + 1;
+  let consecutiveUnreachable = 0;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const observed = await dependencies.probe(descriptor);
+    if (observed.kind === "unreachable") {
+      consecutiveUnreachable += 1;
+      if (consecutiveUnreachable >= 3) return;
+      if (attempt + 1 < attempts) await dependencies.delay(pollMilliseconds);
+      continue;
+    }
+    consecutiveUnreachable = 0;
+    if (controllableIdentity(descriptor, observed) === undefined) {
+      if (observed.kind === "same") {
+        throw new Error("GroupX runtime identity could not be correlated for lifecycle control");
+      }
+      throw portConflictError(descriptor, observed, operation === "stop" ? "停止" : "重启");
+    }
+    if (attempt + 1 < attempts) await dependencies.delay(pollMilliseconds);
+  }
+  throw new Error(
+    operation === "restart"
+      ? `GroupX 未能在 ${waitMilliseconds} ms 内完成关闭；为避免新旧 runtime 重叠，未启动替代实例。`
+      : `GroupX 未能在 ${waitMilliseconds} ms 内完成关闭；未将 runtime 报告为已停止。`
+  );
+}
+
+async function shutdownConfiguredRuntime(
+  configPath: string,
+  operation: "stop" | "restart",
+  dependencies: StopConfiguredRuntimeDependencies
+): Promise<GroupXRuntimeLaunchDescriptor> {
+  const descriptor = await dependencies.describeLaunch(configPath);
+  const existing = await dependencies.probe(descriptor);
+  if (existing.kind === "unreachable") {
+    throw new Error(
+      `未在 ${descriptor.origin} 检测到可${operation === "stop" ? "停止" : "重启"}的 GroupX。` +
+        (operation === "restart" ? "若实例本来未运行，请使用 groupx start；" : "") +
+        "若刚修改了 server.port，请先停止旧端口上的实例。"
+    );
+  }
+
+  const runningIdentity = controllableIdentity(descriptor, existing);
+  if (runningIdentity === undefined) {
+    if (existing.kind === "same") {
+      throw new Error("GroupX runtime identity could not be correlated for lifecycle control");
+    }
+    throw portConflictError(descriptor, existing, operation === "stop" ? "停止" : "重启");
+  }
+
+  dependencies.writeLine(`正在优雅关闭 ${descriptor.origin}/ ...`);
+  await dependencies.requestShutdown(descriptor, runningIdentity);
+  await waitForRuntimeStop(descriptor, operation, dependencies);
+  return descriptor;
+}
+
+export type StopConfiguredRuntimeResult = {
+  readonly kind: "stopped";
+  readonly origin: string;
+};
+
+/** Gracefully stop the runtime bound to this canonical config path. */
+export async function stopConfiguredRuntime(
+  configPath: string,
+  dependencies: StopConfiguredRuntimeDependencies = restartDependencies
+): Promise<StopConfiguredRuntimeResult> {
+  const descriptor = await shutdownConfiguredRuntime(configPath, "stop", dependencies);
+  dependencies.writeLine(`GroupX 已完整停止: ${descriptor.origin}/`);
+  return { kind: "stopped", origin: descriptor.origin };
+}
+
+/** Gracefully stop the runtime for this config path, then start with the latest file contents. */
+export async function restartConfiguredRuntime(
+  configPath: string,
+  noOpen: boolean,
+  dependencies: RestartConfiguredRuntimeDependencies = restartDependencies
+): Promise<StartConfiguredRuntimeResult> {
+  await shutdownConfiguredRuntime(configPath, "restart", dependencies);
+  dependencies.writeLine("原 GroupX 已完整关闭，正在按最新配置重载。");
+  return await startConfiguredRuntime(configPath, noOpen, dependencies);
+}
+
 async function runSetupWizard(
   configPath: string,
   noOpen: boolean
@@ -232,6 +362,24 @@ export async function run(argv: readonly string[]): Promise<number> {
       } else {
         await startConfiguredRuntime(configPath, noOpen);
       }
+      return 0;
+    }
+    case "restart": {
+      const noOpen = rest.includes("--no-open");
+      const forwarded = rest.filter((value) => value !== "--no-open");
+      const configPath = path.resolve(process.cwd(), parseConfigPath(forwarded) ?? "groupx.json");
+      if (!fileExists(configPath)) {
+        throw new Error(`无法重启 GroupX：未找到配置 ${configPath}`);
+      }
+      await restartConfiguredRuntime(configPath, noOpen);
+      return 0;
+    }
+    case "stop": {
+      const configPath = path.resolve(process.cwd(), parseConfigPath(rest) ?? "groupx.json");
+      if (!fileExists(configPath)) {
+        throw new Error(`无法停止 GroupX：未找到配置 ${configPath}`);
+      }
+      await stopConfiguredRuntime(configPath);
       return 0;
     }
     case "doctor": {

@@ -33,6 +33,8 @@ import {
   parseRestartAgentAccepted,
   parseRestartAgentRequest,
   parseRoomContextUsage,
+  parseRuntimeShutdownAccepted,
+  parseRuntimeShutdownRequest,
   parseSetupSaveRequest,
   parseSetupSaveResponse,
   parseSetupSnapshot,
@@ -401,14 +403,17 @@ export class GroupXHttpServer {
     readonly setupApi?: GroupXHttpServerOptions["setupApi"];
     readonly assistantApi?: GroupXHttpServerOptions["assistantApi"];
     readonly runtimeIdentity?: GroupXHttpServerOptions["runtimeIdentity"];
+    readonly runtimeControl?: GroupXHttpServerOptions["runtimeControl"];
   };
   readonly #server: Server;
   readonly #sseConnections = new Set<SseConnection>();
   readonly #requestControllers = new Set<AbortController>();
+  readonly #requestDrainWaiters = new Set<() => void>();
 
   #address: GroupXHttpServerAddress | undefined;
   #starting: Promise<GroupXHttpServerAddress> | undefined;
   #closing: Promise<void> | undefined;
+  #draining = false;
 
   constructor(options: GroupXHttpServerOptions) {
     const host = options.host ?? LOOPBACK_HOST;
@@ -437,7 +442,8 @@ export class GroupXHttpServer {
       ...(options.assistantApi === undefined ? {} : { assistantApi: options.assistantApi }),
       ...(options.runtimeIdentity === undefined
         ? {}
-        : { runtimeIdentity: options.runtimeIdentity })
+        : { runtimeIdentity: options.runtimeIdentity }),
+      ...(options.runtimeControl === undefined ? {} : { runtimeControl: options.runtimeControl })
     };
     this.#server = createServer((request, response) => {
       void this.#handle(request, response).catch((error: unknown) => {
@@ -453,7 +459,7 @@ export class GroupXHttpServer {
   async start(): Promise<GroupXHttpServerAddress> {
     if (this.#address) return this.#address;
     if (this.#starting) return this.#starting;
-    if (this.#closing) throw new Error("GroupX HTTP server is closing");
+    if (this.#closing || this.#draining) throw new Error("GroupX HTTP server is closing");
 
     this.#starting = new Promise<GroupXHttpServerAddress>((resolve, reject) => {
       const onError = (error: Error): void => {
@@ -485,8 +491,48 @@ export class GroupXHttpServer {
     return this.#starting;
   }
 
+  /** Stop accepting product work while retaining the listener as the runtime lease. */
+  beginClose(): void {
+    if (this.#draining) return;
+    this.#draining = true;
+    for (const connection of [...this.#sseConnections]) {
+      connection.close("server_closed");
+    }
+    for (const controller of this.#requestControllers) {
+      controller.abort();
+    }
+  }
+
+  /** Wait for already-started REST work to observe abort without releasing the port lease. */
+  async drain(): Promise<void> {
+    this.beginClose();
+    if (this.#requestControllers.size === 0) return;
+
+    let resolveDrain: (() => void) | undefined;
+    const drained = new Promise<void>((resolve) => {
+      resolveDrain = resolve;
+      this.#requestDrainWaiters.add(resolve);
+    });
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        drained,
+        new Promise<never>((_resolve, reject) => {
+          timeout = setTimeout(
+            () => reject(new Error("GroupX HTTP request drain timed out")),
+            this.#options.gracefulCloseTimeoutMs
+          );
+        })
+      ]);
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      if (resolveDrain) this.#requestDrainWaiters.delete(resolveDrain);
+    }
+  }
+
   async close(): Promise<void> {
     if (this.#closing) return this.#closing;
+    this.beginClose();
     if (!this.#server.listening && !this.#starting) {
       this.#address = undefined;
       return;
@@ -503,13 +549,6 @@ export class GroupXHttpServer {
             else resolve();
           });
         });
-        for (const connection of [...this.#sseConnections]) {
-          connection.close("server_closed");
-        }
-        for (const controller of this.#requestControllers) {
-          controller.abort();
-        }
-        this.#server.closeIdleConnections?.();
         const closeMcp = Promise.resolve()
           .then(async () => await this.#options.mcpHandler?.close?.())
           .finally(() => {
@@ -538,6 +577,8 @@ export class GroupXHttpServer {
       } finally {
         this.#address = undefined;
         this.#requestControllers.clear();
+        for (const resolve of this.#requestDrainWaiters) resolve();
+        this.#requestDrainWaiters.clear();
         this.#sseConnections.clear();
       }
     })();
@@ -556,7 +597,18 @@ export class GroupXHttpServer {
     const method = request.method ?? "GET";
     setSecurityHeaders(response);
 
-    if (this.#closing) {
+    if (this.#draining) {
+      if (
+        url.pathname === "/api/health" &&
+        method === "GET" &&
+        this.#options.runtimeIdentity !== undefined
+      ) {
+        writeJson(response, 503, {
+          status: "closing",
+          ...this.#options.runtimeIdentity
+        });
+        return;
+      }
       writeJson(response, 503, toSafeErrorBody(new GroupXError("STORE_UNAVAILABLE", "closing")));
       return;
     }
@@ -603,6 +655,38 @@ export class GroupXHttpServer {
           ...(await this.#options.broker.health(abort.signal)),
           ...(this.#options.runtimeIdentity ?? {})
         });
+        return;
+      }
+      if (url.pathname === "/api/runtime/shutdown") {
+        const runtimeIdentity = this.#options.runtimeIdentity;
+        const runtimeControl = this.#options.runtimeControl;
+        if (
+          runtimeIdentity?.runtimeScopeKey === undefined ||
+          runtimeControl === undefined
+        ) {
+          writeProblem(response, 404, "Runtime control is not available.");
+          return;
+        }
+        if (method !== "POST") return methodNotAllowed(response, ["POST"]);
+        const body = parseRuntimeShutdownRequest(
+          await readJsonBody(request, this.#options.maxRequestBodyBytes)
+        );
+        if (body.runtimeScopeKey !== runtimeIdentity.runtimeScopeKey) {
+          throw new GroupXError("STORE_CONFLICT", "Runtime scope does not match");
+        }
+        const accepted = parseRuntimeShutdownAccepted({
+          accepted: true,
+          runtimeKey: runtimeIdentity.runtimeKey,
+          runtimeScopeKey: runtimeIdentity.runtimeScopeKey
+        });
+        response.once("finish", () => {
+          setImmediate(() => {
+            void Promise.resolve()
+              .then(async () => await runtimeControl.requestShutdown())
+              .catch((error: unknown) => runtimeControl.onShutdownError?.(error));
+          });
+        });
+        writeJson(response, 202, accepted);
         return;
       }
       if (url.pathname === "/api/bootstrap") {
@@ -887,6 +971,10 @@ export class GroupXHttpServer {
       await this.#serveStatic(method, url.pathname, response);
     } finally {
       this.#requestControllers.delete(abort);
+      if (this.#requestControllers.size === 0) {
+        for (const resolve of this.#requestDrainWaiters) resolve();
+        this.#requestDrainWaiters.clear();
+      }
       request.removeListener("aborted", onAborted);
       response.removeListener("close", onClosed);
     }

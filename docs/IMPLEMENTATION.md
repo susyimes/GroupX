@@ -304,8 +304,9 @@ REST 负责有副作用的用户命令；SSE 负责服务端事件流。
 | POST | `/api/identity/:id/supersede` | 追加身份替代版本 |
 | POST | `/api/identity/:id/retract` | 撤回当前身份版本 |
 | POST | `/api/agents/:id/restart` | 重启单个 Adapter |
+| POST | `/api/runtime/shutdown` | 为本机 `groupx stop` / `groupx restart` 请求当前 runtime 优雅关闭；需匹配配置路径作用域 |
 
-所有 POST 命令接受 `clientCommandId`，重复提交必须返回原命令结果，不能重新派发。
+所有进入 Broker 的写入 POST 命令接受 `clientCommandId`，重复提交必须返回原命令结果，不能重新派发。`/api/runtime/shutdown` 是不写事件/Turn 的进程生命周期例外，只接受匹配的 `runtimeScopeKey`，并依赖进程内 `close()` 幂等。
 
 ### 5.9 Web UI
 
@@ -401,7 +402,18 @@ sequenceDiagram
 4. 指导进入公共 transcript，actor 来自 observer binding。不自动再开下一轮监督循环。
 5. 不产生 `approval.*`，不改 unrestricted argv/mode。
 
-### 6.5 Broker 重启
+### 6.5 Broker 停止、重启与 CLI 重载
+
+用户显式执行 `groupx stop [--config <path>]` 或 `groupx restart [--config <path>] [--no-open]` 时：
+
+1. CLI 按当前配置读取 loopback origin，并探测正式 runtime identity；当前端口不可达时 fail-closed，`stop` 报告没有可停止实例，`restart` 另提示未运行时应使用 `groupx start`，两者都不假定旧端口实例已经退出；
+2. `runtimeKey` 完全相同时可确认同一具体配置；配置内容已经保存变化时，CLI 只在旧、新 runtime 的 `runtimeScopeKey`（canonical config path 的非秘密 SHA-256）相同时继续。不同配置文件、旧版 GroupX、不兼容 listener 或其他程序一律不停止；
+3. CLI 通过 `POST /api/runtime/shutdown` 请求优雅关闭。HTTP 层先进入 draining、拒绝新工作并关闭 SSE，但继续占用 loopback 端口作为单 runtime 租约；待当前 REST 工作、房间助理、MCP、Broker、Agent session、publisher/SSE 与 Store 全部有界收敛后，最后才释放 listener；
+4. CLI 连续确认端口不可达后，`stop` 报告完整停止且不启动任何实例；`restart` 才复用 `groupx start` 的竞态检查按最新配置启动替代 runtime，并按 `--no-open` 决定是否打开页面。若关闭超时或端口被其他 listener 接管，不报告停止成功，也不启动替代实例。
+
+若同时修改了 `server.port`，当前配置无法发现仍在旧端口上的 runtime；两个命令都必须提示用户先停止旧实例，不能扫描端口或假定它已退出。运行中的旧版本没有控制端点时也 fail-closed，要求手动停止一次。`runtimeScopeKey` 是本机相关性 handle，不是 credential、认证或第二套锁。
+
+新 runtime 进入持久恢复时：
 
 1. 打开数据库并恢复非终态 Session/Turn。
 2. 没有 attempt 的 `queued` Turn，或状态不是 `cancelling` 且 attempt 明确为 `prepared + not_delivered` 的 Turn，只有其 transport snapshot 与当前启动选择一致时才可用 CAS 重新加入相应 lane；不一致时以 `TRANSPORT_MODE_MISMATCH` 失败，不能跨 transport 派发。`cancelling + prepared + not_delivered` 直接 CAS 到 terminal `cancelled`，绝不复活为 queued。
@@ -533,7 +545,9 @@ Agent `enabled` 默认 true;`enabled: false` 的 agent 不建 Adapter、不进�
 
 `groupx init` 启动一个临时 loopback 引导服务并打开浏览器；首次 `groupx start` 没有配置时复用同一流程。引导页可创建多个相同 driver 实例并填写 id/name/cwd/command；保存严格配置后，CLI 启动正式 runtime，临时服务通过同源 launch 状态通知当前页面，并在正式服务 ready 后自动跳转到群聊。运行中的 `/setup` 使用同一合同编辑名册；保存只更新配置文件，不在运行时热增删 Adapter/session。主房间同时读取 setup snapshot，把已保存但当前 bootstrap 不存在的启用 Agent 投影为 `pending_restart`，计入名册总数但禁止路由；重启后由真实 Adapter 状态替换。setup API 不暴露 transport、access、approval 或 sandbox 字段。
 
-正式 runtime 必须先成功绑定配置的 loopback HTTP 端口，才能执行 stale Agent instance/session recovery。该监听是单 runtime 启动租约。`GET /api/health` 同时返回固定 `service=groupx`、协议版本和由 canonical config + canonical config path 生成的非秘密 `runtimeKey`。CLI 在构造 SQLite/Adapter 前探测该身份：相同 key 直接复用现有页面并成功退出；不同 key、旧版 GroupX 或非 GroupX listener 明确报冲突，不杀进程、不自动换端口。预检与 bind 之间仍可能竞态，因此实际 `EADDRINUSE` 后最多有界复查三次；若竞态赢家是同一 key，同样按复用成功收敛。失败进程不得把现有 runtime 的 ready binding 标成 interrupted，也不得留下永久 queued Turn。
+正式 runtime 必须先成功绑定配置的 loopback HTTP 端口，才能执行 stale Agent instance/session recovery。该监听是单 runtime 启动租约。`GET /api/health` 同时返回固定 `service=groupx`、协议版本、由 canonical config + canonical config path 生成的非秘密 `runtimeKey`，以及只由 canonical config path 生成的非秘密 `runtimeScopeKey`。CLI 在构造 SQLite/Adapter 前探测该身份：`groupx start` 只在 runtimeKey 相同时复用；不同 key、旧版 GroupX 或非 GroupX listener 明确报冲突，不杀进程、不自动换端口。只有显式 `groupx stop` / `groupx restart` 才允许在 runtimeKey 已因配置保存而变化时，以相同 runtimeScopeKey 请求旧 runtime 优雅关闭。预检与 bind 之间仍可能竞态，因此实际 `EADDRINUSE` 后最多有界复查三次；若竞态赢家是同一 key，同样按复用成功收敛。失败进程不得把现有 runtime 的 ready binding 标成 interrupted，也不得留下永久 queued Turn。
+
+关闭路径先把 HTTP 标为 draining 并中止/等待当前请求，但保留 listener；只有 Broker、原生 session 和 Store 均完成有界关闭后才释放端口。这样 `groupx stop` / `groupx restart` 对端口的不可达观察同时代表旧 runtime 的权威写入者与原生子进程已经收敛，而不只是 Web server 提前退出。
 
 公开配置没有 `access` 字段。`access` 在 v0.1 内部恒为 unrestricted；Adapter 根据 Agent + transport 生成固定 argv/session mode。用户不能通过 `extraArgs` 改写、删除或替换这些访问参数。
 
@@ -566,7 +580,7 @@ D:\GroupX
 ├─ AGENTS.md
 ├─ package.json                  # @susyimes/groupx;bin: groupx → dist/src/cli.js
 ├─ src
-│  ├─ cli.ts                     # groupx start/doctor/init/update 命令入口
+│  ├─ cli.ts                     # groupx start/restart/doctor/init/update 命令入口
 │  ├─ main.ts                    # Broker 启动(被 cli.ts 复用)
 │  ├─ config.ts                  # transport/server/storage/agents 名册 schema
 │  ├─ core                       # envelope / dispatcher / identity-binding / errors
@@ -666,6 +680,7 @@ GroupX v0.1 完成必须同时满足：
 9. GroupX MCP `send/publish/ask/collect/read` 工具服务通过测试；只有完成本机真实 native `tools/call` 与 binding provenance 的 driver 才可宣称当前回合主动互调已 verified。
 10. 代码、schema、REST、SSE 与 UI 均无 ApprovalService/table/API/UI/event；任何 native approval、permission、`requestUserInput`、question 或 elicitation 都进行有界 teardown，并且一律使当前 Turn 以 `UNEXPECTED_NATIVE_INTERACTION` 失败。`NATIVE_POLICY_BLOCKED/native_policy_blocked` 只由独立的外部策略 preflight 或 native 启动/session 拒绝 evidence 产生。不 relay、代选、fallback 或重放。
 11. Broker 本地延迟、10,000 事件投影和三路 fan-out 达到记录的性能门槛。
+12. `groupx stop` / `groupx restart` 只控制 canonical config path 相同的当前端口 runtime；旧 listener 在 Broker/session/Store 关闭前保持端口租约，`stop` 不启动替代实例，`restart` 的替代实例不会与旧权威写入者重叠。
 
 ## 14. 当前未决但不阻塞架构的问题
 

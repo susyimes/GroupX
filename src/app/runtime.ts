@@ -468,7 +468,16 @@ export class GroupXRuntime {
             return await assistantHost.cancel(request.clientCommandId);
           }
         },
-        runtimeIdentity: this.runtimeIdentity
+        runtimeIdentity: this.runtimeIdentity,
+        runtimeControl: {
+          requestShutdown: async () => await this.close(),
+          ...(this.#onError === undefined
+            ? {}
+            : {
+                onShutdownError: (error: unknown) =>
+                  this.#onError?.(error, { operation: "restart" })
+              })
+        }
       });
       this.#broker = broker;
       this.#turns = turns;
@@ -601,7 +610,10 @@ export class GroupXRuntime {
       }
     };
 
-    await settle(async () => await this.#http?.close());
+    // Stop product work immediately, but retain the loopback listener as the
+    // single-runtime lease until sessions and the Store have fully closed.
+    await settle(() => this.#http?.beginClose());
+    await settle(async () => await this.#http?.drain());
     await settle(async () => await this.#assistantHost?.close());
     await settle(async () => await this.#operatorMcpHandler?.close());
     await settle(async () => await this.#mcpHandler?.close());
@@ -612,6 +624,7 @@ export class GroupXRuntime {
     await settle(async () => await this.publisher.close());
     await settle(() => this.sse.close());
     if (this.#closeStore) await settle(() => this.store.close());
+    await settle(async () => await this.#http?.close());
 
     if (failures.length > 0) {
       throw new AggregateError(failures, "GroupX runtime did not close cleanly");

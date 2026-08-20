@@ -435,6 +435,12 @@ Broker 启动时先枚举非终态 attempt，不先写 terminal：
 - 新 session 属于同一稳定 actor，但有新的 binding/instance lineage；
 - 不把“上下文重建”描述成“原生 session resume”。
 
+### 5.4 `groupx stop` / `groupx restart` 的存储边界
+
+runtime 停止/重载不增加锁表、PID 表、shutdown event 或第二个权威状态源。`runtimeScopeKey` 只由 canonical config path 确定，随 health/loopback 控制响应瞬时投影，不进入 SQLite，也不是 credential。
+
+收到匹配的 shutdown 请求后，旧 runtime 先停止接收新产品工作并等待已开始的 REST 操作，再按既有顺序关闭 Broker、Agent session 与唯一 Store writer；在这些资源收敛前继续占用 HTTP 端口。CLI 只有连续观察到 listener 不可达后才启动新 runtime。因此替代进程仍使用本章 5.1-5.3 的正常打开、恢复和“不确定 Turn 不自动重放”合同，没有热替换数据库连接、跨进程 Store writer 重叠或额外 replay 许可。
+
 ## 6. 公共记忆
 
 ### 6.1 产生方式
@@ -601,3 +607,4 @@ GroupX 诊断日志只记录实现合同需要的有界字段：
 20. `turn.reasoning.recorded` 与 `tool.progress.recorded` 均不进入 Context Packet、reply chain、房间压缩或自动记忆。
 21. 监督配对与 worker/watch Turns 原子提交；观察快照与 steer 记录可回放，但不进入 memory/dated-memory/压缩输入。
 22. schema 中不存在 approval table；steer 不写 `approval.*`，不改 Turn transport 或 unrestricted 合同。
+23. `groupx stop` / `groupx restart` 不创建持久 shutdown/lock 状态；旧 listener 只在 Broker、Agent session 与 Store writer 已有界关闭后释放，`stop` 不再启动，`restart` 的新 runtime 再按既有恢复合同启动。
